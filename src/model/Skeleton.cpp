@@ -44,8 +44,8 @@ void to_json(nlohmann::json& j, const Skeleton& skeleton)
     {
         nlohmann::json bone;
         bone["name"] = joint.name;
-        if (joint.parentIndex >= 0)
-            bone["parent"] = skeleton.joints[joint.parentIndex].name;
+        if (joint.parentIndex)
+            bone["parent"] = skeleton.joints[*joint.parentIndex].name;
         else
             bone["parent"] = nullptr;
         bone["offset"] = {joint.restOffset.x, joint.restOffset.y, joint.restOffset.z};
@@ -80,7 +80,7 @@ void from_json(const nlohmann::json& j, Skeleton& skeleton)
         throw std::runtime_error("skeleton: expected exactly 1 root bone, got " + std::to_string(rootCount));
 
     for (const RawBone& bone : raw)
-        if (bone.hasParent && names.find(bone.parent) == names.end())
+        if (bone.hasParent && !names.contains(bone.parent))
             throw std::runtime_error("skeleton: bone '" + bone.name + "' has unknown parent '" + bone.parent + "'");
 
     // Sort parent-before-child.
@@ -97,7 +97,7 @@ void from_json(const nlohmann::json& j, Skeleton& skeleton)
             if (placed[i])
                 continue;
 
-            int parentIndex = -1;
+            std::optional<int> parentIndex = std::nullopt;
             if (raw[i].hasParent)
             {
                 const auto it = indexOf.find(raw[i].parent);
@@ -130,7 +130,7 @@ Skeleton Skeleton::makeDefault()
     {
         Joint joint;
         joint.name = std::move(name);
-        joint.parentIndex = -1;
+        joint.parentIndex = std::nullopt;
         if (!parent.empty())
         {
             for (size_t i = 0; i < skeleton.joints.size(); ++i)
@@ -179,7 +179,7 @@ std::vector<glm::vec3> computeWorldPositions(const Skeleton& skeleton)
     {
         const Joint& joint = skeleton.joints[i];
         const glm::vec3 offset = joint.localRot * joint.restOffset;
-        positions[i] = (joint.parentIndex >= 0 ? positions[joint.parentIndex] : glm::vec3(0.0f)) + offset;
+        positions[i] = (joint.parentIndex ? positions[*joint.parentIndex] : glm::vec3(0.0f)) + offset;
     }
     return positions;
 }

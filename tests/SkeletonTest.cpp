@@ -42,7 +42,7 @@ TEST(SkeletonDeserialization, SortsParentBeforeChild)
     const Skeleton skeleton = j.get<Skeleton>();
     ASSERT_EQ(skeleton.joints.size(), 3u);
     EXPECT_EQ(skeleton.joints[0].name, "root");
-    EXPECT_EQ(skeleton.joints[0].parentIndex, -1);
+    EXPECT_EQ(skeleton.joints[0].parentIndex, std::nullopt);
     EXPECT_EQ(skeleton.joints[1].name, "child");
     EXPECT_EQ(skeleton.joints[1].parentIndex, 0);
     EXPECT_EQ(skeleton.joints[2].name, "grandchild");
@@ -63,7 +63,7 @@ TEST(SkeletonDeserialization, MissingFieldsGetDefaults)
 
     const Skeleton skeleton = j.get<Skeleton>();
     ASSERT_EQ(skeleton.joints.size(), 2u);
-    EXPECT_EQ(skeleton.joints[0].parentIndex, -1);
+    EXPECT_EQ(skeleton.joints[0].parentIndex, std::nullopt);
     EXPECT_EQ(skeleton.joints[0].restOffset, glm::vec3(0.0f));
     EXPECT_EQ(skeleton.joints[1].restOffset, glm::vec3(0.0f));
 }

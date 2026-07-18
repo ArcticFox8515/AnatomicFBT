@@ -21,7 +21,7 @@ public:
     // Sets viewport, clears color+depth, computes camera matrices, draws the ground grid.
     void beginFrame(int width, int height);
 
-    // Draws the skeleton: line segments for bones, octahedra at joints.
+    // Draws the skeleton: one gray pyramid per bone, base at the parent joint, apex at the joint.
     void renderSkeleton(const Skeleton& skeleton);
 
 private:
@@ -44,9 +44,8 @@ private:
     // GL resources.
     unsigned int m_lineProgram = 0;
     unsigned int m_meshProgram = 0;
-    unsigned int m_boneVao = 0, m_boneVbo = 0;    // dynamic line segments, rebuilt per frame
-    unsigned int m_gridVao = 0, m_gridVbo = 0;    // static 1m ground grid
-    unsigned int m_jointVao = 0, m_jointVbo = 0;  // static octahedron mesh
+    unsigned int m_gridVao = 0, m_gridVbo = 0;  // static 1m ground grid
+    unsigned int m_boneVao = 0, m_boneVbo = 0;  // static unit pyramid mesh
     int m_gridVertexCount = 0;
-    int m_jointVertexCount = 0;
+    int m_boneVertexCount = 0;
 };

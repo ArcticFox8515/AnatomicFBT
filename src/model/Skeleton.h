@@ -9,7 +9,7 @@
 struct Joint
 {
     std::string name;
-    int parentIndex = -1;                        // -1 = root
+    std::optional<int> parentIndex = std::nullopt;
     glm::vec3 restOffset{0.0f, 0.0f, 0.0f};      // translation from parent joint, meters
     glm::quat localRot{1.0f, 0.0f, 0.0f, 0.0f};  // identity at rest; not serialized
 };

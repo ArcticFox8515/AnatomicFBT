@@ -10,7 +10,7 @@
 #include "model/Skeleton.h"
 #include "view/Scene.h"
 
-static const char* kSkeletonPath = "user-skeleton.json";
+constexpr char kSkeletonPath[] = "user-skeleton.json";
 
 // Loads the skeleton from the JSON file; creates the file with the default
 // skeleton if missing; falls back to the default skeleton (in memory only)

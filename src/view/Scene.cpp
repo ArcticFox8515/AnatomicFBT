@@ -4,7 +4,9 @@
 #include <GLFW/glfw3.h>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <cmath>
+#include <cstddef>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -13,7 +15,7 @@
 
 namespace
 {
-const char* kLineVertexShader = R"(
+constexpr char kLineVertexShader[] = R"(
 #version 330 core
 layout(location = 0) in vec3 aPos;
 uniform mat4 uViewProj;
@@ -23,7 +25,7 @@ void main()
 }
 )";
 
-const char* kLineFragmentShader = R"(
+constexpr char kLineFragmentShader[] = R"(
 #version 330 core
 uniform vec3 uColor;
 out vec4 FragColor;
@@ -33,7 +35,7 @@ void main()
 }
 )";
 
-const char* kMeshVertexShader = R"(
+constexpr char kMeshVertexShader[] = R"(
 #version 330 core
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
@@ -47,7 +49,7 @@ void main()
 }
 )";
 
-const char* kMeshFragmentShader = R"(
+constexpr char kMeshFragmentShader[] = R"(
 #version 330 core
 in vec3 vNormal;
 uniform vec3 uColor;
@@ -105,29 +107,37 @@ unsigned int createProgram(const char* vertexSource, const char* fragmentSource)
     return program;
 }
 
-// Octahedron with per-face normals (vertices duplicated per face).
-std::vector<float> buildOctahedron()
+// Interleaved mesh vertex: position + normal.
+struct Vertex
 {
-    const glm::vec3 top(0.0f, 1.0f, 0.0f), bottom(0.0f, -1.0f, 0.0f);
-    const glm::vec3 px(1.0f, 0.0f, 0.0f), nx(-1.0f, 0.0f, 0.0f);
-    const glm::vec3 pz(0.0f, 0.0f, 1.0f), nz(0.0f, 0.0f, -1.0f);
-    const glm::vec3 faces[8][3] = {
-        {top, pz, px}, {top, px, nz}, {top, nz, nx}, {top, nx, pz},
-        {bottom, px, pz}, {bottom, nx, px}, {bottom, pz, nx}, {bottom, nz, px},
+    glm::vec3 position;
+    glm::vec3 normal;
+};
+
+// Unit pyramid with per-face normals (vertices duplicated per face).
+// Square base of half-extent 1 in the XZ plane at y=0, apex at (0,1,0).
+std::vector<Vertex> buildPyramid()
+{
+    constexpr glm::vec3 apex(0.0f, 1.0f, 0.0f);
+    constexpr glm::vec3 c0(-1.0f, 0.0f, -1.0f), c1(1.0f, 0.0f, -1.0f);
+    constexpr glm::vec3 c2(1.0f, 0.0f, 1.0f), c3(-1.0f, 0.0f, 1.0f);
+    const glm::vec3 faces[6][3] = {
+        {apex, c0, c1}, {apex, c1, c2}, {apex, c2, c3}, {apex, c3, c0},
+        {c0, c2, c1}, {c0, c3, c2},
     };
 
-    std::vector<float> data;
-    data.reserve(8 * 3 * 6);
+    constexpr glm::vec3 interior(0.0f, 0.25f, 0.0f); // pyramid centroid
+    std::vector<Vertex> data;
+    constexpr size_t vertexCount = 6 * 3;
+    data.reserve(vertexCount);
     for (const auto& face : faces)
     {
         glm::vec3 normal = glm::normalize(glm::cross(face[1] - face[0], face[2] - face[0]));
         const glm::vec3 center = (face[0] + face[1] + face[2]) / 3.0f;
-        if (glm::dot(normal, center) < 0.0f)
+        if (glm::dot(normal, center - interior) < 0.0f)
             normal = -normal;
         for (const glm::vec3& v : face)
-        {
-            data.insert(data.end(), {v.x, v.y, v.z, normal.x, normal.y, normal.z});
-        }
+            data.push_back({v, normal});
     }
     return data;
 }
@@ -135,18 +145,10 @@ std::vector<float> buildOctahedron()
 
 Scene::Scene()
 {
-    m_lightDir = glm::normalize(m_lightDir);
+    m_lightDir = normalize(m_lightDir);
 
     m_lineProgram = createProgram(kLineVertexShader, kLineFragmentShader);
     m_meshProgram = createProgram(kMeshVertexShader, kMeshFragmentShader);
-
-    // Dynamic bone line buffer.
-    glGenVertexArrays(1, &m_boneVao);
-    glGenBuffers(1, &m_boneVbo);
-    glBindVertexArray(m_boneVao);
-    glBindBuffer(GL_ARRAY_BUFFER, m_boneVbo);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), nullptr);
-    glEnableVertexAttribArray(0);
 
     // Static 1m ground grid (XZ plane, 10m extent).
     std::vector<glm::vec3> grid;
@@ -167,17 +169,17 @@ Scene::Scene()
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), nullptr);
     glEnableVertexAttribArray(0);
 
-    // Static octahedron mesh for joints.
-    const std::vector<float> octahedron = buildOctahedron();
-    m_jointVertexCount = static_cast<int>(octahedron.size() / 6);
-    glGenVertexArrays(1, &m_jointVao);
-    glGenBuffers(1, &m_jointVbo);
-    glBindVertexArray(m_jointVao);
-    glBindBuffer(GL_ARRAY_BUFFER, m_jointVbo);
-    glBufferData(GL_ARRAY_BUFFER, octahedron.size() * sizeof(float), octahedron.data(), GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), nullptr);
+    // Static pyramid mesh for bones.
+    const std::vector<Vertex> pyramid = buildPyramid();
+    m_boneVertexCount = static_cast<int>(pyramid.size());
+    glGenVertexArrays(1, &m_boneVao);
+    glGenBuffers(1, &m_boneVbo);
+    glBindVertexArray(m_boneVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_boneVbo);
+    glBufferData(GL_ARRAY_BUFFER, pyramid.size() * sizeof(Vertex), pyramid.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, position)));
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), reinterpret_cast<void*>(3 * sizeof(float)));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, normal)));
     glEnableVertexAttribArray(1);
 
     glBindVertexArray(0);
@@ -189,10 +191,8 @@ Scene::~Scene()
     glDeleteProgram(m_meshProgram);
     glDeleteBuffers(1, &m_boneVbo);
     glDeleteBuffers(1, &m_gridVbo);
-    glDeleteBuffers(1, &m_jointVbo);
     glDeleteVertexArrays(1, &m_boneVao);
     glDeleteVertexArrays(1, &m_gridVao);
-    glDeleteVertexArrays(1, &m_jointVao);
 }
 
 void Scene::update(GLFWwindow* window, bool allowInput)
@@ -205,10 +205,10 @@ void Scene::update(GLFWwindow* window, bool allowInput)
     {
         if (m_dragging)
         {
-            const float sensitivity = 0.01f;
+            constexpr float sensitivity = 0.01f;
             m_yaw += static_cast<float>(x - m_lastCursorX) * sensitivity;
             m_pitch += static_cast<float>(y - m_lastCursorY) * sensitivity;
-            const float limit = glm::half_pi<float>() - 0.05f;
+            constexpr float limit = glm::half_pi<float>() - 0.05f;
             m_pitch = glm::clamp(m_pitch, -limit, limit);
         }
         m_dragging = true;
@@ -254,38 +254,40 @@ void Scene::renderSkeleton(const Skeleton& skeleton)
 {
     const std::vector<glm::vec3> positions = computeWorldPositions(skeleton);
 
-    // Bone lines, rebuilt per frame.
-    std::vector<glm::vec3> lines;
-    for (size_t i = 0; i < skeleton.joints.size(); ++i)
-    {
-        if (skeleton.joints[i].parentIndex < 0)
-            continue;
-        lines.push_back(positions[skeleton.joints[i].parentIndex]);
-        lines.push_back(positions[i]);
-    }
-    if (!lines.empty())
-    {
-        glUseProgram(m_lineProgram);
-        glUniformMatrix4fv(glGetUniformLocation(m_lineProgram, "uViewProj"), 1, GL_FALSE, &m_viewProj[0][0]);
-        glUniform3f(glGetUniformLocation(m_lineProgram, "uColor"), 0.95f, 0.95f, 0.95f);
-        glBindVertexArray(m_boneVao);
-        glBindBuffer(GL_ARRAY_BUFFER, m_boneVbo);
-        glBufferData(GL_ARRAY_BUFFER, lines.size() * sizeof(glm::vec3), lines.data(), GL_DYNAMIC_DRAW);
-        glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(lines.size()));
-    }
-
-    // Joint octahedra.
+    // One pyramid per bone: base centered at the parent joint, apex at the joint.
     glUseProgram(m_meshProgram);
     glUniformMatrix4fv(glGetUniformLocation(m_meshProgram, "uViewProj"), 1, GL_FALSE, &m_viewProj[0][0]);
-    glUniform3f(glGetUniformLocation(m_meshProgram, "uColor"), 0.85f, 0.35f, 0.30f);
+    glUniform3f(glGetUniformLocation(m_meshProgram, "uColor"), 0.6f, 0.6f, 0.6f);
     glUniform3fv(glGetUniformLocation(m_meshProgram, "uLightDir"), 1, &m_lightDir[0]);
     glUniform3fv(glGetUniformLocation(m_meshProgram, "uLightColor"), 1, &m_lightColor[0]);
-    glBindVertexArray(m_jointVao);
-    for (const glm::vec3& position : positions)
+    glBindVertexArray(m_boneVao);
+    for (size_t i = 0; i < skeleton.joints.size(); ++i)
     {
-        const glm::mat4 model = glm::translate(glm::mat4(1.0f), position) * glm::scale(glm::mat4(1.0f), glm::vec3(0.035f));
+        if (!skeleton.joints[i].parentIndex)
+            continue;
+
+        const glm::vec3 base = positions[*skeleton.joints[i].parentIndex];
+        const glm::vec3 tip = positions[i];
+        const glm::vec3 axis = tip - base;
+        const float boneLength = length(axis);
+        if (boneLength < 1e-6f)
+            continue;
+
+        // Rotates the unit pyramid's +Y axis onto the bone direction.
+        constexpr glm::vec3 yAxis(0.0f, 1.0f, 0.0f);
+        const glm::vec3 direction = axis / boneLength;
+        const float cosAngle = dot(yAxis, direction);
+        glm::quat rotation(1.0f, 0.0f, 0.0f, 0.0f);
+        if (cosAngle < -0.99999f) // opposite: 180 degrees around any perpendicular axis
+            rotation = angleAxis(glm::pi<float>(), glm::vec3(1.0f, 0.0f, 0.0f));
+        else if (cosAngle < 0.99999f)
+            rotation = angleAxis(std::acos(cosAngle), normalize(cross(yAxis, direction)));
+        const float radius = 0.08f * boneLength;
+        const glm::mat4 model = translate(glm::mat4(1.0f), base)
+            * mat4_cast(rotation)
+            * scale(glm::mat4(1.0f), glm::vec3(radius, boneLength, radius));
         glUniformMatrix4fv(glGetUniformLocation(m_meshProgram, "uModel"), 1, GL_FALSE, &model[0][0]);
-        glDrawArrays(GL_TRIANGLES, 0, m_jointVertexCount);
+        glDrawArrays(GL_TRIANGLES, 0, m_boneVertexCount);
     }
 
     glBindVertexArray(0);
