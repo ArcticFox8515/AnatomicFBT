@@ -1,0 +1,5 @@
+/build
+/.vs
+/CMakeUserPresets.json
+/src/bindings
+/imgui.ini

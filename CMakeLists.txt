@@ -1,0 +1,28 @@
+cmake_minimum_required(VERSION 3.15)
+project(TrackingCorrector CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+
+find_package(imgui REQUIRED)
+find_package(glfw3 REQUIRED)
+find_package(glew REQUIRED)
+find_package(glm REQUIRED)
+find_package(nlohmann_json REQUIRED)
+
+add_executable(${PROJECT_NAME} WIN32
+    src/main.cpp
+
+    src/bindings/imgui_impl_glfw.cpp
+    src/bindings/imgui_impl_glfw.h
+    src/bindings/imgui_impl_opengl3.cpp
+    src/bindings/imgui_impl_opengl3.h
+    src/bindings/imgui_impl_opengl3_loader.h)
+
+target_compile_definitions(${PROJECT_NAME} PUBLIC IMGUI_IMPL_OPENGL_LOADER_GLEW)
+target_link_libraries(${PROJECT_NAME}
+    imgui::imgui
+    GLEW::GLEW
+    glfw
+    glm::glm
+    nlohmann_json::nlohmann_json
+)
