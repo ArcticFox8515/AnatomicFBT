@@ -1,9 +1,44 @@
 #include <cstdlib>
+#include <fstream>
+#include <string>
 #include <imgui.h>
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include <nlohmann/json.hpp>
 #include "bindings/imgui_impl_glfw.h"
 #include "bindings/imgui_impl_opengl3.h"
+#include "model/Skeleton.h"
+#include "view/Scene.h"
+
+static const char* kSkeletonPath = "user-skeleton.json";
+
+// Loads the skeleton from the JSON file; creates the file with the default
+// skeleton if missing; falls back to the default skeleton (in memory only)
+// if the file exists but is invalid.
+static Skeleton loadOrCreateSkeleton(const char* path, std::string& statusMessage)
+{
+	std::ifstream file(path);
+	if (file)
+	{
+		try
+		{
+			Skeleton skeleton = nlohmann::json::parse(file).get<Skeleton>();
+			statusMessage = std::string("Loaded skeleton from ") + path;
+			return skeleton;
+		}
+		catch (const std::exception& e)
+		{
+			statusMessage = std::string("Failed to load ") + path + ": " + e.what() + " Using default skeleton.";
+			return Skeleton::makeDefault();
+		}
+	}
+
+	Skeleton skeleton = Skeleton::makeDefault();
+	std::ofstream out(path);
+	out << nlohmann::json(skeleton).dump(2) << '\n';
+	statusMessage = std::string("Created default ") + path;
+	return skeleton;
+}
 
 int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 {
@@ -42,34 +77,44 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 	// Setup Dear ImGui style
 	ImGui::StyleColorsDark();
 
-	while (!glfwWindowShouldClose(window))
+	std::string statusMessage;
+	const Skeleton skeleton = loadOrCreateSkeleton(kSkeletonPath, statusMessage);
+
+	// Scene holds GL resources; scope it so it is destroyed before GLFW shutdown.
 	{
-		int width, height;
-		glfwGetFramebufferSize(window, &width, &height);
-		if (width <= 0 || height <= 0)
+		Scene scene;
+
+		while (!glfwWindowShouldClose(window))
 		{
-			glfwWaitEventsTimeout(1.0 / 90);
-			continue;
+			int width, height;
+			glfwGetFramebufferSize(window, &width, &height);
+			if (width <= 0 || height <= 0)
+			{
+				glfwWaitEventsTimeout(1.0 / 90);
+				continue;
+			}
+			glfwPollEvents();
+
+			// feed inputs to dear imgui, start new frame
+			ImGui_ImplOpenGL3_NewFrame();
+			ImGui_ImplGlfw_NewFrame();
+			ImGui::NewFrame();
+
+			scene.update(window, !io.WantCaptureMouse);
+			scene.beginFrame(width, height);
+			scene.renderSkeleton(skeleton);
+
+			ImGui::Begin("TrackingCorrector");
+			ImGui::Text("ImGui initialized. %.1f FPS", io.Framerate);
+			ImGui::TextUnformatted(statusMessage.c_str());
+			ImGui::End();
+
+			// Render dear imgui into screen
+			ImGui::Render();
+			ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+			glfwSwapBuffers(window);
 		}
-		glfwPollEvents();
-		glViewport(0, 0, width, height);
-		glClearColor(0.45f, 0.55f, 0.60f, 1.00f);
-		glClear(GL_COLOR_BUFFER_BIT);
-
-		// feed inputs to dear imgui, start new frame
-		ImGui_ImplOpenGL3_NewFrame();
-		ImGui_ImplGlfw_NewFrame();
-		ImGui::NewFrame();
-
-		ImGui::Begin("TrackingCorrector");
-		ImGui::Text("ImGui initialized. %.1f FPS", io.Framerate);
-		ImGui::End();
-
-		// Render dear imgui into screen
-		ImGui::Render();
-		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-		glfwSwapBuffers(window);
 	}
 
 	ImGui_ImplOpenGL3_Shutdown();

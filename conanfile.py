@@ -15,6 +15,7 @@ class TrackingCorrector(ConanFile):
         self.requires("glew/2.2.0")
         self.requires("glm/1.0.1")
         self.requires("nlohmann_json/3.11.3")
+        self.requires("gtest/1.15.0")
 
     def generate(self):
         copy(self, "*glfw*", os.path.join(self.dependencies["imgui"].package_folder,

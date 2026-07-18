@@ -8,6 +8,22 @@ find_package(glfw3 REQUIRED)
 find_package(glew REQUIRED)
 find_package(glm REQUIRED)
 find_package(nlohmann_json REQUIRED)
+find_package(GTest REQUIRED)
+
+add_library(TrackingCorrectorLib STATIC
+    src/model/Skeleton.cpp
+    src/model/Skeleton.h
+    src/view/Scene.cpp
+    src/view/Scene.h)
+
+target_include_directories(TrackingCorrectorLib PUBLIC src)
+
+target_link_libraries(TrackingCorrectorLib PUBLIC
+    GLEW::GLEW
+    glfw
+    glm::glm
+    nlohmann_json::nlohmann_json
+)
 
 add_executable(${PROJECT_NAME} WIN32
     src/main.cpp
@@ -20,9 +36,20 @@ add_executable(${PROJECT_NAME} WIN32
 
 target_compile_definitions(${PROJECT_NAME} PUBLIC IMGUI_IMPL_OPENGL_LOADER_GLEW)
 target_link_libraries(${PROJECT_NAME}
+    TrackingCorrectorLib
     imgui::imgui
-    GLEW::GLEW
-    glfw
-    glm::glm
-    nlohmann_json::nlohmann_json
 )
+
+enable_testing()
+
+add_executable(TrackingCorrectorTests
+    tests/SkeletonTest.cpp)
+
+target_link_libraries(TrackingCorrectorTests
+    TrackingCorrectorLib
+    GTest::gtest
+    GTest::gtest_main
+)
+
+include(GoogleTest)
+gtest_discover_tests(TrackingCorrectorTests)
