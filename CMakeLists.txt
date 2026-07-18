@@ -4,6 +4,7 @@ project(TrackingCorrector CXX)
 set(CMAKE_CXX_STANDARD 20)
 
 find_package(imgui REQUIRED)
+find_package(imguizmo REQUIRED)
 find_package(glfw3 REQUIRED)
 find_package(glew REQUIRED)
 find_package(glm REQUIRED)
@@ -13,6 +14,10 @@ find_package(GTest REQUIRED)
 add_library(TrackingCorrectorLib STATIC
     src/model/Skeleton.cpp
     src/model/Skeleton.h
+    src/model/IkRigConfig.cpp
+    src/model/IkRigConfig.h
+    src/model/IkRig.cpp
+    src/model/IkRig.h
     src/view/Scene.cpp
     src/view/Scene.h)
 
@@ -38,12 +43,14 @@ target_compile_definitions(${PROJECT_NAME} PUBLIC IMGUI_IMPL_OPENGL_LOADER_GLEW)
 target_link_libraries(${PROJECT_NAME}
     TrackingCorrectorLib
     imgui::imgui
+    imguizmo::imguizmo
 )
 
 enable_testing()
 
 add_executable(TrackingCorrectorTests
-    tests/SkeletonTest.cpp)
+    tests/SkeletonTest.cpp
+    tests/IkRigTest.cpp)
 
 target_link_libraries(TrackingCorrectorTests
     TrackingCorrectorLib

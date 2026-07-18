@@ -3,6 +3,7 @@
 #include <glm/glm.hpp>
 
 class Skeleton;
+class IkRig;
 struct GLFWwindow;
 
 // Owns the camera, the light, and everything needed to draw the scene.
@@ -24,6 +25,13 @@ public:
     // Draws the skeleton: one gray pyramid per bone, base at the parent joint, apex at the joint.
     void renderSkeleton(const Skeleton& skeleton);
 
+    // Draws one small marker per IK target at its world position/rotation.
+    void renderTargets(const IkRig& rig);
+
+    // Camera matrices from the last beginFrame(); needed by ImGuizmo.
+    const glm::mat4& viewMatrix() const { return m_view; }
+    const glm::mat4& projectionMatrix() const { return m_projection; }
+
 private:
     void drawGrid();
 
@@ -35,6 +43,8 @@ private:
     bool m_dragging = false;
     double m_lastCursorX = 0.0;
     double m_lastCursorY = 0.0;
+    glm::mat4 m_view{1.0f};
+    glm::mat4 m_projection{1.0f};
     glm::mat4 m_viewProj{1.0f};
 
     // Single directional light.
@@ -44,8 +54,10 @@ private:
     // GL resources.
     unsigned int m_lineProgram = 0;
     unsigned int m_meshProgram = 0;
-    unsigned int m_gridVao = 0, m_gridVbo = 0;  // static 1m ground grid
-    unsigned int m_boneVao = 0, m_boneVbo = 0;  // static unit pyramid mesh
+    unsigned int m_gridVao = 0, m_gridVbo = 0;      // static 1m ground grid
+    unsigned int m_boneVao = 0, m_boneVbo = 0;      // static unit pyramid mesh
+    unsigned int m_markerVao = 0, m_markerVbo = 0;  // static unit octahedron mesh
     int m_gridVertexCount = 0;
     int m_boneVertexCount = 0;
+    int m_markerVertexCount = 0;
 };

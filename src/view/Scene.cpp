@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "model/IkRig.h"
 #include "model/Skeleton.h"
 
 namespace
@@ -141,6 +142,28 @@ std::vector<Vertex> buildPyramid()
     }
     return data;
 }
+// Unit octahedron (6 vertices at ±1 on each axis, 8 triangle faces).
+std::vector<Vertex> buildOctahedron()
+{
+    constexpr glm::vec3 px(1.0f, 0.0f, 0.0f), nx(-1.0f, 0.0f, 0.0f);
+    constexpr glm::vec3 py(0.0f, 1.0f, 0.0f), ny(0.0f, -1.0f, 0.0f);
+    constexpr glm::vec3 pz(0.0f, 0.0f, 1.0f), nz(0.0f, 0.0f, -1.0f);
+    const glm::vec3 faces[8][3] = {
+        {px, py, pz}, {pz, py, nx}, {nx, py, nz}, {nz, py, px},
+        {px, nz, ny}, {nz, nx, ny}, {nx, pz, ny}, {pz, px, ny},
+    };
+
+    std::vector<Vertex> data;
+    data.reserve(8 * 3);
+    for (const auto& face : faces)
+    {
+        // Face normals all point outward from the origin for a regular octahedron.
+        glm::vec3 normal = glm::normalize(face[0] + face[1] + face[2]);
+        for (const glm::vec3& v : face)
+            data.push_back({v, normal});
+    }
+    return data;
+}
 } // namespace
 
 Scene::Scene()
@@ -182,6 +205,19 @@ Scene::Scene()
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, normal)));
     glEnableVertexAttribArray(1);
 
+    // Static octahedron mesh for IK target markers.
+    const std::vector<Vertex> octahedron = buildOctahedron();
+    m_markerVertexCount = static_cast<int>(octahedron.size());
+    glGenVertexArrays(1, &m_markerVao);
+    glGenBuffers(1, &m_markerVbo);
+    glBindVertexArray(m_markerVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_markerVbo);
+    glBufferData(GL_ARRAY_BUFFER, octahedron.size() * sizeof(Vertex), octahedron.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, position)));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, normal)));
+    glEnableVertexAttribArray(1);
+
     glBindVertexArray(0);
 }
 
@@ -189,8 +225,10 @@ Scene::~Scene()
 {
     glDeleteProgram(m_lineProgram);
     glDeleteProgram(m_meshProgram);
+    glDeleteBuffers(1, &m_markerVbo);
     glDeleteBuffers(1, &m_boneVbo);
     glDeleteBuffers(1, &m_gridVbo);
+    glDeleteVertexArrays(1, &m_markerVao);
     glDeleteVertexArrays(1, &m_boneVao);
     glDeleteVertexArrays(1, &m_gridVao);
 }
@@ -200,7 +238,7 @@ void Scene::update(GLFWwindow* window, bool allowInput)
     double x, y;
     glfwGetCursorPos(window, &x, &y);
 
-    const bool pressed = allowInput && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    const bool pressed = allowInput && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
     if (pressed)
     {
         if (m_dragging)
@@ -233,10 +271,10 @@ void Scene::beginFrame(int width, int height)
         m_distance * std::cos(m_pitch) * std::sin(m_yaw),
         m_distance * std::sin(m_pitch),
         m_distance * std::cos(m_pitch) * std::cos(m_yaw));
-    const glm::mat4 view = glm::lookAt(m_target + offset, m_target, glm::vec3(0.0f, 1.0f, 0.0f));
-    const glm::mat4 projection = glm::perspective(glm::radians(45.0f),
+    m_view = glm::lookAt(m_target + offset, m_target, glm::vec3(0.0f, 1.0f, 0.0f));
+    m_projection = glm::perspective(glm::radians(45.0f),
         static_cast<float>(width) / static_cast<float>(height), 0.01f, 100.0f);
-    m_viewProj = projection * view;
+    m_viewProj = m_projection * m_view;
 
     drawGrid();
 }
@@ -288,6 +326,27 @@ void Scene::renderSkeleton(const Skeleton& skeleton)
             * scale(glm::mat4(1.0f), glm::vec3(radius, boneLength, radius));
         glUniformMatrix4fv(glGetUniformLocation(m_meshProgram, "uModel"), 1, GL_FALSE, &model[0][0]);
         glDrawArrays(GL_TRIANGLES, 0, m_boneVertexCount);
+    }
+
+    glBindVertexArray(0);
+}
+
+void Scene::renderTargets(const IkRig& rig)
+{
+    glUseProgram(m_meshProgram);
+    glUniformMatrix4fv(glGetUniformLocation(m_meshProgram, "uViewProj"), 1, GL_FALSE, &m_viewProj[0][0]);
+    glUniform3f(glGetUniformLocation(m_meshProgram, "uColor"), 0.95f, 0.55f, 0.10f);
+    glUniform3fv(glGetUniformLocation(m_meshProgram, "uLightDir"), 1, &m_lightDir[0]);
+    glUniform3fv(glGetUniformLocation(m_meshProgram, "uLightColor"), 1, &m_lightColor[0]);
+    glBindVertexArray(m_markerVao);
+    for (const IkTarget& target : rig.targets)
+    {
+        constexpr float markerRadius = 0.04f;
+        const glm::mat4 model = translate(glm::mat4(1.0f), target.position)
+            * mat4_cast(target.rotation)
+            * scale(glm::mat4(1.0f), glm::vec3(markerRadius));
+        glUniformMatrix4fv(glGetUniformLocation(m_meshProgram, "uModel"), 1, GL_FALSE, &model[0][0]);
+        glDrawArrays(GL_TRIANGLES, 0, m_markerVertexCount);
     }
 
     glBindVertexArray(0);

@@ -10,7 +10,10 @@ class TrackingCorrector(ConanFile):
     generators = "CMakeDeps", "CMakeToolchain"
 
     def requirements(self):
-        self.requires("imgui/cci.20230105+1.89.2.docking")
+        # force=True: imguizmo's recipe pins imgui/1.90.5; we keep the docking
+        # variant at the same version so both get one consistent ImGui.
+        self.requires("imgui/1.90.5-docking", force=True)
+        self.requires("imguizmo/cci.20231114")
         self.requires("glfw/3.4")
         self.requires("glew/2.2.0")
         self.requires("glm/1.0.1")
@@ -18,10 +21,15 @@ class TrackingCorrector(ConanFile):
         self.requires("gtest/1.15.0")
 
     def generate(self):
-        copy(self, "*glfw*", os.path.join(self.dependencies["imgui"].package_folder,
-            "res", "bindings"), os.path.join(self.source_folder, "src", "bindings"))
-        copy(self, "*opengl3*", os.path.join(self.dependencies["imgui"].package_folder,
-            "res", "bindings"), os.path.join(self.source_folder, "src", "bindings"))
+        # Keep vendored backends in sync with the resolved ImGui version.
+        for pattern in ("*glfw*", "*opengl3*"):
+            src_dir = os.path.join(self.dependencies["imgui"].package_folder, "res", "bindings")
+            dst_dir = os.path.join(self.source_folder, "src", "bindings")
+            copy(self, pattern, src_dir, dst_dir)
+            for name in os.listdir(dst_dir):
+                path = os.path.join(dst_dir, name)
+                if os.path.isfile(path):
+                    os.utime(path, None)
 
     def layout(self):
         cmake_layout(self)
