@@ -1,12 +1,12 @@
 #include "IkRig.h"
 
+#include "Error.h"
 #include "IkMath.h"
 
 #include <algorithm>
-#include <stdexcept>
 
-IkRig::IkRig(Skeleton s, IkRigConfig c)
-	: skeleton(std::move(s)), config(std::move(c))
+IkRig::IkRig(Skeleton s)
+	: skeleton(std::move(s))
 {
 	for (size_t i = 0; i < skeleton.joints.size(); ++i)
 	{
@@ -14,16 +14,23 @@ IkRig::IkRig(Skeleton s, IkRigConfig c)
 		if (!skeleton.joints[i].parentIndex)
 			rootIndex_ = static_cast<int>(i);
 	}
+}
 
-	for (const JointLimits& limit : config.limits)
+void IkRig::loadConfig(IkRigConfig c)
+{
+	for (const JointLimits& limit : c.limits)
 		if (!jointIndexOf_.contains(limit.bone))
-			throw std::runtime_error("ikrig: limits bone '" + limit.bone + "' not in skeleton");
+			throw Error("ikrig: limits bone '" + limit.bone + "' not in skeleton");
 
-	for (const TargetConfig& targetConfig : config.targets)
+	// Build into locals; the current config/targets are replaced only after
+	// every target validated and bound successfully.
+	std::vector<SolverBinding> bindings;
+	std::vector<IkTarget> newTargets;
+	for (const TargetConfig& targetConfig : c.targets)
 	{
 		const int jointIndex = findJoint(targetConfig.bone);
 		if (jointIndex < 0)
-			throw std::runtime_error("ikrig: target bone '" + targetConfig.bone + "' not in skeleton");
+			throw Error("ikrig: target bone '" + targetConfig.bone + "' not in skeleton");
 
 		SolverBinding binding;
 		binding.solver = targetConfig.solver;
@@ -31,13 +38,13 @@ IkRig::IkRig(Skeleton s, IkRigConfig c)
 		{
 		case SolverType::Anchor:
 			if (jointIndex != rootIndex_)
-				throw std::runtime_error("ikrig: anchor target '" + targetConfig.bone
+				throw Error("ikrig: anchor target '" + targetConfig.bone
 					+ "' must be the root joint");
 			break;
 		case SolverType::Chain:
 		{
 			if (jointIndex == rootIndex_)
-				throw std::runtime_error("ikrig: chain target '" + targetConfig.bone
+				throw Error("ikrig: chain target '" + targetConfig.bone
 					+ "' must not be the root joint");
 			// Ancestor path from the target joint up to (excluding) the root.
 			for (int i = jointIndex; i != rootIndex_; i = *skeleton.joints[i].parentIndex)
@@ -53,7 +60,7 @@ IkRig::IkRig(Skeleton s, IkRigConfig c)
 			{
 				const std::optional<int>& parent = skeleton.joints[indices[slot + 1]].parentIndex;
 				if (!parent)
-					throw std::runtime_error("ikrig: two_bone target '" + targetConfig.bone
+					throw Error("ikrig: two_bone target '" + targetConfig.bone
 						+ "' needs at least 3 ancestors");
 				indices[slot] = *parent;
 			}
@@ -61,10 +68,10 @@ IkRig::IkRig(Skeleton s, IkRigConfig c)
 
 			// The middle bone (j2) carries the bend pole in its limits entry.
 			const std::string& middleBone = skeleton.joints[indices[2]].name;
-			const auto it = std::find_if(config.limits.begin(), config.limits.end(),
+			const auto it = std::find_if(c.limits.begin(), c.limits.end(),
 				[&middleBone](const JointLimits& limit) { return limit.bone == middleBone; });
-			if (it == config.limits.end() || !it->pole)
-				throw std::runtime_error("ikrig: two_bone target '" + targetConfig.bone
+			if (it == c.limits.end() || !it->pole)
+				throw Error("ikrig: two_bone target '" + targetConfig.bone
 					+ "' needs a pole on middle bone '" + middleBone + "' in limits");
 			binding.pole = *it->pole;
 			break;
@@ -73,10 +80,13 @@ IkRig::IkRig(Skeleton s, IkRigConfig c)
 
 		IkTarget target;
 		target.jointIndex = jointIndex;
-		targets.push_back(target);
-		bindings_.push_back(std::move(binding));
+		newTargets.push_back(target);
+		bindings.push_back(std::move(binding));
 	}
 
+	config = std::move(c);
+	bindings_ = std::move(bindings);
+	targets = std::move(newTargets);
 	resetTargets();
 }
 

@@ -19,7 +19,8 @@ Requires Conan 2 and Visual Studio 2022. Windows-only (`WIN32` exe, `WinMain` en
 - `CMakeUserPresets.json` only includes the Conan-generated presets file and is
   gitignored — regenerate via the .bat, don't hand-edit.
 - Running the exe creates `user-skeleton.json` / `user-ikrig.json` in the working
-  directory on first start (load-or-create pattern); invalid files fall back to defaults.
+  directory on first start (load-or-create pattern); invalid files fall back to defaults
+  with the full error logged to `logs/trackingcorrector.log` (rotating, 3×5MB).
 
 ## Directory / file map
 
@@ -41,6 +42,11 @@ tests/                GoogleTest suites mirroring src/model.
 
 ### Model layer (`src/model/`) — no GL dependencies
 
+- `Error` (`Error.h`) — exception type for all errors thrown by our code; `what()`
+  includes the throw site (file:line) via `std::source_location`. Derives from
+  `std::runtime_error`.
+- `GlmJson.h` — nlohmann `to_json`/`from_json` for `glm::vec3`, defined in
+  `namespace glm` so ADL finds them; shared by all config (de)serialization.
 - `Skeleton` (`Skeleton.h/.cpp`) — flat `std::vector<Joint>`, kept sorted
   parent-before-child. `Joint` = `{name, parentIndex (optional<int>), restOffset (vec3,
   meters), localRot (quat, identity at rest, NOT serialized)}`. The skeleton also has a
@@ -53,8 +59,9 @@ tests/                GoogleTest suites mirroring src/model.
     `head, neck, upper_chest, chest, waist, hip, left/right_{hip,upper_leg,lower_leg,
     foot,shoulder,upper_arm,lower_arm,hand}`.
   - Free `to_json`/`from_json` — schema `{ "bones": [{name, parent|null, offset:[x,y,z]}] }`.
-    Deserialization validates: non-empty, unique names, exactly 1 root, known parents,
-    no cycles; re-sorts parent-before-child. Throws `std::runtime_error`.
+    `from_json` parses declaratively (nlohmann), then assembles: resolves parent names
+    to indices, sorts parent-before-child, seeds `rootPosition` — throws `Error` on
+    duplicate names, unknown parents, cycles, or not exactly 1 root.
   - `computeWorldTransforms(skeleton)` — hierarchical FK, one linear pass:
     `worldRot = parentWorldRot * localRot`, `pos = parentPos + worldRot * restOffset`.
     Returns positions + world rotations (`WorldTransforms`).
@@ -70,8 +77,11 @@ tests/                GoogleTest suites mirroring src/model.
   of that bone's hinge in the limb socket's frame, required on the middle bone of
   two-bone chains). `makeDefault()`: anchor on head, chain on hip, two-bone on
   hands/feet; hinge limits + poles for knees/elbows (knees forward −Z, elbows
-  down/back), cones for hips/shoulders. JSON validated, throws on errors. Kept
-  separate from `Skeleton` because the milestone-3 avatar skeleton has no IK.
+  down/back), cones for hips/shoulders. `from_json` parses declaratively (via
+  per-struct `from_json` for `TargetConfig`/`JointLimits`), then calls the
+  `validate()` member (duplicate bones, pole non-zero, twist/swing ranges; throws
+  `Error`). Kept separate from `Skeleton` because the milestone-3 avatar skeleton
+  has no IK.
 - `IkSolvers` (`IkSolvers.h/.cpp`) — `IkTarget` = `{jointIndex, position, rotation}`
   (a world-space manipulation handle) + the three per-target solver stages, each
   unit-testable in isolation:
@@ -85,11 +95,13 @@ tests/                GoogleTest suites mirroring src/model.
     socket's frame.
 - `IkRig` (`IkRig.h/.cpp`) — owns `Skeleton` + `IkRigConfig` + `std::vector<IkTarget>`.
   No bone names in code: solver structure is derived from config + skeleton topology
-  at construction (`SolverBinding` per target). Constructor validates (throws
-  `std::runtime_error`): target/limit bones exist; anchor target is the root joint;
-  chain target is not the root (chain = ancestor path root→joint); two_bone target
-  has ≥3 ancestors (tip→j2→j1→socket walk) and its middle bone (j2) carries a `pole`
-  in the limits. Places targets at the rest pose. `resetTargets()`, `targetName(i)`
+  (`SolverBinding` per target). `IkRig(Skeleton)` never throws — the rig starts
+  config-less (no targets, `solve()` idles at rest pose). `loadConfig(config)`
+  validates (throws `Error`): target/limit bones exist; anchor target is the root
+  joint; chain target is not the root (chain = ancestor path root→joint); two_bone
+  target has ≥3 ancestors (tip→j2→j1→socket walk) and its middle bone (j2) carries
+  a `pole` in the limits. On failure the previous config/targets stay active.
+  On success: places targets at the rest pose. `resetTargets()`, `targetName(i)`
   for UI labels.
   - `IkRig::solve()` — re-derives the full pose from current targets every call
     (stateless, call each frame). Stages by solver type, regardless of config order:
@@ -113,12 +125,14 @@ tests/                GoogleTest suites mirroring src/model.
 
 ### Entry point (`src/main.cpp`)
 
-`WinMain`: GLFW window (OpenGL 3.3 core) → GLEW init → ImGui + ImGuizmo setup →
-load-or-create both JSON configs → construct `IkRig` (falls back to default config if
-invalid). Per frame: `Scene::update/beginFrame`, then `manipulateTargets()` (one
+`WinMain`: spdlog rotating-file logger (`logs/trackingcorrector.log`) → GLFW window
+(OpenGL 3.3 core) → GLEW init → ImGui + ImGuizmo setup → load-or-create both JSON
+configs (one `loadOrCreate<T>` template; any exception logged with type + message +
+source site) → `IkRig` + `loadConfig` (falls back to default config if invalid).
+Per frame: `Scene::update/beginFrame`, then `manipulateTargets()` (one
 `ImGuizmo::Manipulate` per target, `SetID` per index; T/R keys or radio buttons switch
 translate/rotate), then `rig->solve()` ("Solve IK targets" checkbox toggles it), then
-`renderSkeleton/renderTargets`, then the ImGui panel (status, per-target
+`renderSkeleton/renderTargets`, then the ImGui panel (per-target
 position/rotation drag fields, reset button).
 
 ## Libraries (Conan, see `conanfile.py`)
@@ -131,6 +145,7 @@ position/rotation drag fields, reset button).
 | imgui | 1.90.5-**docking** | UI; `force=True` overrides imguizmo's pinned imgui — do not change version without reading conanfile comment |
 | imguizmo | cci.20231114 | Translate/rotate gizmos for IK targets |
 | nlohmann_json | 3.11.3 | Config (de)serialization via `to_json`/`from_json` free functions |
+| spdlog | 1.15.3 | Error/info logging to rotating file; linked to the exe only — model layer stays log-free |
 | gtest | 1.15.0 | Tests, wired via `gtest_discover_tests` |
 
 ## Conventions & gotchas
@@ -141,6 +156,14 @@ position/rotation drag fields, reset button).
 - Serialization: `localRot` and `Skeleton::rootPosition` are runtime-only; rest
   orientation is always identity for this skeleton (bone-roll problem is deferred to
   milestone 3 — see `doc/plan.md`).
+- Error handling: our code throws `Error` (never from constructors — use separate
+  functions like `IkRig::loadConfig` when validation must throw); its `what()`
+  includes the throw site, so catch blocks just log `e.what()`. JSON shape errors
+  are left to nlohmann — declarative `from_json` with `GlmJson.h` vec3 serializers,
+  no manual `is_array`/`size` checks. Catch blocks live at the app boundary
+  (main.cpp). Third-party calls are wrapped at the call site (rethrown as `Error`
+  with the original message) so the log says which call threw. No `catch (...)`;
+  what we can't report fully, we don't catch.
 - Indentation: 4 spaces in `src/model`, `src/view`, `tests`; tabs in `src/main.cpp`.
   Match the file you're editing.
 - `src/bindings/` and `CMakeUserPresets.json` are generated — never edit by hand.

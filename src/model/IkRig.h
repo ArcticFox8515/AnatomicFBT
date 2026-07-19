@@ -18,11 +18,18 @@ public:
     IkRigConfig config;
     std::vector<IkTarget> targets;
 
-    // Validates the config against the skeleton and initializes targets at the
-    // rest pose. Throws std::runtime_error when a target/limit bone is missing,
-    // an anchor target is not the root joint, a two_bone target has fewer than
-    // 3 ancestors, or a two_bone chain's middle bone has no pole in the limits.
-    IkRig(Skeleton s, IkRigConfig c);
+    // Non-throwing: stores the skeleton and indexes its joints. The rig
+    // starts config-less (no targets; solve() then just keeps the rest
+    // pose) until loadConfig() is called.
+    explicit IkRig(Skeleton s);
+
+    // Validates the config against the skeleton, derives solver stages from
+    // config + topology, and places targets at the rest pose. Throws Error
+    // when a target/limit bone is missing, an anchor target is not the root
+    // joint, a two_bone target has fewer than 3 ancestors, or a two_bone
+    // chain's middle bone has no pole in the limits. On failure the
+    // previous config/targets stay active.
+    void loadConfig(IkRigConfig c);
 
     // Solves joint localRot values (and rootPosition) from the current target
     // poses. Stages, in config-declared solver types: anchors -> chains ->

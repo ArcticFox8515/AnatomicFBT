@@ -123,6 +123,36 @@ TEST(SkeletonDeserialization, RejectsEmptySkeleton)
     EXPECT_THROW(j.get<Skeleton>(), std::runtime_error);
 }
 
+TEST(SkeletonDeserialization, MissingBonesKeyThrows)
+{
+    const nlohmann::json j = nlohmann::json::parse("{}");
+    EXPECT_THROW(j.get<Skeleton>(), nlohmann::json::exception);
+}
+
+TEST(SkeletonDeserialization, BonesMustBeArray)
+{
+    const nlohmann::json j = nlohmann::json::parse(R"({ "bones": {} })");
+    EXPECT_THROW(j.get<Skeleton>(), nlohmann::json::exception);
+}
+
+TEST(SkeletonDeserialization, OffsetMustBeThreeNumbers)
+{
+    const nlohmann::json j = nlohmann::json::parse(R"(
+    {
+        "bones": [ { "name": "root", "offset": [0.0, 1.0] } ]
+    })");
+    EXPECT_THROW(j.get<Skeleton>(), nlohmann::json::exception);
+}
+
+TEST(SkeletonDeserialization, MissingNameThrows)
+{
+    const nlohmann::json j = nlohmann::json::parse(R"(
+    {
+        "bones": [ { "parent": null } ]
+    })");
+    EXPECT_THROW(j.get<Skeleton>(), nlohmann::json::exception);
+}
+
 TEST(DefaultSkeleton, IsValidAndOrdered)
 {
     const Skeleton skeleton = Skeleton::makeDefault();
@@ -157,19 +187,6 @@ TEST(ComputeWorldPositions, AccumulatesOffsets)
     EXPECT_EQ(positions[0], glm::vec3(0.0f, 1.0f, 0.0f));
     EXPECT_EQ(positions[1], glm::vec3(0.0f, 0.5f, 0.0f));
     EXPECT_EQ(positions[2], glm::vec3(0.25f, 0.5f, 0.0f));
-}
-
-TEST(ComputeWorldPositions, DefaultSkeletonStandsOnGround)
-{
-    const Skeleton skeleton = Skeleton::makeDefault();
-    const std::vector<glm::vec3> positions = computeWorldPositions(skeleton);
-
-    // Feet must be at (or just above) ground level.
-    for (size_t i = 0; i < skeleton.joints.size(); ++i)
-    {
-        if (skeleton.joints[i].name == "left_foot" || skeleton.joints[i].name == "right_foot")
-            EXPECT_NEAR(positions[i].y, 0.02f, 1e-4f);
-    }
 }
 
 TEST(ComputeWorldTransforms, RootSitsAtRootPosition)

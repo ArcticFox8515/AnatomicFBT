@@ -3,6 +3,16 @@
 #include "model/IkRigConfig.h"
 #include "model/Skeleton.h"
 
+namespace
+{
+IkRig makeDefaultRig()
+{
+    IkRig rig(Skeleton::makeDefault());
+    rig.loadConfig(IkRigConfig::makeDefault());
+    return rig;
+}
+} // namespace
+
 TEST(IkRigConfigSerialization, DefaultRoundTrip)
 {
     const IkRigConfig original = IkRigConfig::makeDefault();
@@ -46,7 +56,7 @@ TEST(IkRigConfigDeserialization, LegacyStringTargetsThrow)
     {
         "targets": ["head", "hip"]
     })");
-    EXPECT_THROW(j.get<IkRigConfig>(), std::runtime_error);
+    EXPECT_THROW(j.get<IkRigConfig>(), nlohmann::json::exception);
 }
 
 TEST(IkRigConfigDeserialization, InvalidPoleThrows)
@@ -55,7 +65,7 @@ TEST(IkRigConfigDeserialization, InvalidPoleThrows)
     {
         "limits": [ { "bone": "x", "pole": [0.0, 0.0] } ]
     })");
-    EXPECT_THROW(j.get<IkRigConfig>(), std::runtime_error);
+    EXPECT_THROW(j.get<IkRigConfig>(), nlohmann::json::exception);
 }
 
 TEST(IkRigConfigDeserialization, InvalidLimitThrows)
@@ -74,9 +84,21 @@ TEST(IkRigConfigDeserialization, MissingSectionsGetDefaults)
     EXPECT_TRUE(config.limits.empty());
 }
 
+TEST(IkRigConfigDeserialization, TargetsMustBeArray)
+{
+    const nlohmann::json j = nlohmann::json::parse(R"({ "targets": "head" })");
+    EXPECT_THROW(j.get<IkRigConfig>(), nlohmann::json::exception);
+}
+
+TEST(IkRigConfigDeserialization, TargetMissingBoneThrows)
+{
+    const nlohmann::json j = nlohmann::json::parse(R"({ "targets": [ { "solver": "anchor" } ] })");
+    EXPECT_THROW(j.get<IkRigConfig>(), nlohmann::json::exception);
+}
+
 TEST(IkRigConstruction, TargetsBindToJointsAndInitAtRestPose)
 {
-    IkRig rig(Skeleton::makeDefault(), IkRigConfig::makeDefault());
+    IkRig rig = makeDefaultRig();
 
     ASSERT_EQ(rig.targets.size(), rig.config.targets.size());
     const std::vector<glm::vec3> restPositions = computeWorldPositions(rig.skeleton);
@@ -89,51 +111,70 @@ TEST(IkRigConstruction, TargetsBindToJointsAndInitAtRestPose)
     }
 }
 
-TEST(IkRigConstruction, UnknownTargetBoneThrows)
+TEST(IkRigLoadConfig, UnknownTargetBoneThrows)
 {
     IkRigConfig config;
     config.targets = {{"does_not_exist", SolverType::Anchor}};
-    EXPECT_THROW(IkRig(Skeleton::makeDefault(), config), std::runtime_error);
+    IkRig rig(Skeleton::makeDefault());
+    EXPECT_THROW(rig.loadConfig(config), std::runtime_error);
 }
 
-TEST(IkRigConstruction, UnknownLimitBoneThrows)
+TEST(IkRigLoadConfig, UnknownLimitBoneThrows)
 {
     IkRigConfig config;
     config.limits.push_back(JointLimits{"does_not_exist", 0.0f, 0.0f, 90.0f});
-    EXPECT_THROW(IkRig(Skeleton::makeDefault(), config), std::runtime_error);
+    IkRig rig(Skeleton::makeDefault());
+    EXPECT_THROW(rig.loadConfig(config), std::runtime_error);
 }
 
-TEST(IkRigConstruction, AnchorOnNonRootThrows)
+TEST(IkRigLoadConfig, AnchorOnNonRootThrows)
 {
     IkRigConfig config;
     config.targets = {{"hip", SolverType::Anchor}};
-    EXPECT_THROW(IkRig(Skeleton::makeDefault(), config), std::runtime_error);
+    IkRig rig(Skeleton::makeDefault());
+    EXPECT_THROW(rig.loadConfig(config), std::runtime_error);
 }
 
-TEST(IkRigConstruction, ChainOnRootThrows)
+TEST(IkRigLoadConfig, ChainOnRootThrows)
 {
     IkRigConfig config;
     config.targets = {{"head", SolverType::Chain}};
-    EXPECT_THROW(IkRig(Skeleton::makeDefault(), config), std::runtime_error);
+    IkRig rig(Skeleton::makeDefault());
+    EXPECT_THROW(rig.loadConfig(config), std::runtime_error);
 }
 
-TEST(IkRigConstruction, TwoBoneWithTooFewAncestorsThrows)
+TEST(IkRigLoadConfig, TwoBoneWithTooFewAncestorsThrows)
 {
     IkRigConfig config;
     config.targets = {{"upper_chest", SolverType::TwoBone}};  // head->neck->upper_chest: only 2
-    EXPECT_THROW(IkRig(Skeleton::makeDefault(), config), std::runtime_error);
+    IkRig rig(Skeleton::makeDefault());
+    EXPECT_THROW(rig.loadConfig(config), std::runtime_error);
 }
 
-TEST(IkRigConstruction, TwoBoneWithoutMiddleBonePoleThrows)
+TEST(IkRigLoadConfig, TwoBoneWithoutMiddleBonePoleThrows)
 {
     IkRigConfig config;
     config.targets = {{"left_foot", SolverType::TwoBone}};  // no limits entry -> no pole
-    EXPECT_THROW(IkRig(Skeleton::makeDefault(), config), std::runtime_error);
+    IkRig rig(Skeleton::makeDefault());
+    EXPECT_THROW(rig.loadConfig(config), std::runtime_error);
+}
+
+TEST(IkRigLoadConfig, FailedLoadKeepsPreviousConfig)
+{
+    IkRig rig = makeDefaultRig();
+    const size_t targetCount = rig.targets.size();
+
+    IkRigConfig bad;
+    bad.targets = {{"does_not_exist", SolverType::Anchor}};
+    EXPECT_THROW(rig.loadConfig(bad), std::runtime_error);
+
+    EXPECT_EQ(rig.targets.size(), targetCount);
+    EXPECT_EQ(rig.config.targets.size(), IkRigConfig::makeDefault().targets.size());
 }
 
 TEST(IkRig, ResetTargetsRestoresRestPose)
 {
-    IkRig rig(Skeleton::makeDefault(), IkRigConfig::makeDefault());
+    IkRig rig = makeDefaultRig();
     rig.targets[0].position = glm::vec3(5.0f, 5.0f, 5.0f);
     rig.targets[0].rotation = glm::quat(0.0f, 1.0f, 0.0f, 0.0f);
 
@@ -172,7 +213,7 @@ void expectVecNear(const glm::vec3& actual, const glm::vec3& expected, float tol
 
 TEST(IkRigSolve, RestTargetsReproduceRestPose)
 {
-    IkRig rig(Skeleton::makeDefault(), IkRigConfig::makeDefault());
+    IkRig rig = makeDefaultRig();
     const std::vector<glm::vec3> rest = computeWorldPositions(rig.skeleton);
 
     rig.solve();
@@ -185,7 +226,7 @@ TEST(IkRigSolve, RestTargetsReproduceRestPose)
 
 TEST(IkRigSolve, MovingAllTargetsTranslatesWholeSkeleton)
 {
-    IkRig rig(Skeleton::makeDefault(), IkRigConfig::makeDefault());
+    IkRig rig = makeDefaultRig();
     const std::vector<glm::vec3> rest = computeWorldPositions(rig.skeleton);
     const glm::vec3 delta(0.3f, -0.2f, 0.1f);
     for (IkTarget& target : rig.targets)
@@ -201,7 +242,7 @@ TEST(IkRigSolve, MovingAllTargetsTranslatesWholeSkeleton)
 
 TEST(IkRigSolve, HeadTargetDrivesRootPose)
 {
-    IkRig rig(Skeleton::makeDefault(), IkRigConfig::makeDefault());
+    IkRig rig = makeDefaultRig();
     IkTarget* head = findTarget(rig, "head");
     ASSERT_NE(head, nullptr);
     head->position = glm::vec3(0.5f, 1.2f, -0.3f);
@@ -220,7 +261,7 @@ TEST(IkRigSolve, HeadTargetDrivesRootPose)
 
 TEST(IkRigSolve, FootTargetPlacesAnkleWithKneeForward)
 {
-    IkRig rig(Skeleton::makeDefault(), IkRigConfig::makeDefault());
+    IkRig rig = makeDefaultRig();
     IkTarget* foot = findTarget(rig, "left_foot");
     ASSERT_NE(foot, nullptr);
     foot->position = glm::vec3(0.1f, 0.5f, -0.4f);
@@ -242,7 +283,7 @@ TEST(IkRigSolve, FootTargetPlacesAnkleWithKneeForward)
 
 TEST(IkRigSolve, HandTargetPlacesWrist)
 {
-    IkRig rig(Skeleton::makeDefault(), IkRigConfig::makeDefault());
+    IkRig rig = makeDefaultRig();
     IkTarget* hand = findTarget(rig, "right_hand");
     ASSERT_NE(hand, nullptr);
     hand->position = glm::vec3(-0.5f, 1.3f, -0.3f);
@@ -258,7 +299,7 @@ TEST(IkRigSolve, HandTargetPlacesWrist)
 
 TEST(IkRigSolve, HipTargetCrouchesSpine)
 {
-    IkRig rig(Skeleton::makeDefault(), IkRigConfig::makeDefault());
+    IkRig rig = makeDefaultRig();
     IkTarget* hip = findTarget(rig, "hip");
     ASSERT_NE(hip, nullptr);
     hip->position = glm::vec3(0.0f, 1.3f, 0.0f);  // 0.4m below the head: spine must curl
@@ -278,7 +319,7 @@ TEST(IkRigSolve, HipTargetCrouchesSpine)
 
 TEST(IkRigSolve, OverreachedFootStretchesLegWithoutExploding)
 {
-    IkRig rig(Skeleton::makeDefault(), IkRigConfig::makeDefault());
+    IkRig rig = makeDefaultRig();
     IkTarget* foot = findTarget(rig, "left_foot");
     ASSERT_NE(foot, nullptr);
     foot->position = glm::vec3(0.1f, 0.02f, -3.0f);  // far beyond leg length
@@ -294,4 +335,47 @@ TEST(IkRigSolve, OverreachedFootStretchesLegWithoutExploding)
     const glm::vec3 aim = glm::normalize(goal - wt.positions[socket]);
     const glm::vec3 ankleDir = glm::normalize(wt.positions[ankle] - wt.positions[socket]);
     EXPECT_NEAR(glm::dot(ankleDir, aim), 1.0f, 1e-3f);
+}
+
+TEST(IkRigConfigValidation, DuplicateTargetsThrow)
+{
+    IkRigConfig config;
+    config.targets = {{"head", SolverType::Anchor}, {"head", SolverType::Chain}};
+    EXPECT_THROW(config.validate(), std::runtime_error);
+}
+
+TEST(IkRigConfigValidation, DuplicateLimitsThrow)
+{
+    IkRigConfig config;
+    config.limits = {JointLimits{"x", 0.0f, 0.0f, 90.0f}, JointLimits{"x", 0.0f, 0.0f, 90.0f}};
+    EXPECT_THROW(config.validate(), std::runtime_error);
+}
+
+TEST(IkRigConfigValidation, ZeroPoleThrows)
+{
+    IkRigConfig config;
+    JointLimits limit;
+    limit.bone = "x";
+    limit.pole = glm::vec3(0.0f);
+    config.limits = {limit};
+    EXPECT_THROW(config.validate(), std::runtime_error);
+}
+
+TEST(IkRigConfigValidation, TwistRangeThrows)
+{
+    IkRigConfig config;
+    config.limits = {JointLimits{"x", 10.0f, -10.0f, 90.0f}};
+    EXPECT_THROW(config.validate(), std::runtime_error);
+}
+
+TEST(IkRigConfigValidation, SwingConeOutOfRangeThrows)
+{
+    IkRigConfig config;
+    config.limits = {JointLimits{"x", 0.0f, 0.0f, 270.0f}};
+    EXPECT_THROW(config.validate(), std::runtime_error);
+}
+
+TEST(IkRigConfigValidation, DefaultConfigPasses)
+{
+    EXPECT_NO_THROW(IkRigConfig::makeDefault().validate());
 }

@@ -1,7 +1,6 @@
 #include <cstdlib>
+#include <exception>
 #include <fstream>
-#include <optional>
-#include <stdexcept>
 #include <string>
 #include <imgui.h>
 #include <ImGuizmo.h>
@@ -12,6 +11,8 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <nlohmann/json.hpp>
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/rotating_file_sink.h>
 #include "bindings/imgui_impl_glfw.h"
 #include "bindings/imgui_impl_opengl3.h"
 #include "model/IkRig.h"
@@ -22,58 +23,35 @@
 constexpr char kSkeletonPath[] = "user-skeleton.json";
 constexpr char kIkRigPath[] = "user-ikrig.json";
 
-// Loads the skeleton from the JSON file; creates the file with the default
-// skeleton if missing; falls back to the default skeleton (in memory only)
-// if the file exists but is invalid.
-static Skeleton loadOrCreateSkeleton(const char* path, std::string& statusMessage)
+// Loads T from a JSON file; creates the file with the default if missing;
+// falls back to the default (in memory only) if the file exists but is
+// invalid. Any failure is logged with the full exception detail in what().
+template <typename T>
+static T loadOrCreate(const char* path)
 {
 	std::ifstream file(path);
 	if (file)
 	{
 		try
 		{
-			Skeleton skeleton = nlohmann::json::parse(file).get<Skeleton>();
-			statusMessage = std::string("Loaded skeleton from ") + path;
-			return skeleton;
+			nlohmann::json j = nlohmann::json::parse(file);
+			T value = j.get<T>();
+
+			spdlog::info("Loaded {}", path);
+			return value;
 		}
 		catch (const std::exception& e)
 		{
-			statusMessage = std::string("Failed to load ") + path + ": " + e.what() + " Using default skeleton.";
-			return Skeleton::makeDefault();
+			spdlog::error("Failed to load {}; using defaults: {}", path, e.what());
+			return T::makeDefault();
 		}
 	}
 
-	Skeleton skeleton = Skeleton::makeDefault();
+	T value = T::makeDefault();
 	std::ofstream out(path);
-	out << nlohmann::json(skeleton).dump(2) << '\n';
-	statusMessage = std::string("Created default ") + path;
-	return skeleton;
-}
-
-// Same load-or-create pattern as the skeleton, for the IK rig config.
-static IkRigConfig loadOrCreateIkRigConfig(const char* path, std::string& statusMessage)
-{
-	std::ifstream file(path);
-	if (file)
-	{
-		try
-		{
-			IkRigConfig config = nlohmann::json::parse(file).get<IkRigConfig>();
-			statusMessage = std::string("Loaded IK rig from ") + path;
-			return config;
-		}
-		catch (const std::exception& e)
-		{
-			statusMessage = std::string("Failed to load ") + path + ": " + e.what() + " Using default IK rig.";
-			return IkRigConfig::makeDefault();
-		}
-	}
-
-	IkRigConfig config = IkRigConfig::makeDefault();
-	std::ofstream out(path);
-	out << nlohmann::json(config).dump(2) << '\n';
-	statusMessage = std::string("Created default ") + path;
-	return config;
+	out << nlohmann::json(value).dump(2) << '\n';
+	spdlog::info("Created default {}", path);
+	return value;
 }
 
 // Draws one ImGuizmo per IK target; ImGuizmo::SetID activates whichever the mouse grabs.
@@ -99,6 +77,10 @@ static void manipulateTargets(IkRig& rig, const glm::mat4& view, const glm::mat4
 
 int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 {
+	spdlog::set_default_logger(
+		spdlog::rotating_logger_mt("tc", "logs/trackingcorrector.log", 5 * 1024 * 1024, 3));
+	spdlog::flush_on(spdlog::level::err);
+
 	if (!glfwInit())
 	{
 		return 1;
@@ -134,20 +116,23 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 	// Setup Dear ImGui style
 	ImGui::StyleColorsDark();
 
-	std::string statusMessage;
-	const Skeleton skeleton = loadOrCreateSkeleton(kSkeletonPath, statusMessage);
-	std::string ikStatusMessage;
-	IkRigConfig ikConfig = loadOrCreateIkRigConfig(kIkRigPath, ikStatusMessage);
-
-	std::optional<IkRig> rig;
+	const Skeleton skeleton = loadOrCreate<Skeleton>(kSkeletonPath);
+	IkRig rig(skeleton);
 	try
 	{
-		rig.emplace(skeleton, ikConfig);
+		rig.loadConfig(loadOrCreate<IkRigConfig>(kIkRigPath));
 	}
 	catch (const std::exception& e)
 	{
-		ikStatusMessage = std::string("IK rig invalid: ") + e.what() + " Using default IK rig.";
-		rig.emplace(Skeleton(skeleton), IkRigConfig::makeDefault());
+		spdlog::error("IK rig config invalid; using default IK rig: {}", e.what());
+		try
+		{
+			rig.loadConfig(IkRigConfig::makeDefault());
+		}
+		catch (const std::exception& e2)
+		{
+			spdlog::error("Default IK rig does not fit the skeleton; running without IK targets: {}", e2.what());
+		}
 	}
 
 	// Scene holds GL resources; scope it so it is destroyed before GLFW shutdown.
@@ -178,15 +163,13 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 
 			ImGuizmo::SetOrthographic(false);
 			ImGuizmo::SetRect(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height));
-			manipulateTargets(*rig, scene.viewMatrix(), scene.projectionMatrix(), gizmoOperation);
-			rig->solve();
-			scene.renderSkeleton(rig->skeleton);
-			scene.renderTargets(*rig);
+			manipulateTargets(rig, scene.viewMatrix(), scene.projectionMatrix(), gizmoOperation);
+			rig.solve();
+			scene.renderSkeleton(rig.skeleton);
+			scene.renderTargets(rig);
 
 			ImGui::Begin("TrackingCorrector");
 			ImGui::Text("ImGui initialized. %.1f FPS", io.Framerate);
-			ImGui::TextUnformatted(statusMessage.c_str());
-			ImGui::TextUnformatted(ikStatusMessage.c_str());
 
 			ImGui::SeparatorText("Gizmo mode");
 			bool translate = gizmoOperation == ImGuizmo::TRANSLATE;
@@ -204,11 +187,11 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 			}
 
 			ImGui::SeparatorText("IK targets");
-			for (size_t i = 0; i < rig->targets.size(); ++i)
+			for (size_t i = 0; i < rig.targets.size(); ++i)
 			{
-				IkTarget& target = rig->targets[i];
+				IkTarget& target = rig.targets[i];
 				ImGui::PushID(static_cast<int>(i));
-				if (ImGui::TreeNode(rig->targetName(i).c_str()))
+				if (ImGui::TreeNode(rig.targetName(i).c_str()))
 				{
 					ImGui::DragFloat3("Position", &target.position.x, 0.01f);
 					glm::vec3 eulerDeg = glm::degrees(glm::eulerAngles(target.rotation));
@@ -219,7 +202,7 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 				ImGui::PopID();
 			}
 			if (ImGui::Button("Reset targets"))
-				rig->resetTargets();
+				rig.resetTargets();
 			ImGui::End();
 
 			// Render dear imgui into screen

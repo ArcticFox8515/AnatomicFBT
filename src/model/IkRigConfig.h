@@ -45,7 +45,21 @@ public:
     // Anchor on head, chain on hip, two-bone on hands/feet; hinge limits with
     // poles for knees/elbows, cones for hips/shoulders.
     static IkRigConfig makeDefault();
+
+    // Semantic checks: duplicate target/limit bones, pole non-zero,
+    // twistMin <= twistMax, swingCone in [0, 180]. Throws Error on the first
+    // violation found. Called by from_json; IkRig::loadConfig does the
+    // skeleton-dependent checks.
+    void validate() const;
 };
 
 void to_json(nlohmann::json& j, const IkRigConfig& config);
+
+// JSON -> config, declaratively (missing sections -> empty vectors), then
+// config.validate(). nlohmann exceptions on malformed JSON shapes.
 void from_json(const nlohmann::json& j, IkRigConfig& config);
+
+void to_json(nlohmann::json& j, const TargetConfig& target);
+void from_json(const nlohmann::json& j, TargetConfig& target);
+void to_json(nlohmann::json& j, const JointLimits& limit);
+void from_json(const nlohmann::json& j, JointLimits& limit);

@@ -9,9 +9,12 @@ find_package(glfw3 REQUIRED)
 find_package(glew REQUIRED)
 find_package(glm REQUIRED)
 find_package(nlohmann_json REQUIRED)
+find_package(spdlog REQUIRED)
 find_package(GTest REQUIRED)
 
 add_library(TrackingCorrectorLib STATIC
+    src/model/Error.h
+    src/model/GlmJson.h
     src/model/Skeleton.cpp
     src/model/Skeleton.h
     src/model/IkRigConfig.cpp
@@ -48,6 +51,7 @@ target_link_libraries(${PROJECT_NAME}
     TrackingCorrectorLib
     imgui::imgui
     imguizmo::imguizmo
+    spdlog::spdlog
 )
 
 enable_testing()

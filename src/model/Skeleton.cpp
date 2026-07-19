@@ -1,6 +1,8 @@
 #include "Skeleton.h"
 
-#include <stdexcept>
+#include "Error.h"
+#include "GlmJson.h"
+
 #include <unordered_map>
 #include <unordered_set>
 
@@ -9,31 +11,16 @@ namespace
 struct RawBone
 {
     std::string name;
-    std::string parent;
-    bool hasParent = false;
+    std::optional<std::string> parent;
     glm::vec3 offset{0.0f, 0.0f, 0.0f};
 };
 
-RawBone parseBone(const nlohmann::json& bone)
+void from_json(const nlohmann::json& j, RawBone& bone)
 {
-    RawBone raw;
-    raw.name = bone.at("name").get<std::string>();
-
-    if (bone.contains("parent") && !bone.at("parent").is_null())
-    {
-        raw.hasParent = true;
-        raw.parent = bone.at("parent").get<std::string>();
-    }
-
-    if (bone.contains("offset"))
-    {
-        const nlohmann::json& arr = bone.at("offset");
-        if (!arr.is_array() || arr.size() != 3)
-            throw std::runtime_error("bone '" + raw.name + "': offset must be an array of 3 numbers");
-        raw.offset = glm::vec3(arr[0].get<float>(), arr[1].get<float>(), arr[2].get<float>());
-    }
-
-    return raw;
+    j.at("name").get_to(bone.name);
+    if (const auto it = j.find("parent"); it != j.end() && !it->is_null())
+        bone.parent = it->get<std::string>();
+    bone.offset = j.value("offset", glm::vec3{0.0f});
 }
 } // namespace
 
@@ -48,42 +35,23 @@ void to_json(nlohmann::json& j, const Skeleton& skeleton)
             bone["parent"] = skeleton.joints[*joint.parentIndex].name;
         else
             bone["parent"] = nullptr;
-        bone["offset"] = {joint.restOffset.x, joint.restOffset.y, joint.restOffset.z};
+        bone["offset"] = joint.restOffset;
         j["bones"].push_back(std::move(bone));
     }
 }
 
 void from_json(const nlohmann::json& j, Skeleton& skeleton)
 {
-    const nlohmann::json& bones = j.at("bones");
-    if (!bones.is_array())
-        throw std::runtime_error("skeleton: 'bones' must be an array");
-
-    std::vector<RawBone> raw;
-    raw.reserve(bones.size());
-    for (const nlohmann::json& bone : bones)
-        raw.push_back(parseBone(bone));
-
-    if (raw.empty())
-        throw std::runtime_error("skeleton: no bones");
+    const std::vector<RawBone> raw = j.at("bones").get<std::vector<RawBone>>();
 
     std::unordered_set<std::string> names;
     for (const RawBone& bone : raw)
-        if (!names.insert(bone.name).second)
-            throw std::runtime_error("skeleton: duplicate bone name '" + bone.name + "'");
-
-    int rootCount = 0;
+        names.insert(bone.name);
     for (const RawBone& bone : raw)
-        if (!bone.hasParent)
-            ++rootCount;
-    if (rootCount != 1)
-        throw std::runtime_error("skeleton: expected exactly 1 root bone, got " + std::to_string(rootCount));
+        if (bone.parent && !names.contains(*bone.parent))
+            throw Error("skeleton: bone '" + bone.name + "' has unknown parent '" + *bone.parent + "'");
 
-    for (const RawBone& bone : raw)
-        if (bone.hasParent && !names.contains(bone.parent))
-            throw std::runtime_error("skeleton: bone '" + bone.name + "' has unknown parent '" + bone.parent + "'");
-
-    // Sort parent-before-child.
+    // Sort parent-before-child, resolving parent names to indices.
     std::vector<Joint> joints;
     joints.reserve(raw.size());
     std::unordered_map<std::string, int> indexOf;
@@ -98,9 +66,9 @@ void from_json(const nlohmann::json& j, Skeleton& skeleton)
                 continue;
 
             std::optional<int> parentIndex = std::nullopt;
-            if (raw[i].hasParent)
+            if (raw[i].parent)
             {
-                const auto it = indexOf.find(raw[i].parent);
+                const auto it = indexOf.find(*raw[i].parent);
                 if (it == indexOf.end())
                     continue; // parent not placed yet
                 parentIndex = it->second;
@@ -110,20 +78,30 @@ void from_json(const nlohmann::json& j, Skeleton& skeleton)
             joint.name = raw[i].name;
             joint.parentIndex = parentIndex;
             joint.restOffset = raw[i].offset;
-            indexOf[joint.name] = static_cast<int>(joints.size());
+            if (!indexOf.emplace(joint.name, static_cast<int>(joints.size())).second)
+                throw Error("skeleton: duplicate bone name '" + joint.name + "'");
             joints.push_back(std::move(joint));
             placed[i] = true;
             --remaining;
             progress = true;
         }
         if (!progress)
-            throw std::runtime_error("skeleton: bones contain a cycle");
+            throw Error("skeleton: bones contain a cycle");
     }
 
-    skeleton.joints = std::move(joints);
-    for (const Joint& joint : skeleton.joints)
+    Skeleton result;
+    result.joints = std::move(joints);
+    int rootCount = 0;
+    for (const Joint& joint : result.joints)
         if (!joint.parentIndex)
-            skeleton.rootPosition = joint.restOffset;
+        {
+            ++rootCount;
+            result.rootPosition = joint.restOffset;
+        }
+    if (rootCount != 1)
+        throw Error("skeleton: expected exactly 1 root bone, got " + std::to_string(rootCount));
+
+    skeleton = std::move(result);
 }
 
 Skeleton Skeleton::makeDefault()
