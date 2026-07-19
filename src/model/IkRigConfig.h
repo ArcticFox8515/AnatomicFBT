@@ -10,7 +10,7 @@
 enum class SolverType
 {
     Anchor,   // rigidly pin the root joint to the target
-    Chain,    // interpolate the root->joint chain (spine-style)
+    Chain,    // swing/curl the root->joint chain (spine-style), end bone takes target rotation
     TwoBone,  // closed-form two-bone limb IK, tip bone takes target rotation
 };
 

@@ -12,8 +12,10 @@ glm::vec3 anyPerpendicular(const glm::vec3& v);
 // Handles (near-)parallel and (near-)antiparallel inputs.
 glm::quat quatFromTo(const glm::vec3& from, const glm::vec3& to);
 
-// Closed-form two-bone IK result: world orientations for the two bones of a chain
-// (root -> middle -> end), e.g. thigh + shin or upper arm + forearm.
+// Closed-form two-bone IK result: world-space delta rotations from the rest
+// pose for the two bones of a chain (root -> middle -> end), e.g. thigh + shin.
+// Each is identity when the solved bone stays along restDir; compose with the
+// bone's rest-frame orientation (rot * restFrame) to get a world orientation.
 struct TwoBoneIkResult
 {
     glm::quat rot1{1.0f, 0.0f, 0.0f, 0.0f};  // bone from rootPos to the middle joint

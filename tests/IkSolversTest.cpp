@@ -2,6 +2,7 @@
 #include "model/IkSolvers.h"
 #include "model/Skeleton.h"
 
+#include <cmath>
 #include <glm/gtc/quaternion.hpp>
 
 namespace
@@ -114,6 +115,100 @@ TEST(SolveChain, EndBoneBlendsTowardTargetRotation)
     EXPECT_NEAR(glm::abs(glm::dot(solved.rotations[3], target.rotation)), 1.0f, 1e-4f);
 }
 
+TEST(SolveChain, RotatedRootKeepsEndOnIdentityTarget)
+{
+    // Regression: rotating the root (e.g. the head anchor pitching) must not
+    // corrupt the end bone's orientation when its own target is unrotated.
+    Skeleton skeleton = makeChainSkeleton();
+    const std::vector<glm::vec3> rest = computeWorldPositions(skeleton);
+
+    skeleton.joints[0].localRot = glm::angleAxis(glm::radians(90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+
+    IkTarget target;
+    target.jointIndex = 3;
+    target.position = rest[3];  // end target stays put in world space
+    target.rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+
+    const WorldTransforms wt = computeWorldTransforms(skeleton);
+    solveChain(skeleton, wt, 0, {1, 2, 3}, target);
+
+    const WorldTransforms solved = computeWorldTransforms(skeleton);
+    expectVecNear(solved.positions[3], target.position, 1e-3f);
+    EXPECT_NEAR(glm::abs(glm::dot(solved.rotations[3], target.rotation)), 1.0f, 1e-3f);
+}
+
+TEST(SolveChain, RotatedRootWithRollKeepsEndOnIdentityTarget)
+{
+    Skeleton skeleton = makeChainSkeleton();
+    const std::vector<glm::vec3> rest = computeWorldPositions(skeleton);
+
+    skeleton.joints[0].localRot = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+
+    IkTarget target;
+    target.jointIndex = 3;
+    target.position = rest[3];
+    target.rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+
+    const WorldTransforms wt = computeWorldTransforms(skeleton);
+    solveChain(skeleton, wt, 0, {1, 2, 3}, target);
+
+    const WorldTransforms solved = computeWorldTransforms(skeleton);
+    expectVecNear(solved.positions[3], target.position, 1e-3f);
+    EXPECT_NEAR(glm::abs(glm::dot(solved.rotations[3], target.rotation)), 1.0f, 1e-3f);
+}
+
+TEST(SolveChain, SwingTargetRotationKeepsPositionExact)
+{
+    // Regression: a target rotation perpendicular to the chain axis (a
+    // "swing", e.g. hip roll) must not displace the end bone's position.
+    // The target sits above the rest pose so the tilted end bone stays
+    // reachable (at full extension any end-bone tilt overreaches).
+    Skeleton skeleton = makeChainSkeleton();
+
+    IkTarget target;
+    target.jointIndex = 3;
+    target.position = glm::vec3(0.0f, 0.55f, 0.0f);
+    target.rotation = glm::angleAxis(glm::radians(30.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+
+    const WorldTransforms wt = computeWorldTransforms(skeleton);
+    solveChain(skeleton, wt, 0, {1, 2, 3}, target);
+
+    const WorldTransforms solved = computeWorldTransforms(skeleton);
+    expectVecNear(solved.positions[3], target.position, 1e-3f);
+    EXPECT_NEAR(glm::abs(glm::dot(solved.rotations[3], target.rotation)), 1.0f, 1e-3f);
+}
+
+TEST(SolveChain, TwistDistributesMonotonicallyAlongChain)
+{
+    Skeleton skeleton = makeChainSkeleton();
+    const std::vector<glm::vec3> rest = computeWorldPositions(skeleton);
+
+    IkTarget target;
+    target.jointIndex = 3;
+    target.position = rest[3];
+    // Rotation about the chain's own axis (Y): pure twist.
+    target.rotation = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+
+    const WorldTransforms wt = computeWorldTransforms(skeleton);
+    solveChain(skeleton, wt, 0, {1, 2, 3}, target);
+
+    const WorldTransforms solved = computeWorldTransforms(skeleton);
+    expectVecNear(solved.positions[3], target.position, 1e-3f);
+    EXPECT_NEAR(glm::abs(glm::dot(solved.rotations[3], target.rotation)), 1.0f, 1e-3f);
+
+    // Twist angle about Y increases monotonically from root to end.
+    const auto twistDeg = [](const glm::quat& q)
+    {
+        return glm::degrees(2.0f * std::atan2(q.y, q.w));
+    };
+    const float twistA = twistDeg(solved.rotations[1]);
+    const float twistB = twistDeg(solved.rotations[2]);
+    const float twistC = twistDeg(solved.rotations[3]);
+    EXPECT_GT(twistB, twistA + 1.0f);
+    EXPECT_GT(twistC, twistB + 1.0f);
+    EXPECT_NEAR(twistC, 90.0f, 1.0f);
+}
+
 TEST(SolveChain, WorksOnDefaultSkeletonSpine)
 {
     Skeleton skeleton = Skeleton::makeDefault();
@@ -177,6 +272,35 @@ TEST(SolveTwoBone, OverreachStretchesTowardGoal)
     const glm::vec3 aim = glm::normalize(goal - wt.positions[socket]);
     const glm::vec3 dir = glm::normalize(wt.positions[j2] - wt.positions[socket]);
     EXPECT_NEAR(glm::dot(dir, aim), 1.0f, 1e-3f);
+}
+
+TEST(SolveTwoBone, RotatedSocketStillReachesTarget)
+{
+    // Regression: solveTwoBoneIk returns rest-relative world rotations; with a
+    // rotated socket (e.g. a rolled hip) they must be composed on top of the
+    // socket frame, or the whole limb points off by the socket rotation.
+    Skeleton skeleton = Skeleton::makeDefault();
+    const int hip = findJoint(skeleton, "hip");
+    skeleton.joints[hip].localRot = glm::angleAxis(glm::radians(30.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+
+    const int socket = findJoint(skeleton, "left_hip");
+    const int j1 = findJoint(skeleton, "left_upper_leg");
+    const int j2 = findJoint(skeleton, "left_lower_leg");
+    const int tip = findJoint(skeleton, "left_foot");
+
+    IkTarget target;
+    target.jointIndex = tip;
+    target.position = glm::vec3(0.1f, 0.4f, -0.2f);  // within reach of the rolled socket
+
+    const WorldTransforms rest = computeWorldTransforms(skeleton);
+    solveTwoBone(skeleton, rest, socket, j1, j2, tip, target, glm::vec3(0.0f, 0.0f, -1.0f));
+
+    const WorldTransforms wt = computeWorldTransforms(skeleton);
+    const glm::vec3 goal = target.position - target.rotation * skeleton.joints[tip].restOffset;
+    expectVecNear(wt.positions[j2], goal, 1e-3f);
+    expectVecNear(wt.positions[tip], target.position, 1e-3f);
+    // The knee still bends toward the (socket-frame) pole, roughly forward.
+    EXPECT_LT(wt.positions[j1].z, -0.05f);
 }
 
 TEST(SolveTwoBone, TipBoneTakesTargetRotation)

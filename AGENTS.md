@@ -86,13 +86,18 @@ tests/                GoogleTest suites mirroring src/model.
   (a world-space manipulation handle) + the three per-target solver stages, each
   unit-testable in isolation:
   - `solveAnchor` — rigidly pins the root joint (`rootPosition` + root `localRot`).
-  - `solveChain` — arc-swing/curl interpolation of a root-hanging chain (any length)
-    so its end lands on the target; orientations blended root→target — exact in
-    position when within reach, otherwise the end-bone orientation wins (documented
-    interpolation trade-off).
+  - `solveChain` — spine-style chain IK: the end bone rigidly takes the target
+    rotation and the remaining segments arc-swing/curl so the end bone's base lands
+    on the implied goal (`target.position − target.rotation * restOffset_end`).
+    Segment orientations = minimal swing from the root frame onto the solved
+    directions + leftover twist about the chain distributed by length (head yaw
+    rolls down the spine gradually). End position AND rotation are exact within
+    reach; on overreach the chain stretches straight and the end rotation still wins.
   - `solveTwoBone` — two-bone analytic limb IK (socket→j1→j2→tip): places j2 on the
     goal implied by the tip target, tip bone takes the target rotation; pole in the
-    socket's frame.
+    socket's frame. `solveTwoBoneIk` returns rest-relative world rotations, so they
+    compose on top of the socket frame (`worldRot = result.rot * socketRot`) — do
+    not use them as bone world rotations directly (breaks under rotated sockets).
 - `IkRig` (`IkRig.h/.cpp`) — owns `Skeleton` + `IkRigConfig` + `std::vector<IkTarget>`.
   No bone names in code: solver structure is derived from config + skeleton topology
   (`SolverBinding` per target). `IkRig(Skeleton)` never throws — the rig starts

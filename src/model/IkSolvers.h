@@ -21,11 +21,14 @@ struct IkTarget
 // jointIndex must be the skeleton's root joint.
 void solveAnchor(Skeleton& skeleton, int jointIndex, const IkTarget& target);
 
-// Chain interpolation (SlimeVR-style): swings/curls the chain hanging off
-// rootIndex so its end joint lands on the target, blending bone orientations
-// from identity (world) toward the target rotation along the chain. Exact in
-// position when the target is within chain length; otherwise the end bone
-// orientation wins over exact position (documented interpolation trade-off).
+// Chain IK (spine-style): the end bone rigidly takes the target rotation, and
+// the remaining segments swing/curl (arc model) so the end bone's base lands
+// on the implied goal. Segment orientations use the minimal swing from the
+// root frame onto their solved directions, plus the leftover twist about the
+// chain distributed by length (so e.g. head yaw rolls down the spine
+// gradually). End position and rotation are exact when the goal is within the
+// segment chain's reach; otherwise the chain stretches straight toward the
+// goal and the end rotation still wins.
 // chain lists joint indices root-side first; each must be the parent of the next.
 void solveChain(Skeleton& skeleton, const WorldTransforms& wt, int rootIndex,
                 const std::vector<int>& chain, const IkTarget& target);

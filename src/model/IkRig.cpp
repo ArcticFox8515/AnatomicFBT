@@ -100,7 +100,7 @@ void IkRig::solve()
 		if (bindings_[i].solver == SolverType::Anchor)
 			solveAnchor(skeleton, targets[i].jointIndex, targets[i]);
 
-	// 2. Chains: interpolate root->joint chains toward their targets.
+	// 2. Chains: swing/curl root->joint chains onto their targets.
 	{
 		const WorldTransforms wt = computeWorldTransforms(skeleton);
 		for (size_t i = 0; i < targets.size(); ++i)
