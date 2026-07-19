@@ -259,6 +259,33 @@ TEST(IkRigSolve, HeadTargetDrivesRootPose)
     EXPECT_NEAR(glm::abs(glm::dot(rig.skeleton.joints[root].localRot, head->rotation)), 1.0f, 1e-4f);
 }
 
+TEST(IkRigSolve, SolveFromExplicitGoalsLeavesTargetsUntouched)
+{
+    IkRig rig = makeDefaultRig();
+    IkTarget* head = findTarget(rig, "head");
+    ASSERT_NE(head, nullptr);
+    const size_t headIndex = static_cast<size_t>(head - rig.targets.data());
+    const glm::vec3 targetBefore = rig.targets[headIndex].position;
+
+    std::vector<IkTarget> goals = rig.targets;
+    goals[headIndex].position = glm::vec3(0.5f, 1.2f, -0.3f);
+
+    rig.solve(goals);
+
+    // The goal drove the solve...
+    EXPECT_EQ(rig.skeleton.rootPosition, glm::vec3(0.5f, 1.2f, -0.3f));
+    // ...while the stored target kept its pose.
+    EXPECT_EQ(rig.targets[headIndex].position, targetBefore);
+}
+
+TEST(IkRigSolve, SolveFromGoalsWithWrongSizeThrows)
+{
+    IkRig rig = makeDefaultRig();
+
+    EXPECT_THROW(rig.solve({}), std::runtime_error);
+    EXPECT_THROW(rig.solve(std::vector<IkTarget>(rig.targets.size() + 1)), std::runtime_error);
+}
+
 TEST(IkRigSolve, FootTargetPlacesAnkleWithKneeForward)
 {
     IkRig rig = makeDefaultRig();

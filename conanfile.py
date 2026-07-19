@@ -19,6 +19,7 @@ class TrackingCorrector(ConanFile):
         self.requires("glm/1.0.1")
         self.requires("nlohmann_json/3.11.3")
         self.requires("spdlog/1.15.3")
+        self.requires("openvr/1.16.8")
         self.requires("gtest/1.15.0")
 
     def generate(self):

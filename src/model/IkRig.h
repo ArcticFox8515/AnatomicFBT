@@ -37,6 +37,12 @@ public:
     // full pose. Targets absent from the config produce no stage.
     void solve();
 
+    // Same as solve(), but consumes the given goals instead of the stored
+    // targets — targets are left untouched. goals must parallel targets
+    // (same size); intended for goals derived from the targets (e.g.
+    // calibration offsets applied on a copy). Throws Error on size mismatch.
+    void solve(const std::vector<IkTarget>& goals);
+
     // Resets the skeleton to the rest pose and targets to match.
     void resetTargets();
 

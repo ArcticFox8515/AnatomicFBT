@@ -30,11 +30,13 @@ CMakeLists.txt        3 targets: TrackingCorrectorLib (static), TrackingCorrecto
                       TrackingCorrectorTests (gtest). C++20.
 conanfile.py          Dependencies + copies ImGui backends into src/bindings on generate.
 doc/plan.md           4-milestone design doc. Read before architectural changes.
-src/main.cpp          Entry point: GLFW/GL/ImGui init, config load-or-create, main loop,
+src/main.cpp          Entry point: GLFW/GL/ImGui init, config load-or-create, OpenVR init
+                      (falls back to manual mode), mode state machine, main loop,
                       split-screen rendering (IK skeleton left, retargeted avatar right),
                       ImGuizmo manipulation of IK targets, ImGui control panel.
 src/model/            Pure data + JSON serialization. NO OpenGL — unit-testable.
 src/view/             All OpenGL rendering (Scene).
+src/vr/               OpenVR device tracking (exe-only; model stays OpenVR-free).
 src/bindings/         Vendored ImGui backends (imgui_impl_glfw/opengl3). AUTO-COPIED by
                       conanfile.py from the imgui package — gitignored, never edit.
 tests/                GoogleTest suites mirroring src/model.
@@ -116,7 +118,10 @@ tests/                GoogleTest suites mirroring src/model.
   On success: places targets at the rest pose. `resetTargets()`, `targetName(i)`
   for UI labels.
   - `IkRig::solve()` — re-derives the full pose from current targets every call
-    (stateless, call each frame). Stages by solver type, regardless of config order:
+    (stateless, call each frame). `solve(goals)` overload consumes an explicit
+    goal vector instead of the stored targets (throws `Error` on size mismatch) —
+    capture mode solves from offset-corrected copies while `targets` keep the raw
+    device poses for rendering. Stages by solver type, regardless of config order:
     all anchors → all chains → all two-bone limbs → joint-limits post-pass
     (`clampSwingTwist` on each `JointLimits` bone's `localRot`).
 - `Retarget` (`Retarget.h/.cpp`) — pose transfer from the IK skeleton onto the avatar
@@ -130,24 +135,53 @@ tests/                GoogleTest suites mirroring src/model.
   `dst.rootPosition` so the anchor joint (dst joint named like the src root, i.e.
   `head` = the fixed HMD) lands exactly on its src world position.
   `unmatchedBones(dst, map)` lists dst joints with no match (logged once at startup).
+- `Pose` (`Pose.h`) — header-only `Pose{position, rotation}` + `compose`/`inverse`
+  rigid-pose math + `yawOnly(quat)` (heading without pitch/roll). Shared by the VR
+  provider and calibration.
+- `TrackerCalibration` (`TrackerCalibration.h/.cpp`) — device→target binding for
+  capture mode, OpenVR-free (devices arrive as `(int id, Pose)` pairs).
+  `assignDevicesToTargets(devicePositions, targetPositions)` — greedy nearest-pair
+  matching (user T-poses, so each tracker is closest to its own target).
+  `calibrate(assignment, devices, boneWorldPoses)` stores per-target
+  `offset = inverse(devicePose) * boneWorldPose`. `applyDevicePoses(devices,
+  rig.targets)` writes the RAW device pose into each bound target (what gets
+  rendered; missing devices leave the target untouched); `applyOffsets(goals)`
+  transforms targets into solver goals (`goal = target * offset`, on a copy).
+  `clear()` on (re-)entering calibration.
 
 ### View layer (`src/view/`)
 
 - `Scene` (`Scene.h/.cpp`) — owns ALL GL resources (RAII: created after GLEW init,
   destroyed before GLFW shutdown — keep the scope in `main.cpp` intact):
-  - Orbit camera: fixed target (0,1,0) and distance 3.5, RMB-drag changes yaw/pitch
+  - Orbit camera: target (0,1,0) by default, distance 3.5, RMB-drag changes yaw/pitch
     (`update(window, allowInput)` — pass `allowInput=false` when ImGui/gizmo captures
-    the mouse). ONE camera shared by both viewports, so the halves always match.
+    the mouse). `setCameraTarget` moves the orbit center — VR modes call it per frame
+    with the HMD's XZ position so the skeleton stays in view. ONE camera shared by
+    both viewports, so the halves always match.
   - `beginFrame(w,h)` — clears the full framebuffer + depth test only.
     `setViewport(x,y,w,h)` — viewport + camera matrices for its aspect + ground grid;
     call once per viewport (left half: IK skeleton, right half: avatar).
   - `renderSkeleton()` — one stretched gray pyramid per bone (base at parent joint,
     apex at joint). `renderTargets()` — small orange octahedron per IK target.
+    Both are rendered unconditionally every frame; the only per-mode render
+    difference is the gizmos (ManualPose only).
   - Two shader programs compiled from embedded GLSL 330 strings: flat-color line
     program (grid) and diffuse-lit mesh program (pyramids/octahedra, one directional
     light). Static unit meshes in VBOs, per-instance `uModel` matrix.
   - `viewMatrix()/projectionMatrix()` — from the last `setViewport`; needed by
     ImGuizmo (call right after the left viewport).
+
+### VR layer (`src/vr/`) — exe-only, only place OpenVR headers are included
+
+- `OpenVrTracking` (`OpenVrTracking.h/.cpp`) — tracked-device provider. Header is
+  OpenVR-free: snapshots come out as `VrDeviceSnapshot{deviceIndex, VrDeviceKind,
+  Pose}` (model `Pose`; OpenVR's standing universe is RH/Y-up/meters like ours, so
+  `HmdMatrix34` transposes straight into glm). Non-throwing default constructor;
+  `init()` (`VRApplication_Background` — never launches SteamVR, fails fast when it
+  isn't running) throws `Error` and is retryable. `pollPoses()` — connected+valid
+  HMD/controller/tracker poses. `bothTriggersJustPressed()` — edge-detected
+  "second trigger goes down while the first is held" (calibration gesture).
+  Destructor calls `VR_Shutdown`.
 
 ### Entry point (`src/main.cpp`)
 
@@ -156,13 +190,28 @@ tests/                GoogleTest suites mirroring src/model.
 configs (one `loadOrCreate<T>` template taking a default-factory function pointer;
 any exception logged with type + message + source site) → `IkRig` + `loadConfig`
 (falls back to default config if invalid) → avatar `Skeleton` + `RetargetMap`
-(unmatched avatar bones logged once). Per frame: `Scene::update/beginFrame`, then the
-left pass (`setViewport(0,0,w/2,h)`, `ImGuizmo::SetRect` confined to the left half,
-`manipulateTargets()` — one `ImGuizmo::Manipulate` per target, `SetID` per index;
-T/R keys or radio buttons switch translate/rotate — `rig->solve()`,
-`renderSkeleton/renderTargets`), then `retargetPose()` and the right pass
-(`setViewport(w/2,0,…)`, `renderSkeleton(avatar)`), then the ImGui panel (per-target
-position/rotation drag fields, reset button).
+(unmatched avatar bones logged once) → `OpenVrTracking::init` (success → start in
+Calibration mode; failure → log + Manual Pose mode).
+
+Modes (`enum class Mode`): **ManualPose** — gizmo-dragged targets, `rig.solve()` each
+frame, no VR input. **Calibration** — no IK; skeleton rests with root aligned to the
+HMD (position + `yawOnly` heading), targets mirror raw poses of devices matched by
+proximity (`assignDevicesToTargets` live for UI feedback); both-triggers edge freezes
+the offsets via `TrackerCalibration::calibrate` and switches to Capture. **Capture** —
+`applyDevicePoses` writes raw device poses into the targets (so rendered markers show
+exactly what OpenVR reports, same as Calibration), `applyOffsets` turns a copy into
+solver goals, `rig.solve(captureGoals)` consumes them. Targets are never rewritten
+for display purposes.
+
+Per frame: `Scene::update/beginFrame`, mode update (calibration/capture VR logic —
+both also fill `lastDevices` for the UI and camera centering), camera follows the
+HMD's XZ position in VR modes (resets to origin in Manual), then the left pass (`setViewport(0,0,w/2,h)`, `ImGuizmo::SetRect` confined to the
+left half, `manipulateTargets()` in ManualPose only — T/R keys or radio buttons
+switch translate/rotate — `rig.solve()` in ManualPose, `rig.solve(captureGoals)`
+in Capture, `renderSkeleton/renderTargets` unconditionally), then `retargetPose()` and the right pass
+(`setViewport(w/2,0,…)`, `renderSkeleton(avatar)`), then the ImGui panel (mode
+switch buttons + SteamVR status, live device→target assignment in Calibration,
+per-target position/rotation drag fields, reset button).
 
 ## Libraries (Conan, see `conanfile.py`)
 
@@ -175,6 +224,7 @@ position/rotation drag fields, reset button).
 | imguizmo | cci.20231114 | Translate/rotate gizmos for IK targets |
 | nlohmann_json | 3.11.3 | Config (de)serialization via `to_json`/`from_json` free functions |
 | spdlog | 1.15.3 | Error/info logging to rotating file; linked to the exe only — model layer stays log-free |
+| openvr | 1.16.8 | SteamVR device poses + trigger input; linked to the exe only, headers only in `src/vr/` |
 | gtest | 1.15.0 | Tests, wired via `gtest_discover_tests` |
 
 ## Conventions & gotchas

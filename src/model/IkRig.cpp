@@ -92,32 +92,41 @@ void IkRig::loadConfig(IkRigConfig c)
 
 void IkRig::solve()
 {
+	solve(targets);
+}
+
+void IkRig::solve(const std::vector<IkTarget>& goals)
+{
+	if (goals.size() != targets.size())
+		throw Error("IkRig::solve: goals size (" + std::to_string(goals.size())
+		            + ") does not match targets size (" + std::to_string(targets.size()) + ")");
+
 	for (Joint& joint : skeleton.joints)
 		joint.localRot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 
-	// 1. Anchors: root rigidly pinned to the target.
-	for (size_t i = 0; i < targets.size(); ++i)
+	// 1. Anchors: root rigidly pinned to the goal.
+	for (size_t i = 0; i < goals.size(); ++i)
 		if (bindings_[i].solver == SolverType::Anchor)
-			solveAnchor(skeleton, targets[i].jointIndex, targets[i]);
+			solveAnchor(skeleton, goals[i].jointIndex, goals[i]);
 
-	// 2. Chains: swing/curl root->joint chains onto their targets.
+	// 2. Chains: swing/curl root->joint chains onto their goals.
 	{
 		const WorldTransforms wt = computeWorldTransforms(skeleton);
-		for (size_t i = 0; i < targets.size(); ++i)
+		for (size_t i = 0; i < goals.size(); ++i)
 			if (bindings_[i].solver == SolverType::Chain)
-				solveChain(skeleton, wt, rootIndex_, bindings_[i].chain, targets[i]);
+				solveChain(skeleton, wt, rootIndex_, bindings_[i].chain, goals[i]);
 	}
 
 	// 3. Limbs: two-bone analytic IK off the solved chain pose.
 	{
 		const WorldTransforms wt = computeWorldTransforms(skeleton);
-		for (size_t i = 0; i < targets.size(); ++i)
+		for (size_t i = 0; i < goals.size(); ++i)
 		{
 			if (bindings_[i].solver != SolverType::TwoBone)
 				continue;
 			const std::vector<int>& chain = bindings_[i].chain;
 			solveTwoBone(skeleton, wt, chain[0], chain[1], chain[2], chain[3],
-			             targets[i], bindings_[i].pole);
+			             goals[i], bindings_[i].pole);
 		}
 	}
 

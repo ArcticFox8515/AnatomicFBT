@@ -10,6 +10,7 @@ find_package(glew REQUIRED)
 find_package(glm REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(spdlog REQUIRED)
+find_package(openvr REQUIRED)
 find_package(GTest REQUIRED)
 
 add_library(TrackingCorrectorLib STATIC
@@ -27,6 +28,9 @@ add_library(TrackingCorrectorLib STATIC
     src/model/IkSolvers.h
     src/model/Retarget.cpp
     src/model/Retarget.h
+    src/model/Pose.h
+    src/model/TrackerCalibration.cpp
+    src/model/TrackerCalibration.h
     src/view/Scene.cpp
     src/view/Scene.h)
 
@@ -42,6 +46,9 @@ target_link_libraries(TrackingCorrectorLib PUBLIC
 add_executable(${PROJECT_NAME} WIN32
     src/main.cpp
 
+    src/vr/OpenVrTracking.cpp
+    src/vr/OpenVrTracking.h
+
     src/bindings/imgui_impl_glfw.cpp
     src/bindings/imgui_impl_glfw.h
     src/bindings/imgui_impl_opengl3.cpp
@@ -54,6 +61,7 @@ target_link_libraries(${PROJECT_NAME}
     imgui::imgui
     imguizmo::imguizmo
     spdlog::spdlog
+    openvr::openvr
 )
 
 enable_testing()
@@ -63,7 +71,8 @@ add_executable(TrackingCorrectorTests
     tests/IkRigTest.cpp
     tests/IkMathTest.cpp
     tests/IkSolversTest.cpp
-    tests/RetargetTest.cpp)
+    tests/RetargetTest.cpp
+    tests/TrackerCalibrationTest.cpp)
 
 target_link_libraries(TrackingCorrectorTests
     TrackingCorrectorLib

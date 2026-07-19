@@ -19,6 +19,10 @@ public:
     // Orbit camera from mouse input. allowInput should be false while ImGui captures the mouse.
     void update(GLFWwindow* window, bool allowInput);
 
+    // Moves the orbit center (yaw/pitch/distance are unchanged). Used to keep
+    // the view centered on the user in VR modes.
+    void setCameraTarget(const glm::vec3& target) { m_target = target; }
+
     // Clears the full framebuffer (color+depth) and enables depth testing.
     void beginFrame(int width, int height);
 
@@ -40,7 +44,7 @@ public:
 private:
     void drawGrid();
 
-    // Orbit camera: fixed target and distance, only yaw/pitch change.
+    // Orbit camera: orbit center + distance, only yaw/pitch change from mouse.
     glm::vec3 m_target{0.0f, 1.0f, 0.0f};
     float m_distance = 3.5f;
     float m_yaw = 0.0f;
