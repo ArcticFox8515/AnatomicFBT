@@ -64,7 +64,7 @@ void from_json(const nlohmann::json& j, IkRigConfig& config)
 IkRigConfig IkRigConfig::makeDefault()
 {
     IkRigConfig config;
-    config.targetBones = {"left_hand", "right_hand", "left_foot", "right_foot", "hip"};
+    config.targetBones = {"head", "left_hand", "right_hand", "left_foot", "right_foot", "hip"};
 
     auto add = [&config](std::string bone, float twistMin, float twistMax, float swingCone)
     {

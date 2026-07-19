@@ -171,3 +171,50 @@ TEST(ComputeWorldPositions, DefaultSkeletonStandsOnGround)
             EXPECT_NEAR(positions[i].y, 0.02f, 1e-4f);
     }
 }
+
+TEST(ComputeWorldTransforms, RootSitsAtRootPosition)
+{
+    const nlohmann::json j = nlohmann::json::parse(R"(
+    {
+        "bones": [
+            { "name": "root", "parent": null, "offset": [0.0, 1.0, 0.0] },
+            { "name": "child", "parent": "root", "offset": [0.0, -0.5, 0.0] }
+        ]
+    })");
+    Skeleton skeleton = j.get<Skeleton>();
+
+    // rootPosition is seeded from the root's restOffset.
+    EXPECT_EQ(skeleton.rootPosition, glm::vec3(0.0f, 1.0f, 0.0f));
+
+    // ...but FK places the root at rootPosition and ignores the restOffset.
+    skeleton.rootPosition = glm::vec3(5.0f, 6.0f, 7.0f);
+    const WorldTransforms wt = computeWorldTransforms(skeleton);
+    EXPECT_EQ(wt.positions[0], glm::vec3(5.0f, 6.0f, 7.0f));
+    EXPECT_EQ(wt.positions[1], glm::vec3(5.0f, 5.5f, 7.0f));
+}
+
+TEST(ComputeWorldTransforms, RotationsAccumulateHierarchically)
+{
+    const nlohmann::json j = nlohmann::json::parse(R"(
+    {
+        "bones": [
+            { "name": "root", "parent": null, "offset": [0.0, 1.0, 0.0] },
+            { "name": "child", "parent": "root", "offset": [0.0, -0.5, 0.0] },
+            { "name": "grandchild", "parent": "child", "offset": [0.25, 0.0, 0.0] }
+        ]
+    })");
+    Skeleton skeleton = j.get<Skeleton>();
+
+    const glm::quat rootRot = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    skeleton.joints[0].localRot = rootRot;
+
+    const WorldTransforms wt = computeWorldTransforms(skeleton);
+
+    // The child's offset is rotated by the root; the grandchild inherits both.
+    EXPECT_NEAR(wt.positions[1].x, 0.5f, 1e-5f);
+    EXPECT_NEAR(wt.positions[1].y, 1.0f, 1e-5f);
+    EXPECT_NEAR(wt.positions[2].x, 0.5f, 1e-5f);
+    EXPECT_NEAR(wt.positions[2].y, 1.25f, 1e-5f);
+    EXPECT_NEAR(glm::abs(glm::dot(wt.rotations[1], rootRot)), 1.0f, 1e-5f);
+    EXPECT_NEAR(glm::abs(glm::dot(wt.rotations[2], rootRot)), 1.0f, 1e-5f);
+}

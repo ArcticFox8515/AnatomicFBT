@@ -18,6 +18,8 @@ add_library(TrackingCorrectorLib STATIC
     src/model/IkRigConfig.h
     src/model/IkRig.cpp
     src/model/IkRig.h
+    src/model/IkMath.cpp
+    src/model/IkMath.h
     src/view/Scene.cpp
     src/view/Scene.h)
 
@@ -50,7 +52,8 @@ enable_testing()
 
 add_executable(TrackingCorrectorTests
     tests/SkeletonTest.cpp
-    tests/IkRigTest.cpp)
+    tests/IkRigTest.cpp
+    tests/IkMathTest.cpp)
 
 target_link_libraries(TrackingCorrectorTests
     TrackingCorrectorLib

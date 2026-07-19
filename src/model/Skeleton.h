@@ -21,6 +21,11 @@ class Skeleton
 public:
     std::vector<Joint> joints;
 
+    // World position of the root joint. Runtime-only (not serialized); initialized
+    // from the root's restOffset at load time. The root's restOffset is NOT applied
+    // by forward kinematics — it only seeds this value.
+    glm::vec3 rootPosition{0.0f, 0.0f, 0.0f};
+
     // Builds the default SlimeVR-style head-rooted skeleton.
     static Skeleton makeDefault();
 };
@@ -28,5 +33,18 @@ public:
 void to_json(nlohmann::json& j, const Skeleton& skeleton);
 void from_json(const nlohmann::json& j, Skeleton& skeleton);
 
-// One linear pass over the (parent-before-child sorted) joints.
+// FK result for the whole skeleton.
+struct WorldTransforms
+{
+    std::vector<glm::vec3> positions;
+    std::vector<glm::quat> rotations;  // world orientation of the bone ending at each joint
+};
+
+// Hierarchical forward kinematics, one linear pass over the (parent-before-child
+// sorted) joints. The root sits at skeleton.rootPosition with orientation
+// localRot. Children: worldRot = parentWorldRot * localRot,
+// pos = parentPos + worldRot * restOffset.
+WorldTransforms computeWorldTransforms(const Skeleton& skeleton);
+
+// Convenience wrapper: positions only.
 std::vector<glm::vec3> computeWorldPositions(const Skeleton& skeleton);

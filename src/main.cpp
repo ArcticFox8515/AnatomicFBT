@@ -152,8 +152,9 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 
 	// Scene holds GL resources; scope it so it is destroyed before GLFW shutdown.
 	{
-		Scene scene;
-		ImGuizmo::OPERATION gizmoOperation = ImGuizmo::TRANSLATE;
+	Scene scene;
+	ImGuizmo::OPERATION gizmoOperation = ImGuizmo::TRANSLATE;
+	bool ikEnabled = true;
 
 		while (!glfwWindowShouldClose(window))
 		{
@@ -172,22 +173,27 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 			ImGui::NewFrame();
 			ImGuizmo::BeginFrame();
 
-			const bool gizmoBusy = ImGuizmo::IsUsingAny() || ImGuizmo::IsOver();
-			scene.update(window, !io.WantCaptureMouse && !gizmoBusy);
-			scene.beginFrame(width, height);
-			scene.renderSkeleton(rig->skeleton);
-			scene.renderTargets(*rig);
+		const bool gizmoBusy = ImGuizmo::IsUsingAny() || ImGuizmo::IsOver();
+		scene.update(window, !io.WantCaptureMouse && !gizmoBusy);
+		scene.beginFrame(width, height);
 
-			ImGuizmo::SetOrthographic(false);
-			ImGuizmo::SetRect(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height));
-			manipulateTargets(*rig, scene.viewMatrix(), scene.projectionMatrix(), gizmoOperation);
+		ImGuizmo::SetOrthographic(false);
+		ImGuizmo::SetRect(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height));
+		manipulateTargets(*rig, scene.viewMatrix(), scene.projectionMatrix(), gizmoOperation);
+		if (ikEnabled)
+			rig->solve();
+		scene.renderSkeleton(rig->skeleton);
+		scene.renderTargets(*rig);
 
 			ImGui::Begin("TrackingCorrector");
 			ImGui::Text("ImGui initialized. %.1f FPS", io.Framerate);
 			ImGui::TextUnformatted(statusMessage.c_str());
 			ImGui::TextUnformatted(ikStatusMessage.c_str());
 
-			ImGui::SeparatorText("Gizmo mode");
+			ImGui::SeparatorText("IK");
+		ImGui::Checkbox("Solve IK targets", &ikEnabled);
+
+		ImGui::SeparatorText("Gizmo mode");
 			bool translate = gizmoOperation == ImGuizmo::TRANSLATE;
 			if (ImGui::RadioButton("Translate (T)", translate))
 				gizmoOperation = ImGuizmo::TRANSLATE;

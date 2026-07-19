@@ -121,6 +121,9 @@ void from_json(const nlohmann::json& j, Skeleton& skeleton)
     }
 
     skeleton.joints = std::move(joints);
+    for (const Joint& joint : skeleton.joints)
+        if (!joint.parentIndex)
+            skeleton.rootPosition = joint.restOffset;
 }
 
 Skeleton Skeleton::makeDefault()
@@ -169,17 +172,39 @@ Skeleton Skeleton::makeDefault()
     add("right_lower_arm", "right_upper_arm", {-0.26f, 0.0f, 0.0f});
     add("right_hand", "right_lower_arm", {-0.18f, 0.0f, 0.0f});
 
+    for (const Joint& joint : skeleton.joints)
+        if (!joint.parentIndex)
+            skeleton.rootPosition = joint.restOffset;
+
     return skeleton;
+}
+
+WorldTransforms computeWorldTransforms(const Skeleton& skeleton)
+{
+    WorldTransforms result;
+    const size_t count = skeleton.joints.size();
+    result.positions.resize(count);
+    result.rotations.resize(count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        const Joint& joint = skeleton.joints[i];
+        if (joint.parentIndex)
+        {
+            const size_t parent = static_cast<size_t>(*joint.parentIndex);
+            const glm::quat worldRot = result.rotations[parent] * joint.localRot;
+            result.rotations[i] = worldRot;
+            result.positions[i] = result.positions[parent] + worldRot * joint.restOffset;
+        }
+        else
+        {
+            result.rotations[i] = joint.localRot;
+            result.positions[i] = skeleton.rootPosition;
+        }
+    }
+    return result;
 }
 
 std::vector<glm::vec3> computeWorldPositions(const Skeleton& skeleton)
 {
-    std::vector<glm::vec3> positions(skeleton.joints.size());
-    for (size_t i = 0; i < skeleton.joints.size(); ++i)
-    {
-        const Joint& joint = skeleton.joints[i];
-        const glm::vec3 offset = joint.localRot * joint.restOffset;
-        positions[i] = (joint.parentIndex ? positions[*joint.parentIndex] : glm::vec3(0.0f)) + offset;
-    }
-    return positions;
+    return computeWorldTransforms(skeleton).positions;
 }
