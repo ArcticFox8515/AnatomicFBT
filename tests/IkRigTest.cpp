@@ -9,7 +9,12 @@ TEST(IkRigConfigSerialization, DefaultRoundTrip)
     const nlohmann::json j = original;
     const IkRigConfig parsed = j.get<IkRigConfig>();
 
-    EXPECT_EQ(parsed.targetBones, original.targetBones);
+    ASSERT_EQ(parsed.targets.size(), original.targets.size());
+    for (size_t i = 0; i < original.targets.size(); ++i)
+    {
+        EXPECT_EQ(parsed.targets[i].bone, original.targets[i].bone);
+        EXPECT_EQ(parsed.targets[i].solver, original.targets[i].solver);
+    }
     ASSERT_EQ(parsed.limits.size(), original.limits.size());
     for (size_t i = 0; i < original.limits.size(); ++i)
     {
@@ -17,6 +22,9 @@ TEST(IkRigConfigSerialization, DefaultRoundTrip)
         EXPECT_FLOAT_EQ(parsed.limits[i].twistMinDeg, original.limits[i].twistMinDeg);
         EXPECT_FLOAT_EQ(parsed.limits[i].twistMaxDeg, original.limits[i].twistMaxDeg);
         EXPECT_FLOAT_EQ(parsed.limits[i].swingConeDeg, original.limits[i].swingConeDeg);
+        ASSERT_EQ(parsed.limits[i].pole.has_value(), original.limits[i].pole.has_value());
+        if (original.limits[i].pole)
+            EXPECT_EQ(*parsed.limits[i].pole, *original.limits[i].pole);
     }
 }
 
@@ -24,7 +32,28 @@ TEST(IkRigConfigDeserialization, DuplicateTargetsThrow)
 {
     const nlohmann::json j = nlohmann::json::parse(R"(
     {
-        "targets": ["head", "head"]
+        "targets": [
+            { "bone": "head", "solver": "anchor" },
+            { "bone": "head", "solver": "chain" }
+        ]
+    })");
+    EXPECT_THROW(j.get<IkRigConfig>(), std::runtime_error);
+}
+
+TEST(IkRigConfigDeserialization, LegacyStringTargetsThrow)
+{
+    const nlohmann::json j = nlohmann::json::parse(R"(
+    {
+        "targets": ["head", "hip"]
+    })");
+    EXPECT_THROW(j.get<IkRigConfig>(), std::runtime_error);
+}
+
+TEST(IkRigConfigDeserialization, InvalidPoleThrows)
+{
+    const nlohmann::json j = nlohmann::json::parse(R"(
+    {
+        "limits": [ { "bone": "x", "pole": [0.0, 0.0] } ]
     })");
     EXPECT_THROW(j.get<IkRigConfig>(), std::runtime_error);
 }
@@ -41,7 +70,7 @@ TEST(IkRigConfigDeserialization, InvalidLimitThrows)
 TEST(IkRigConfigDeserialization, MissingSectionsGetDefaults)
 {
     const IkRigConfig config = nlohmann::json::parse("{}").get<IkRigConfig>();
-    EXPECT_TRUE(config.targetBones.empty());
+    EXPECT_TRUE(config.targets.empty());
     EXPECT_TRUE(config.limits.empty());
 }
 
@@ -49,12 +78,12 @@ TEST(IkRigConstruction, TargetsBindToJointsAndInitAtRestPose)
 {
     IkRig rig(Skeleton::makeDefault(), IkRigConfig::makeDefault());
 
-    ASSERT_EQ(rig.targets.size(), rig.config.targetBones.size());
+    ASSERT_EQ(rig.targets.size(), rig.config.targets.size());
     const std::vector<glm::vec3> restPositions = computeWorldPositions(rig.skeleton);
     for (size_t i = 0; i < rig.targets.size(); ++i)
     {
         const IkTarget& target = rig.targets[i];
-        EXPECT_EQ(rig.skeleton.joints[target.jointIndex].name, rig.config.targetBones[i]);
+        EXPECT_EQ(rig.skeleton.joints[target.jointIndex].name, rig.config.targets[i].bone);
         EXPECT_EQ(target.position, restPositions[target.jointIndex]);
         EXPECT_EQ(target.rotation, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
     }
@@ -63,7 +92,7 @@ TEST(IkRigConstruction, TargetsBindToJointsAndInitAtRestPose)
 TEST(IkRigConstruction, UnknownTargetBoneThrows)
 {
     IkRigConfig config;
-    config.targetBones = {"does_not_exist"};
+    config.targets = {{"does_not_exist", SolverType::Anchor}};
     EXPECT_THROW(IkRig(Skeleton::makeDefault(), config), std::runtime_error);
 }
 
@@ -71,6 +100,34 @@ TEST(IkRigConstruction, UnknownLimitBoneThrows)
 {
     IkRigConfig config;
     config.limits.push_back(JointLimits{"does_not_exist", 0.0f, 0.0f, 90.0f});
+    EXPECT_THROW(IkRig(Skeleton::makeDefault(), config), std::runtime_error);
+}
+
+TEST(IkRigConstruction, AnchorOnNonRootThrows)
+{
+    IkRigConfig config;
+    config.targets = {{"hip", SolverType::Anchor}};
+    EXPECT_THROW(IkRig(Skeleton::makeDefault(), config), std::runtime_error);
+}
+
+TEST(IkRigConstruction, ChainOnRootThrows)
+{
+    IkRigConfig config;
+    config.targets = {{"head", SolverType::Chain}};
+    EXPECT_THROW(IkRig(Skeleton::makeDefault(), config), std::runtime_error);
+}
+
+TEST(IkRigConstruction, TwoBoneWithTooFewAncestorsThrows)
+{
+    IkRigConfig config;
+    config.targets = {{"upper_chest", SolverType::TwoBone}};  // head->neck->upper_chest: only 2
+    EXPECT_THROW(IkRig(Skeleton::makeDefault(), config), std::runtime_error);
+}
+
+TEST(IkRigConstruction, TwoBoneWithoutMiddleBonePoleThrows)
+{
+    IkRigConfig config;
+    config.targets = {{"left_foot", SolverType::TwoBone}};  // no limits entry -> no pole
     EXPECT_THROW(IkRig(Skeleton::makeDefault(), config), std::runtime_error);
 }
 

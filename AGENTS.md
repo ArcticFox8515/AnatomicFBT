@@ -63,27 +63,38 @@ tests/                GoogleTest suites mirroring src/model.
   (closed-form two-bone IK with pole vector; overreach stretches straight toward the
   target) and `clampSwingTwist` (swing-twist decomposition + clamp), plus
   `quatFromTo`/`anyPerpendicular` utilities. No skeleton knowledge — unit-testable.
-- `IkRigConfig` (`IkRigConfig.h/.cpp`) — which bones accept tracker targets
-  (`targetBones`) + per-bone `JointLimits` (`twistMinDeg/twistMaxDeg/swingConeDeg`,
-  consumed by the IK solver). `makeDefault()`: head/hands/feet/hip targets; hinge
-  limits for knees/elbows, cones for hips/shoulders. JSON validated, throws on errors.
-  Kept separate from `Skeleton` because the milestone-3 avatar skeleton has no IK.
+- `IkRigConfig` (`IkRigConfig.h/.cpp`) — which bones accept tracker targets and how
+  each is solved (`targets`: `TargetConfig{bone, solver}`, `SolverType` =
+  `anchor|chain|two_bone`) + per-bone `JointLimits`
+  (`twistMinDeg/twistMaxDeg/swingConeDeg` + optional `pole` vec3 — the bend direction
+  of that bone's hinge in the limb socket's frame, required on the middle bone of
+  two-bone chains). `makeDefault()`: anchor on head, chain on hip, two-bone on
+  hands/feet; hinge limits + poles for knees/elbows (knees forward −Z, elbows
+  down/back), cones for hips/shoulders. JSON validated, throws on errors. Kept
+  separate from `Skeleton` because the milestone-3 avatar skeleton has no IK.
+- `IkSolvers` (`IkSolvers.h/.cpp`) — `IkTarget` = `{jointIndex, position, rotation}`
+  (a world-space manipulation handle) + the three per-target solver stages, each
+  unit-testable in isolation:
+  - `solveAnchor` — rigidly pins the root joint (`rootPosition` + root `localRot`).
+  - `solveChain` — arc-swing/curl interpolation of a root-hanging chain (any length)
+    so its end lands on the target; orientations blended root→target — exact in
+    position when within reach, otherwise the end-bone orientation wins (documented
+    interpolation trade-off).
+  - `solveTwoBone` — two-bone analytic limb IK (socket→j1→j2→tip): places j2 on the
+    goal implied by the tip target, tip bone takes the target rotation; pole in the
+    socket's frame.
 - `IkRig` (`IkRig.h/.cpp`) — owns `Skeleton` + `IkRigConfig` + `std::vector<IkTarget>`.
-  `IkTarget` = `{jointIndex, position, rotation}` — a world-space manipulation handle.
-  Constructor validates all config bone names exist in the skeleton (throws
-  `std::runtime_error`) and places targets at the rest pose. `resetTargets()`,
-  `targetName(i)` for UI labels.
-  - `IkRig::solve()` — the IK solver; re-derives the full pose from current targets
-    every call (stateless, call each frame). Stages, in order: head rigidly pinned to
-    the head target (`rootPosition` + root `localRot`); spine interpolation
-    (neck..hip arc-swing/curl toward the hip target, orientations blended head→hip —
-    exact when within reach and hip rotation matches head rotation, otherwise the
-    documented interpolation trade-off); two-bone analytic IK per leg/arm (goals from
-    foot/hand targets, poles: knees forward −Z, elbows down/back, in socket frame);
-    joint-limits post-pass (`clampSwingTwist` on each `JointLimits` bone's `localRot`).
-    Stages whose target/bones are missing are skipped. Bone names are hardcoded to the
-    default skeleton (faces −Z at rest); custom skeletons without those names get no
-    solving for the missing stages.
+  No bone names in code: solver structure is derived from config + skeleton topology
+  at construction (`SolverBinding` per target). Constructor validates (throws
+  `std::runtime_error`): target/limit bones exist; anchor target is the root joint;
+  chain target is not the root (chain = ancestor path root→joint); two_bone target
+  has ≥3 ancestors (tip→j2→j1→socket walk) and its middle bone (j2) carries a `pole`
+  in the limits. Places targets at the rest pose. `resetTargets()`, `targetName(i)`
+  for UI labels.
+  - `IkRig::solve()` — re-derives the full pose from current targets every call
+    (stateless, call each frame). Stages by solver type, regardless of config order:
+    all anchors → all chains → all two-bone limbs → joint-limits post-pass
+    (`clampSwingTwist` on each `JointLimits` bone's `localRot`).
 
 ### View layer (`src/view/`)
 
@@ -127,8 +138,6 @@ position/rotation drag fields, reset button).
 - **Separation**: model layer must stay GL-free (tests link only `TrackingCorrectorLib`
   and construct no GL context); view/app code depends on model, never the reverse.
 - Coordinates: right-handed, **Y-up, meters**. Left side of the body at +X.
-- Error handling: parsing/validation throws `std::runtime_error` with a descriptive
-  message; callers catch `std::exception` and fall back to defaults.
 - Serialization: `localRot` and `Skeleton::rootPosition` are runtime-only; rest
   orientation is always identity for this skeleton (bone-roll problem is deferred to
   milestone 3 — see `doc/plan.md`).

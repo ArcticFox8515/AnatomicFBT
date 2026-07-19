@@ -20,6 +20,8 @@ add_library(TrackingCorrectorLib STATIC
     src/model/IkRig.h
     src/model/IkMath.cpp
     src/model/IkMath.h
+    src/model/IkSolvers.cpp
+    src/model/IkSolvers.h
     src/view/Scene.cpp
     src/view/Scene.h)
 
@@ -53,7 +55,8 @@ enable_testing()
 add_executable(TrackingCorrectorTests
     tests/SkeletonTest.cpp
     tests/IkRigTest.cpp
-    tests/IkMathTest.cpp)
+    tests/IkMathTest.cpp
+    tests/IkSolversTest.cpp)
 
 target_link_libraries(TrackingCorrectorTests
     TrackingCorrectorLib

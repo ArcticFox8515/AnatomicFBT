@@ -7,15 +7,8 @@
 #include <vector>
 
 #include "IkRigConfig.h"
+#include "IkSolvers.h"
 #include "Skeleton.h"
-
-// World-space manipulation handle bound to a joint.
-struct IkTarget
-{
-    int jointIndex = -1;
-    glm::vec3 position{0.0f, 0.0f, 0.0f};
-    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
-};
 
 // Skeleton + IK data (config + current target poses) + the IK solver.
 class IkRig
@@ -25,14 +18,16 @@ public:
     IkRigConfig config;
     std::vector<IkTarget> targets;
 
-    // Validates that every target/limit bone exists in the skeleton and
-    // initializes targets at the rest pose. Throws std::runtime_error otherwise.
+    // Validates the config against the skeleton and initializes targets at the
+    // rest pose. Throws std::runtime_error when a target/limit bone is missing,
+    // an anchor target is not the root joint, a two_bone target has fewer than
+    // 3 ancestors, or a two_bone chain's middle bone has no pole in the limits.
     IkRig(Skeleton s, IkRigConfig c);
 
     // Solves joint localRot values (and rootPosition) from the current target
-    // poses: head pin -> spine interpolation -> two-bone IK for legs/arms ->
-    // joint limits. Stateless: every call re-derives the full pose. Stages whose
-    // target or bones are missing from the skeleton/config are skipped.
+    // poses. Stages, in config-declared solver types: anchors -> chains ->
+    // two-bone limbs -> joint limits. Stateless: every call re-derives the
+    // full pose. Targets absent from the config produce no stage.
     void solve();
 
     // Resets the skeleton to the rest pose and targets to match.
@@ -45,9 +40,18 @@ public:
     }
 
 private:
+    // Solver stage derived from config + skeleton topology, parallel to targets.
+    struct SolverBinding
+    {
+        SolverType solver = SolverType::TwoBone;
+        std::vector<int> chain;  // Chain: root->target path (root excluded);
+                                 // TwoBone: {socket, j1, j2, tip}
+        glm::vec3 pole{0.0f, 0.0f, 0.0f};  // TwoBone only, in the socket's frame
+    };
+
     std::unordered_map<std::string, int> jointIndexOf_;
+    std::vector<SolverBinding> bindings_;
     int rootIndex_ = 0;
 
-    const IkTarget* findTarget(const std::string& bone) const;
     int findJoint(const std::string& bone) const;
 };

@@ -155,12 +155,12 @@ Skeleton Skeleton::makeDefault()
     add("left_hip", "hip", {0.10f, 0.0f, 0.0f});
     add("left_upper_leg", "left_hip", {0.0f, -0.45f, 0.0f});
     add("left_lower_leg", "left_upper_leg", {0.0f, -0.45f, 0.0f});
-    add("left_foot", "left_lower_leg", {0.0f, -0.08f, 0.0f});
+    add("left_foot", "left_lower_leg", {0.0f, 0.0f, -0.08f});
 
     add("right_hip", "hip", {-0.10f, 0.0f, 0.0f});
     add("right_upper_leg", "right_hip", {0.0f, -0.45f, 0.0f});
     add("right_lower_leg", "right_upper_leg", {0.0f, -0.45f, 0.0f});
-    add("right_foot", "right_lower_leg", {0.0f, -0.08f, 0.0f});
+    add("right_foot", "right_lower_leg", {0.0f, 0.0f, -0.08f});
 
     add("left_shoulder", "upper_chest", {0.20f, 0.0f, 0.0f});
     add("left_upper_arm", "left_shoulder", {0.28f, 0.0f, 0.0f});
