@@ -266,6 +266,11 @@ void Scene::beginFrame(int width, int height)
     glClearColor(0.45f, 0.55f, 0.60f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
+}
+
+void Scene::setViewport(int x, int y, int width, int height)
+{
+    glViewport(x, y, width, height);
 
     const glm::vec3 offset(
         m_distance * std::cos(m_pitch) * std::sin(m_yaw),

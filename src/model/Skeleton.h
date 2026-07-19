@@ -28,6 +28,11 @@ public:
 
     // Builds the default SlimeVR-style head-rooted skeleton.
     static Skeleton makeDefault();
+
+    // Builds the same skeleton as makeDefault() but rooted at "hip" with the
+    // spine chain reversed (hip -> waist -> chest -> ... -> head), like
+    // VRChat/Unity avatars. Rest world positions are identical.
+    static Skeleton makeDefaultHipRooted();
 };
 
 void to_json(nlohmann::json& j, const Skeleton& skeleton);

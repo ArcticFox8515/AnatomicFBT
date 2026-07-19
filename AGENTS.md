@@ -18,9 +18,10 @@ Requires Conan 2 and Visual Studio 2022. Windows-only (`WIN32` exe, `WinMain` en
 - `run-tests.bat` — `ctest --test-dir build -C Debug --output-on-failure`.
 - `CMakeUserPresets.json` only includes the Conan-generated presets file and is
   gitignored — regenerate via the .bat, don't hand-edit.
-- Running the exe creates `user-skeleton.json` / `user-ikrig.json` in the working
-  directory on first start (load-or-create pattern); invalid files fall back to defaults
-  with the full error logged to `logs/trackingcorrector.log` (rotating, 3×5MB).
+- Running the exe creates `user-skeleton.json` / `user-ikrig.json` /
+  `user-avatar-skeleton.json` in the working directory on first start (load-or-create
+  pattern); invalid files fall back to defaults with the full error logged to
+  `logs/trackingcorrector.log` (rotating, 3×5MB).
 
 ## Directory / file map
 
@@ -30,6 +31,7 @@ CMakeLists.txt        3 targets: TrackingCorrectorLib (static), TrackingCorrecto
 conanfile.py          Dependencies + copies ImGui backends into src/bindings on generate.
 doc/plan.md           4-milestone design doc. Read before architectural changes.
 src/main.cpp          Entry point: GLFW/GL/ImGui init, config load-or-create, main loop,
+                      split-screen rendering (IK skeleton left, retargeted avatar right),
                       ImGuizmo manipulation of IK targets, ImGui control panel.
 src/model/            Pure data + JSON serialization. NO OpenGL — unit-testable.
 src/view/             All OpenGL rendering (Scene).
@@ -58,6 +60,11 @@ tests/                GoogleTest suites mirroring src/model.
     root, spine goes downward; left side at +X). Bone names are snake_case:
     `head, neck, upper_chest, chest, waist, hip, left/right_{hip,upper_leg,lower_leg,
     foot,shoulder,upper_arm,lower_arm,hand}`.
+  - `Skeleton::makeDefaultHipRooted()` — same skeleton re-rooted at `hip` with the
+    spine chain reversed (`hip → waist → … → head`), like VRChat/Unity avatars; rest
+    world positions are identical. Default for `user-avatar-skeleton.json`. Built by
+    an internal `reroot()` helper (reverses the ancestor chain, negating offsets —
+    valid only while rest rotations are identity).
   - Free `to_json`/`from_json` — schema `{ "bones": [{name, parent|null, offset:[x,y,z]}] }`.
     `from_json` parses declaratively (nlohmann), then assembles: resolves parent names
     to indices, sorts parent-before-child, seeds `rootPosition` — throws `Error` on
@@ -112,6 +119,17 @@ tests/                GoogleTest suites mirroring src/model.
     (stateless, call each frame). Stages by solver type, regardless of config order:
     all anchors → all chains → all two-bone limbs → joint-limits post-pass
     (`clampSwingTwist` on each `JointLimits` bone's `localRot`).
+- `Retarget` (`Retarget.h/.cpp`) — pose transfer from the IK skeleton onto the avatar
+  skeleton. `buildRetargetMap(src, dst)` matches bones once by connectivity: a dst
+  bone `parent→child` matches the src bone connecting the same two joint names in
+  EITHER direction (unordered name pair), so a head-rooted src drives a hip-rooted
+  dst exactly despite the spine chain running opposite ways; the dst root joint
+  matches by plain name. `retargetPose(src, dst, map)` copies the matched src joint's
+  world rotation onto each dst joint (`localRot = inverse(parentWorld) * world`,
+  parent-before-child), leaves unmatched dst joints at rest, then shifts
+  `dst.rootPosition` so the anchor joint (dst joint named like the src root, i.e.
+  `head` = the fixed HMD) lands exactly on its src world position.
+  `unmatchedBones(dst, map)` lists dst joints with no match (logged once at startup).
 
 ### View layer (`src/view/`)
 
@@ -119,25 +137,31 @@ tests/                GoogleTest suites mirroring src/model.
   destroyed before GLFW shutdown — keep the scope in `main.cpp` intact):
   - Orbit camera: fixed target (0,1,0) and distance 3.5, RMB-drag changes yaw/pitch
     (`update(window, allowInput)` — pass `allowInput=false` when ImGui/gizmo captures
-    the mouse).
-  - `beginFrame(w,h)` — viewport/clear, camera matrices, ground grid.
+    the mouse). ONE camera shared by both viewports, so the halves always match.
+  - `beginFrame(w,h)` — clears the full framebuffer + depth test only.
+    `setViewport(x,y,w,h)` — viewport + camera matrices for its aspect + ground grid;
+    call once per viewport (left half: IK skeleton, right half: avatar).
   - `renderSkeleton()` — one stretched gray pyramid per bone (base at parent joint,
     apex at joint). `renderTargets()` — small orange octahedron per IK target.
   - Two shader programs compiled from embedded GLSL 330 strings: flat-color line
     program (grid) and diffuse-lit mesh program (pyramids/octahedra, one directional
     light). Static unit meshes in VBOs, per-instance `uModel` matrix.
-  - `viewMatrix()/projectionMatrix()` — needed by ImGuizmo.
+  - `viewMatrix()/projectionMatrix()` — from the last `setViewport`; needed by
+    ImGuizmo (call right after the left viewport).
 
 ### Entry point (`src/main.cpp`)
 
 `WinMain`: spdlog rotating-file logger (`logs/trackingcorrector.log`) → GLFW window
-(OpenGL 3.3 core) → GLEW init → ImGui + ImGuizmo setup → load-or-create both JSON
-configs (one `loadOrCreate<T>` template; any exception logged with type + message +
-source site) → `IkRig` + `loadConfig` (falls back to default config if invalid).
-Per frame: `Scene::update/beginFrame`, then `manipulateTargets()` (one
-`ImGuizmo::Manipulate` per target, `SetID` per index; T/R keys or radio buttons switch
-translate/rotate), then `rig->solve()` ("Solve IK targets" checkbox toggles it), then
-`renderSkeleton/renderTargets`, then the ImGui panel (per-target
+(OpenGL 3.3 core) → GLEW init → ImGui + ImGuizmo setup → load-or-create all three JSON
+configs (one `loadOrCreate<T>` template taking a default-factory function pointer;
+any exception logged with type + message + source site) → `IkRig` + `loadConfig`
+(falls back to default config if invalid) → avatar `Skeleton` + `RetargetMap`
+(unmatched avatar bones logged once). Per frame: `Scene::update/beginFrame`, then the
+left pass (`setViewport(0,0,w/2,h)`, `ImGuizmo::SetRect` confined to the left half,
+`manipulateTargets()` — one `ImGuizmo::Manipulate` per target, `SetID` per index;
+T/R keys or radio buttons switch translate/rotate — `rig->solve()`,
+`renderSkeleton/renderTargets`), then `retargetPose()` and the right pass
+(`setViewport(w/2,0,…)`, `renderSkeleton(avatar)`), then the ImGui panel (per-target
 position/rotation drag fields, reset button).
 
 ## Libraries (Conan, see `conanfile.py`)

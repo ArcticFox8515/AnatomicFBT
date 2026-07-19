@@ -157,6 +157,74 @@ Skeleton Skeleton::makeDefault()
     return skeleton;
 }
 
+namespace
+{
+// Re-roots a skeleton at the named joint: the ancestor chain from the joint up
+// to the old root is reversed (each offset along it negated — valid because
+// rest rotations are identity), all other joints keep their parent and offset.
+// Rest world positions are preserved; the new root's restOffset becomes its
+// rest world position. Throws Error if the name is unknown.
+Skeleton reroot(const Skeleton& skeleton, const std::string& newRootName)
+{
+    const std::vector<glm::vec3> restPositions = computeWorldPositions(skeleton);
+
+    int newRoot = -1;
+    for (size_t i = 0; i < skeleton.joints.size(); ++i)
+        if (skeleton.joints[i].name == newRootName)
+            newRoot = static_cast<int>(i);
+    if (newRoot < 0)
+        throw Error("reroot: no joint named '" + newRootName + "'");
+
+    std::vector<Joint> joints = skeleton.joints;
+
+    // Path from the new root up to the old root.
+    std::vector<int> path;
+    for (std::optional<int> cur = newRoot; cur; cur = joints[*cur].parentIndex)
+        path.push_back(*cur);
+
+    // Reverse the chain: each joint on the path gets its former child as
+    // parent, with the former child's offset negated.
+    const std::vector<Joint> original = joints;
+    for (size_t i = 1; i < path.size(); ++i)
+    {
+        joints[path[i]].parentIndex = path[i - 1];
+        joints[path[i]].restOffset = -original[path[i - 1]].restOffset;
+    }
+    joints[path[0]].parentIndex = std::nullopt;
+    joints[path[0]].restOffset = restPositions[path[0]];
+
+    // Re-sort parent-before-child (edges along the reversed chain now point
+    // the other way, so indices must be rebuilt).
+    std::vector<std::vector<int>> children(joints.size());
+    for (size_t i = 0; i < joints.size(); ++i)
+        if (joints[i].parentIndex)
+            children[static_cast<size_t>(*joints[i].parentIndex)].push_back(static_cast<int>(i));
+
+    Skeleton result;
+    std::vector<int> oldToNew(joints.size(), -1);
+    std::vector<int> stack{path[0]};
+    while (!stack.empty())
+    {
+        const int old = stack.back();
+        stack.pop_back();
+        Joint joint = joints[old];
+        if (joint.parentIndex)
+            joint.parentIndex = oldToNew[static_cast<size_t>(*joint.parentIndex)];
+        oldToNew[static_cast<size_t>(old)] = static_cast<int>(result.joints.size());
+        result.joints.push_back(std::move(joint));
+        for (const int child : children[static_cast<size_t>(old)])
+            stack.push_back(child);
+    }
+    result.rootPosition = joints[path[0]].restOffset;
+    return result;
+}
+} // namespace
+
+Skeleton Skeleton::makeDefaultHipRooted()
+{
+    return reroot(makeDefault(), "hip");
+}
+
 WorldTransforms computeWorldTransforms(const Skeleton& skeleton)
 {
     WorldTransforms result;

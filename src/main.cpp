@@ -2,6 +2,7 @@
 #include <exception>
 #include <fstream>
 #include <string>
+#include <vector>
 #include <imgui.h>
 #include <ImGuizmo.h>
 #include <GL/glew.h>
@@ -17,17 +18,19 @@
 #include "bindings/imgui_impl_opengl3.h"
 #include "model/IkRig.h"
 #include "model/IkRigConfig.h"
+#include "model/Retarget.h"
 #include "model/Skeleton.h"
 #include "view/Scene.h"
 
 constexpr char kSkeletonPath[] = "user-skeleton.json";
 constexpr char kIkRigPath[] = "user-ikrig.json";
+constexpr char kAvatarSkeletonPath[] = "user-avatar-skeleton.json";
 
 // Loads T from a JSON file; creates the file with the default if missing;
 // falls back to the default (in memory only) if the file exists but is
 // invalid. Any failure is logged with the full exception detail in what().
 template <typename T>
-static T loadOrCreate(const char* path)
+static T loadOrCreate(const char* path, T (*makeDefault)())
 {
 	std::ifstream file(path);
 	if (file)
@@ -43,11 +46,11 @@ static T loadOrCreate(const char* path)
 		catch (const std::exception& e)
 		{
 			spdlog::error("Failed to load {}; using defaults: {}", path, e.what());
-			return T::makeDefault();
+			return makeDefault();
 		}
 	}
 
-	T value = T::makeDefault();
+	T value = makeDefault();
 	std::ofstream out(path);
 	out << nlohmann::json(value).dump(2) << '\n';
 	spdlog::info("Created default {}", path);
@@ -116,11 +119,11 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 	// Setup Dear ImGui style
 	ImGui::StyleColorsDark();
 
-	const Skeleton skeleton = loadOrCreate<Skeleton>(kSkeletonPath);
+	const Skeleton skeleton = loadOrCreate<Skeleton>(kSkeletonPath, Skeleton::makeDefault);
 	IkRig rig(skeleton);
 	try
 	{
-		rig.loadConfig(loadOrCreate<IkRigConfig>(kIkRigPath));
+		rig.loadConfig(loadOrCreate<IkRigConfig>(kIkRigPath, IkRigConfig::makeDefault));
 	}
 	catch (const std::exception& e)
 	{
@@ -133,6 +136,23 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 		{
 			spdlog::error("Default IK rig does not fit the skeleton; running without IK targets: {}", e2.what());
 		}
+	}
+
+	// The avatar skeleton the solved pose is retargeted onto (hip-rooted by
+	// default, like VRChat/Unity avatars).
+	Skeleton avatarSkeleton = loadOrCreate<Skeleton>(kAvatarSkeletonPath, Skeleton::makeDefaultHipRooted);
+	const RetargetMap retargetMap = buildRetargetMap(rig.skeleton, avatarSkeleton);
+	const std::vector<std::string> unmatched = unmatchedBones(avatarSkeleton, retargetMap);
+	if (!unmatched.empty())
+	{
+		std::string names;
+		for (const std::string& name : unmatched)
+		{
+			if (!names.empty())
+				names += ", ";
+			names += name;
+		}
+		spdlog::info("Avatar bones without a source match (kept at rest): {}", names);
 	}
 
 	// Scene holds GL resources; scope it so it is destroyed before GLFW shutdown.
@@ -161,12 +181,20 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 			scene.update(window, !io.WantCaptureMouse && !gizmoBusy);
 			scene.beginFrame(width, height);
 
+			// Left half: the IK-driven skeleton with its gizmo targets.
+			const int leftWidth = width / 2;
+			scene.setViewport(0, 0, leftWidth, height);
 			ImGuizmo::SetOrthographic(false);
-			ImGuizmo::SetRect(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height));
+			ImGuizmo::SetRect(0.0f, 0.0f, static_cast<float>(leftWidth), static_cast<float>(height));
 			manipulateTargets(rig, scene.viewMatrix(), scene.projectionMatrix(), gizmoOperation);
 			rig.solve();
 			scene.renderSkeleton(rig.skeleton);
 			scene.renderTargets(rig);
+
+			// Right half: the avatar skeleton with the pose retargeted onto it.
+			retargetPose(rig.skeleton, avatarSkeleton, retargetMap);
+			scene.setViewport(leftWidth, 0, width - leftWidth, height);
+			scene.renderSkeleton(avatarSkeleton);
 
 			ImGui::Begin("TrackingCorrector");
 			ImGui::Text("ImGui initialized. %.1f FPS", io.Framerate);

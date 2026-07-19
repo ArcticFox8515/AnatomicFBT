@@ -19,8 +19,13 @@ public:
     // Orbit camera from mouse input. allowInput should be false while ImGui captures the mouse.
     void update(GLFWwindow* window, bool allowInput);
 
-    // Sets viewport, clears color+depth, computes camera matrices, draws the ground grid.
+    // Clears the full framebuffer (color+depth) and enables depth testing.
     void beginFrame(int width, int height);
+
+    // Sets the GL viewport, computes the camera matrices for its aspect ratio,
+    // and draws the ground grid. Call once per viewport; afterwards
+    // viewMatrix()/projectionMatrix() refer to this viewport.
+    void setViewport(int x, int y, int width, int height);
 
     // Draws the skeleton: one gray pyramid per bone, base at the parent joint, apex at the joint.
     void renderSkeleton(const Skeleton& skeleton);
