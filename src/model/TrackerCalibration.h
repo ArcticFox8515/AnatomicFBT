@@ -2,12 +2,15 @@
 
 #include "IkSolvers.h"
 #include "Pose.h"
+#include "TrackedDevice.h"
 
 #include <glm/glm.hpp>
 
 #include <optional>
 #include <utility>
 #include <vector>
+
+class IkRig;
 
 // Result of matching tracked devices to IK targets by proximity.
 // deviceIndex[targetIndex] / targetIndex[deviceIndex] hold the counterpart's
@@ -74,3 +77,33 @@ private:
 
     std::vector<std::optional<Binding>> bindings_;  // indexed by target index
 };
+
+// Result of one calibration-mode frame (see updateCalibrationFrame).
+struct CalibrationFrame
+{
+    DeviceAssignment assignment;       // deviceIndex entries are positions in
+                                       // the device list passed in (for UI)
+    std::vector<Pose> boneWorldPoses;  // per-target world poses of the resting,
+                                       // HMD-aligned skeleton (for calibrate())
+};
+
+// Runs one calibration frame on the rig: resets the skeleton to the rest
+// pose, aligns the root to the HMD (position + yawOnly heading) when one is
+// present, matches devices to targets by proximity, and mirrors the matched
+// devices' raw poses into the rig's targets (what gets rendered).
+CalibrationFrame updateCalibrationFrame(IkRig& rig, const std::vector<TrackedDevice>& devices);
+
+// Freezes a calibration frame into per-target offsets: binds each assigned
+// target to the stable id of its device and stores offset =
+// inverse(devicePose) * boneWorldPose. Call when the user confirms the
+// calibration (both triggers).
+void captureOffsets(TrackerCalibration& calibration, const CalibrationFrame& frame,
+                    const std::vector<TrackedDevice>& devices);
+
+// Runs one capture-mode frame: mirrors the raw poses of bound devices into
+// the rig's targets (what gets rendered) and returns the solver goals — a
+// copy of the targets with the calibrated offsets applied. The returned goals
+// always parallel the rig's targets, so they can be handed straight to
+// IkRig::solve(goals).
+std::vector<IkTarget> updateCaptureFrame(IkRig& rig, const TrackerCalibration& calibration,
+                                         const std::vector<TrackedDevice>& devices);

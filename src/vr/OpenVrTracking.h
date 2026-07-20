@@ -1,29 +1,9 @@
 #pragma once
 
-#include "model/Pose.h"
-
-#include <glm/glm.hpp>
+#include "model/TrackedDevice.h"
 
 #include <array>
 #include <vector>
-
-// Device category reported by SteamVR tracking.
-enum class VrDeviceKind
-{
-    Hmd,
-    Controller,
-    Tracker,
-    Other
-};
-
-// One frame's snapshot of a single tracked device, in SteamVR's standing
-// tracking universe (right-handed, Y-up, meters — same convention as our scene).
-struct VrDeviceSnapshot
-{
-    int deviceIndex = -1;  // OpenVR tracked device index; doubles as the stable id
-    VrDeviceKind kind = VrDeviceKind::Other;
-    Pose pose;
-};
 
 // Polls tracked device poses and controller trigger state from OpenVR.
 // Non-owning of anything except the VR_Init session: construction is cheap and
@@ -45,8 +25,10 @@ public:
 
     bool isInitialized() const;
 
-    // Pose of every connected device with a valid pose this frame.
-    std::vector<VrDeviceSnapshot> pollPoses() const;
+    // Snapshot of every connected device with a valid pose this frame (in
+    // SteamVR's standing universe: right-handed, Y-up, meters — same
+    // convention as our scene; the id is the OpenVR tracked device index).
+    std::vector<TrackedDevice> pollPoses() const;
 
     // Rising-edge detection: true on the frame both controllers' triggers
     // transitioned to pressed (the second one counts). State is kept between

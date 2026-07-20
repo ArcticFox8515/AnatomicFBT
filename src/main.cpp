@@ -3,6 +3,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <cmath>
 #include <imgui.h>
 #include <ImGuizmo.h>
 #include <GL/glew.h>
@@ -18,9 +19,11 @@
 #include "bindings/imgui_impl_opengl3.h"
 #include "model/IkRig.h"
 #include "model/IkRigConfig.h"
+#include "model/ModeController.h"
 #include "model/Pose.h"
 #include "model/Retarget.h"
 #include "model/Skeleton.h"
+#include "model/TrackedDevice.h"
 #include "model/TrackerCalibration.h"
 #include "view/Scene.h"
 #include "vr/OpenVrTracking.h"
@@ -28,17 +31,6 @@
 constexpr char kSkeletonPath[] = "user-skeleton.json";
 constexpr char kIkRigPath[] = "user-ikrig.json";
 constexpr char kAvatarSkeletonPath[] = "user-avatar-skeleton.json";
-
-// Application mode: ManualPose = gizmo-dragged targets (no VR input);
-// Calibration = targets mirror raw device poses while the skeleton rests,
-// until both triggers freeze device->target offsets; Capture = offsets
-// applied every frame, IK solver active.
-enum class Mode
-{
-	ManualPose,
-	Calibration,
-	Capture
-};
 
 // Loads T from a JSON file; creates the file with the default if missing;
 // falls back to the default (in memory only) if the file exists but is
@@ -90,113 +82,6 @@ static void manipulateTargets(IkRig& rig, const glm::mat4& view, const glm::mat4
 			target.rotation = glm::normalize(glm::quat(glm::radians(rotation)));
 		}
 	}
-}
-
-// First HMD in a device snapshot list, or nullptr.
-static const VrDeviceSnapshot* findHmd(const std::vector<VrDeviceSnapshot>& devices)
-{
-	for (const VrDeviceSnapshot& device : devices)
-		if (device.kind == VrDeviceKind::Hmd)
-			return &device;
-	return nullptr;
-}
-
-static const char* deviceKindName(VrDeviceKind kind)
-{
-	switch (kind)
-	{
-	case VrDeviceKind::Hmd:
-		return "HMD";
-	case VrDeviceKind::Controller:
-		return "controller";
-	case VrDeviceKind::Tracker:
-		return "tracker";
-	default:
-		return "device";
-	}
-}
-
-// Packs the snapshot list into (deviceId, pose) pairs — the device id space
-// TrackerCalibration binds against.
-static std::vector<std::pair<int, Pose>> devicePosePairs(const std::vector<VrDeviceSnapshot>& devices)
-{
-	std::vector<std::pair<int, Pose>> pairs;
-	pairs.reserve(devices.size());
-	for (const VrDeviceSnapshot& device : devices)
-		pairs.emplace_back(device.deviceIndex, device.pose);
-	return pairs;
-}
-
-// Calibration mode: the skeleton rests (no IK) with its root (head) aligned
-// to the HMD's position and heading; targets mirror the raw poses of the
-// devices the proximity assignment picked for them. Fills liveAssignment and
-// lastDevices for UI display. Returns true when the user pressed both
-// triggers and offsets were captured (caller switches to Capture mode).
-static bool updateCalibration(IkRig& rig, OpenVrTracking& vr, TrackerCalibration& calibration,
-                              int rootJointIndex, DeviceAssignment& liveAssignment,
-                              std::vector<VrDeviceSnapshot>& lastDevices)
-{
-	lastDevices = vr.pollPoses();
-	const std::vector<VrDeviceSnapshot>& devices = lastDevices;
-
-	for (Joint& joint : rig.skeleton.joints)
-		joint.localRot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-	const VrDeviceSnapshot* hmd = findHmd(devices);
-	if (hmd)
-	{
-		rig.skeleton.rootPosition = hmd->pose.position;
-		rig.skeleton.joints[rootJointIndex].localRot = yawOnly(hmd->pose.rotation);
-	}
-
-	const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
-	std::vector<Pose> bonePoses(rig.targets.size());
-	std::vector<glm::vec3> bonePositions(rig.targets.size());
-	for (size_t i = 0; i < rig.targets.size(); ++i)
-	{
-		bonePoses[i] = {wt.positions[rig.targets[i].jointIndex], wt.rotations[rig.targets[i].jointIndex]};
-		bonePositions[i] = bonePoses[i].position;
-	}
-
-	std::vector<glm::vec3> devicePositions;
-	devicePositions.reserve(devices.size());
-	for (const VrDeviceSnapshot& device : devices)
-		devicePositions.push_back(device.pose.position);
-
-	liveAssignment = assignDevicesToTargets(devicePositions, bonePositions);
-
-	// Show raw device poses at the target markers so the user sees what will
-	// be captured.
-	for (size_t i = 0; i < rig.targets.size(); ++i)
-	{
-		const int d = liveAssignment.deviceIndex[i];
-		if (d < 0)
-			continue;
-		rig.targets[i].position = devices[d].pose.position;
-		rig.targets[i].rotation = devices[d].pose.rotation;
-	}
-
-	if (!vr.bothTriggersJustPressed())
-		return false;
-
-	// Translate compact snapshot indices to stable OpenVR device indices.
-	for (int& d : liveAssignment.deviceIndex)
-		if (d >= 0)
-			d = devices[d].deviceIndex;
-	calibration.calibrate(liveAssignment, devicePosePairs(devices), bonePoses);
-	return true;
-}
-
-// Capture mode: targets mirror the raw device poses (what gets rendered,
-// same as calibration); the solver goals are a copy with the calibrated
-// offsets applied. Fills lastDevices for UI display and camera centering.
-static void updateCapture(IkRig& rig, OpenVrTracking& vr, const TrackerCalibration& calibration,
-                          std::vector<VrDeviceSnapshot>& lastDevices,
-                          std::vector<IkTarget>& captureGoals)
-{
-	lastDevices = vr.pollPoses();
-	calibration.applyDevicePoses(devicePosePairs(lastDevices), rig.targets);
-	captureGoals = rig.targets;
-	calibration.applyOffsets(captureGoals);
 }
 
 int WinMain(void* hinst, void* hprev, char* cmdline, int show)
@@ -279,30 +164,21 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 	// OpenVR: when SteamVR is running, start straight in calibration mode;
 	// otherwise fall back to manual pose (the UI offers a retry).
 	OpenVrTracking vr;
-	Mode mode = Mode::ManualPose;
+	Mode initialMode = Mode::ManualPose;
 	try
 	{
 		vr.init();
 		spdlog::info("OpenVR initialized; starting in calibration mode");
-		mode = Mode::Calibration;
+		initialMode = Mode::Calibration;
 	}
 	catch (const std::exception& e)
 	{
 		spdlog::error("OpenVR unavailable; starting in manual pose mode: {}", e.what());
 	}
 
-	TrackerCalibration calibration;
-	DeviceAssignment liveAssignment;
-	std::vector<VrDeviceSnapshot> lastDevices;
-	std::vector<IkTarget> captureGoals;  // targets + calibration offsets, Capture-mode solver input
-
-	int rootJointIndex = 0;
-	for (size_t i = 0; i < rig.skeleton.joints.size(); ++i)
-		if (!rig.skeleton.joints[i].parentIndex)
-		{
-			rootJointIndex = static_cast<int>(i);
-			break;
-		}
+	// The mode state machine (calibration/capture logic) lives in the model
+	// layer; this loop only wires VR input in and executes the returned plan.
+	ModeController controller(initialMode);
 
 	// Scene holds GL resources; scope it so it is destroyed before GLFW shutdown.
 	{
@@ -330,30 +206,40 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 			scene.update(window, !io.WantCaptureMouse && !gizmoBusy);
 			scene.beginFrame(width, height);
 
-			// VR-driven modes move the targets (calibration also re-poses the
-			// resting skeleton); manual pose leaves them to the gizmos.
-			if (mode == Mode::Calibration && vr.isInitialized())
+			// Feed VR input into the mode state machine. Poses are polled exactly
+			// once per frame; the trigger edge is read only in Calibration
+			// (bothTriggersJustPressed is stateful). The returned plan says what
+			// to solve in the left pass — in Capture its goals are always fresh
+			// from this frame, including the calibration->capture transition.
+			std::vector<TrackedDevice> devices;
+			bool captureGesture = false;
+			if (vr.isInitialized())
 			{
-				if (updateCalibration(rig, vr, calibration, rootJointIndex, liveAssignment, lastDevices))
-				{
-					mode = Mode::Capture;
-					spdlog::info("Calibration captured; entering capture mode");
-				}
+				devices = vr.pollPoses();
+				if (controller.mode() == Mode::Calibration)
+					captureGesture = vr.bothTriggersJustPressed();
 			}
-			else if (mode == Mode::Capture && vr.isInitialized())
-			{
-				updateCapture(rig, vr, calibration, lastDevices, captureGoals);
-			}
+			const FramePlan plan = controller.update(rig, devices, captureGesture);
+			if (plan.capturedOffsets)
+				spdlog::info("Calibration captured; entering capture mode");
 
 			// In VR modes keep the orbit camera centered on the user's XZ
-			// position so the skeleton doesn't walk out of view.
-			if (mode == Mode::ManualPose)
+			// position so the skeleton doesn't walk out of view. Calibration
+			// additionally turns the camera to look at the skeleton from the
+			// front (its facing = the HMD heading), so tracker assignment is
+			// easy to check while T-posing.
+			if (controller.mode() == Mode::ManualPose)
 			{
 				scene.setCameraTarget(glm::vec3(0.0f, 1.0f, 0.0f));
 			}
-			else if (const VrDeviceSnapshot* hmd = findHmd(lastDevices))
+			else if (const TrackedDevice* hmd = findHmd(devices))
 			{
 				scene.setCameraTarget(glm::vec3(hmd->pose.position.x, 1.0f, hmd->pose.position.z));
+				if (controller.mode() == Mode::Calibration)
+				{
+					const glm::vec3 facing = yawOnly(hmd->pose.rotation) * glm::vec3(0.0f, 0.0f, -1.0f);
+					scene.setCameraYaw(std::atan2(facing.x, facing.z));
+				}
 			}
 
 			// Left half: the IK-driven skeleton with its gizmo targets.
@@ -361,14 +247,14 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 			scene.setViewport(0, 0, leftWidth, height);
 			ImGuizmo::SetOrthographic(false);
 			ImGuizmo::SetRect(0.0f, 0.0f, static_cast<float>(leftWidth), static_cast<float>(height));
-			if (mode == Mode::ManualPose)
+			if (plan.solve == SolveMode::Targets)
 			{
 				manipulateTargets(rig, scene.viewMatrix(), scene.projectionMatrix(), gizmoOperation);
 				rig.solve();
 			}
-			else if (mode == Mode::Capture)
+			else if (plan.solve == SolveMode::Goals)
 			{
-				rig.solve(captureGoals);
+				rig.solve(plan.goals);
 			}
 			scene.renderSkeleton(rig.skeleton);
 			scene.renderTargets(rig);
@@ -382,13 +268,14 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 			ImGui::Text("ImGui initialized. %.1f FPS", io.Framerate);
 
 			ImGui::SeparatorText("Mode");
+			const Mode mode = controller.mode();
 			const char* modeName = mode == Mode::ManualPose ? "Manual pose"
 				: mode == Mode::Calibration           ? "Calibration"
 				                                      : "Capture";
 			ImGui::Text("Mode: %s", modeName);
 			ImGui::Text("SteamVR: %s", vr.isInitialized() ? "connected" : "not connected");
 			if (mode != Mode::ManualPose && ImGui::Button("Switch to manual pose"))
-				mode = Mode::ManualPose;
+				controller.switchToManual();
 			if (mode != Mode::Calibration && ImGui::Button("Switch to calibration"))
 			{
 				if (!vr.isInitialized())
@@ -404,20 +291,18 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 					}
 				}
 				if (vr.isInitialized())
-				{
-					calibration.clear();
-					mode = Mode::Calibration;
-				}
+					controller.switchToCalibration();
 			}
 			if (mode == Mode::Calibration)
 			{
 				ImGui::TextWrapped("Stand in T-pose and press both triggers to start capture.");
+				const DeviceAssignment& liveAssignment = controller.liveAssignment();
 				for (size_t i = 0; i < rig.targets.size(); ++i)
 				{
 					const int d = i < liveAssignment.deviceIndex.size() ? liveAssignment.deviceIndex[i] : -1;
-					if (d >= 0 && static_cast<size_t>(d) < lastDevices.size())
+					if (d >= 0 && static_cast<size_t>(d) < devices.size())
 						ImGui::BulletText("%s <- %s %d", rig.targetName(i).c_str(),
-						                  deviceKindName(lastDevices[d].kind), lastDevices[d].deviceIndex);
+						                  deviceKindName(devices[d].kind), devices[d].id);
 					else
 						ImGui::BulletText("%s <- (no device)", rig.targetName(i).c_str());
 				}

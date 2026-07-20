@@ -1,5 +1,8 @@
 #include "TrackerCalibration.h"
 
+#include "IkRig.h"
+#include "Skeleton.h"
+
 #include <limits>
 
 DeviceAssignment assignDevicesToTargets(const std::vector<glm::vec3>& devicePositions,
@@ -118,4 +121,77 @@ std::optional<int> TrackerCalibration::boundDevice(size_t targetIndex) const
     if (targetIndex >= bindings_.size() || !bindings_[targetIndex])
         return std::nullopt;
     return bindings_[targetIndex]->deviceId;
+}
+
+CalibrationFrame updateCalibrationFrame(IkRig& rig, const std::vector<TrackedDevice>& devices)
+{
+    CalibrationFrame frame;
+
+    for (Joint& joint : rig.skeleton.joints)
+        joint.localRot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+
+    int rootIndex = -1;
+    for (size_t i = 0; i < rig.skeleton.joints.size(); ++i)
+        if (!rig.skeleton.joints[i].parentIndex)
+        {
+            rootIndex = static_cast<int>(i);
+            break;
+        }
+
+    const TrackedDevice* hmd = findHmd(devices);
+    if (hmd && rootIndex >= 0)
+    {
+        rig.skeleton.rootPosition = hmd->pose.position;
+        rig.skeleton.joints[rootIndex].localRot = yawOnly(hmd->pose.rotation);
+    }
+
+    const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
+    std::vector<glm::vec3> bonePositions(rig.targets.size());
+    frame.boneWorldPoses.resize(rig.targets.size());
+    for (size_t i = 0; i < rig.targets.size(); ++i)
+    {
+        frame.boneWorldPoses[i] = {wt.positions[rig.targets[i].jointIndex],
+                                   wt.rotations[rig.targets[i].jointIndex]};
+        bonePositions[i] = frame.boneWorldPoses[i].position;
+    }
+
+    std::vector<glm::vec3> devicePositions;
+    devicePositions.reserve(devices.size());
+    for (const TrackedDevice& device : devices)
+        devicePositions.push_back(device.pose.position);
+
+    frame.assignment = assignDevicesToTargets(devicePositions, bonePositions);
+
+    // Show raw device poses at the target markers so the user sees what will
+    // be captured.
+    for (size_t i = 0; i < rig.targets.size(); ++i)
+    {
+        const int d = frame.assignment.deviceIndex[i];
+        if (d < 0)
+            continue;
+        rig.targets[i].position = devices[d].pose.position;
+        rig.targets[i].rotation = devices[d].pose.rotation;
+    }
+
+    return frame;
+}
+
+void captureOffsets(TrackerCalibration& calibration, const CalibrationFrame& frame,
+                    const std::vector<TrackedDevice>& devices)
+{
+    // Translate compact device-list positions to stable device ids.
+    DeviceAssignment byIds = frame.assignment;
+    for (int& d : byIds.deviceIndex)
+        if (d >= 0)
+            d = devices[d].id;
+    calibration.calibrate(byIds, devicePosePairs(devices), frame.boneWorldPoses);
+}
+
+std::vector<IkTarget> updateCaptureFrame(IkRig& rig, const TrackerCalibration& calibration,
+                                         const std::vector<TrackedDevice>& devices)
+{
+    calibration.applyDevicePoses(devicePosePairs(devices), rig.targets);
+    std::vector<IkTarget> goals = rig.targets;
+    calibration.applyOffsets(goals);
+    return goals;
 }

@@ -23,6 +23,11 @@ public:
     // the view centered on the user in VR modes.
     void setCameraTarget(const glm::vec3& target) { m_target = target; }
 
+    // Sets the orbit yaw directly (radians around +Y; the camera looks from
+    // direction (sin yaw, 0, cos yaw) toward the target). Calibration mode
+    // uses this to face the skeleton's front; any later RMB-drag overrides it.
+    void setCameraYaw(float yaw) { m_yaw = yaw; }
+
     // Clears the full framebuffer (color+depth) and enables depth testing.
     void beginFrame(int width, int height);
 

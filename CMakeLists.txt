@@ -29,6 +29,10 @@ add_library(TrackingCorrectorLib STATIC
     src/model/Retarget.cpp
     src/model/Retarget.h
     src/model/Pose.h
+    src/model/ModeController.cpp
+    src/model/ModeController.h
+    src/model/TrackedDevice.cpp
+    src/model/TrackedDevice.h
     src/model/TrackerCalibration.cpp
     src/model/TrackerCalibration.h
     src/view/Scene.cpp
@@ -71,7 +75,9 @@ add_executable(TrackingCorrectorTests
     tests/IkRigTest.cpp
     tests/IkMathTest.cpp
     tests/IkSolversTest.cpp
+    tests/ModeControllerTest.cpp
     tests/RetargetTest.cpp
+    tests/TrackedDeviceTest.cpp
     tests/TrackerCalibrationTest.cpp)
 
 target_link_libraries(TrackingCorrectorTests

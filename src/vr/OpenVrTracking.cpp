@@ -6,18 +6,18 @@
 
 namespace
 {
-VrDeviceKind classify(vr::ETrackedDeviceClass deviceClass)
+TrackedDeviceKind classify(vr::ETrackedDeviceClass deviceClass)
 {
     switch (deviceClass)
     {
     case vr::TrackedDeviceClass_HMD:
-        return VrDeviceKind::Hmd;
+        return TrackedDeviceKind::Hmd;
     case vr::TrackedDeviceClass_Controller:
-        return VrDeviceKind::Controller;
+        return TrackedDeviceKind::Controller;
     case vr::TrackedDeviceClass_GenericTracker:
-        return VrDeviceKind::Tracker;
+        return TrackedDeviceKind::Tracker;
     default:
-        return VrDeviceKind::Other;
+        return TrackedDeviceKind::Other;
     }
 }
 
@@ -82,9 +82,9 @@ bool OpenVrTracking::isInitialized() const
     return initialized_;
 }
 
-std::vector<VrDeviceSnapshot> OpenVrTracking::pollPoses() const
+std::vector<TrackedDevice> OpenVrTracking::pollPoses() const
 {
-    std::vector<VrDeviceSnapshot> result;
+    std::vector<TrackedDevice> result;
     if (!initialized_)
         return result;
 
@@ -100,8 +100,8 @@ std::vector<VrDeviceSnapshot> OpenVrTracking::pollPoses() const
     {
         if (!poses[i].bPoseIsValid || !poses[i].bDeviceIsConnected)
             continue;
-        const VrDeviceKind kind = classify(system->GetTrackedDeviceClass(i));
-        if (kind == VrDeviceKind::Other)
+        const TrackedDeviceKind kind = classify(system->GetTrackedDeviceClass(i));
+        if (kind == TrackedDeviceKind::Other)
             continue;
         result.push_back({static_cast<int>(i), kind, toPose(poses[i].mDeviceToAbsoluteTracking)});
     }
