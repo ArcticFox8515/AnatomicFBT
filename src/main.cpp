@@ -1,6 +1,8 @@
+#include <cfloat>
 #include <cstdlib>
 #include <exception>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 #include <cmath>
@@ -21,7 +23,9 @@
 #include "model/IkRigConfig.h"
 #include "model/ModeController.h"
 #include "model/Pose.h"
+#include "model/ReplaySession.h"
 #include "model/Retarget.h"
+#include "model/SessionRecorder.h"
 #include "model/Skeleton.h"
 #include "model/TrackedDevice.h"
 #include "model/TrackerCalibration.h"
@@ -31,6 +35,7 @@
 constexpr char kSkeletonPath[] = "user-skeleton.json";
 constexpr char kIkRigPath[] = "user-ikrig.json";
 constexpr char kAvatarSkeletonPath[] = "user-avatar-skeleton.json";
+constexpr char kRecordingPath[] = "recording.tcrec";
 
 // Loads T from a JSON file; creates the file with the default if missing;
 // falls back to the default (in memory only) if the file exists but is
@@ -180,6 +185,48 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 	// layer; this loop only wires VR input in and executes the returned plan.
 	ModeController controller(initialMode);
 
+	// Capture sessions are always recorded to kRecordingPath (overwritten per
+	// session — copy/rename the file to keep it). The recorder lifecycle
+	// lives in the model layer; this only supplies the file stream and logs.
+	SessionRecorder recorder([]() -> std::shared_ptr<std::ostream>
+	{
+		return std::make_shared<std::ofstream>(kRecordingPath, std::ios::binary | std::ios::trunc);
+	});
+
+	// Replay-mode state (file list, loaded recording, timeline frame) lives
+	// in the model layer; this only binds the UI to it and logs its errors.
+	ReplaySession replay;
+
+	auto loadReplayFile = [&](size_t index)
+	{
+		try
+		{
+			replay.load(index, controller, rig);
+			spdlog::info("Loaded recording {} ({} frames, {:.2f} s)", replay.files()[index],
+			             replay.recording().frames.size(), replay.recording().duration());
+		}
+		catch (const std::exception& e)
+		{
+			spdlog::error("Failed to load recording {}: {}", replay.files()[index], e.what());
+		}
+	};
+
+	auto enterReplay = [&]()
+	{
+		controller.switchToReplay();
+		rig.resetTargets();
+		try
+		{
+			replay.scan(".");
+		}
+		catch (const std::exception& e)
+		{
+			spdlog::error("{}", e.what());
+		}
+		if (!replay.files().empty())
+			loadReplayFile(0);
+	};
+
 	// Scene holds GL resources; scope it so it is destroyed before GLFW shutdown.
 	{
 		Scene scene;
@@ -206,14 +253,21 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 			scene.update(window, !io.WantCaptureMouse && !gizmoBusy);
 			scene.beginFrame(width, height);
 
-			// Feed VR input into the mode state machine. Poses are polled exactly
-			// once per frame; the trigger edge is read only in Calibration
-			// (bothTriggersJustPressed is stateful). The returned plan says what
-			// to solve in the left pass — in Capture its goals are always fresh
-			// from this frame, including the calibration->capture transition.
+			// Feed input into the mode state machine. In Replay the devices
+			// come from the loaded recording's current frame (the solver never
+			// knows the difference); otherwise poses are polled exactly once
+			// per frame and the trigger edge is read only in Calibration
+			// (bothTriggersJustPressed is stateful). The returned plan says
+			// what to solve in the left pass — in Capture/Replay its goals are
+			// always fresh from this frame, including the calibration->capture
+			// transition.
 			std::vector<TrackedDevice> devices;
 			bool captureGesture = false;
-			if (vr.isInitialized())
+			if (controller.mode() == Mode::Replay)
+			{
+				devices = replay.currentDevices();
+			}
+			else if (vr.isInitialized())
 			{
 				devices = vr.pollPoses();
 				if (controller.mode() == Mode::Calibration)
@@ -222,6 +276,18 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 			const FramePlan plan = controller.update(rig, devices, captureGesture);
 			if (plan.capturedOffsets)
 				spdlog::info("Calibration captured; entering capture mode");
+
+			// Capture sessions are always recorded (frame 0 = the exact
+			// devices calibration froze offsets from); the recorder is a
+			// no-op outside Capture. Failures are reported, never thrown.
+			const SessionRecorder::Event recorded =
+				recorder.update(controller.mode(), plan.capturedOffsets, glfwGetTime(), devices);
+			if (recorded.started)
+				spdlog::info("Recording capture session to {}", kRecordingPath);
+			if (recorded.stopped)
+				spdlog::info("Recording saved to {}", kRecordingPath);
+			if (!recorded.error.empty())
+				spdlog::error("Recording failed; stopping it: {}", recorded.error);
 
 			// In VR modes keep the orbit camera centered on the user's XZ
 			// position so the skeleton doesn't walk out of view. Calibration
@@ -269,13 +335,20 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 
 			ImGui::SeparatorText("Mode");
 			const Mode mode = controller.mode();
-			const char* modeName = mode == Mode::ManualPose ? "Manual pose"
-				: mode == Mode::Calibration           ? "Calibration"
-				                                      : "Capture";
+			const char* modeName = mode == Mode::ManualPose
+				                       ? "Manual pose"
+				                       : mode == Mode::Calibration
+				                       ? "Calibration"
+				                       : mode == Mode::Capture
+				                       ? "Capture"
+				                       : "Replay";
 			ImGui::Text("Mode: %s", modeName);
 			ImGui::Text("SteamVR: %s", vr.isInitialized() ? "connected" : "not connected");
 			if (mode != Mode::ManualPose && ImGui::Button("Switch to manual pose"))
+			{
 				controller.switchToManual();
+				replay.reset();
+			}
 			if (mode != Mode::Calibration && ImGui::Button("Switch to calibration"))
 			{
 				if (!vr.isInitialized())
@@ -291,8 +364,13 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 					}
 				}
 				if (vr.isInitialized())
+				{
 					controller.switchToCalibration();
+					replay.reset();
+				}
 			}
+			if (mode != Mode::Replay && ImGui::Button("Switch to replay"))
+				enterReplay();
 			if (mode == Mode::Calibration)
 			{
 				ImGui::TextWrapped("Stand in T-pose and press both triggers to start capture.");
@@ -307,40 +385,76 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 						ImGui::BulletText("%s <- (no device)", rig.targetName(i).c_str());
 				}
 			}
-
-			ImGui::SeparatorText("Gizmo mode");
-			bool translate = gizmoOperation == ImGuizmo::TRANSLATE;
-			if (ImGui::RadioButton("Translate (T)", translate))
-				gizmoOperation = ImGuizmo::TRANSLATE;
-			ImGui::SameLine();
-			if (ImGui::RadioButton("Rotate (R)", !translate))
-				gizmoOperation = ImGuizmo::ROTATE;
-			if (!io.WantCaptureKeyboard)
+			if (mode == Mode::Replay)
 			{
-				if (ImGui::IsKeyPressed(ImGuiKey_T, false))
-					gizmoOperation = ImGuizmo::TRANSLATE;
-				if (ImGui::IsKeyPressed(ImGuiKey_R, false))
-					gizmoOperation = ImGuizmo::ROTATE;
-			}
-
-			ImGui::SeparatorText("IK targets");
-			for (size_t i = 0; i < rig.targets.size(); ++i)
-			{
-				IkTarget& target = rig.targets[i];
-				ImGui::PushID(static_cast<int>(i));
-				if (ImGui::TreeNode(rig.targetName(i).c_str()))
+				ImGui::SeparatorText("Recordings");
+				if (replay.files().empty())
+					ImGui::TextWrapped("No %s files in the working directory.", kRecordingFileExtension);
+				for (size_t i = 0; i < replay.files().size(); ++i)
 				{
-					ImGui::DragFloat3("Position", &target.position.x, 0.01f);
-					glm::vec3 eulerDeg = glm::degrees(glm::eulerAngles(target.rotation));
-					if (ImGui::DragFloat3("Rotation (deg)", &eulerDeg.x, 0.5f))
-						target.rotation = glm::normalize(glm::quat(glm::radians(eulerDeg)));
-					ImGui::TreePop();
+					const bool selected = static_cast<int>(i) == replay.loadedIndex();
+					if (ImGui::Selectable(replay.files()[i].c_str(), selected) && !selected)
+						loadReplayFile(i);
 				}
-				ImGui::PopID();
 			}
-			if (ImGui::Button("Reset targets"))
-				rig.resetTargets();
+
+			if (mode == Mode::ManualPose)
+			{
+				ImGui::SeparatorText("Gizmo mode");
+				bool translate = gizmoOperation == ImGuizmo::TRANSLATE;
+				if (ImGui::RadioButton("Translate (T)", translate))
+					gizmoOperation = ImGuizmo::TRANSLATE;
+				ImGui::SameLine();
+				if (ImGui::RadioButton("Rotate (R)", !translate))
+					gizmoOperation = ImGuizmo::ROTATE;
+				if (!io.WantCaptureKeyboard)
+				{
+					if (ImGui::IsKeyPressed(ImGuiKey_T, false))
+						gizmoOperation = ImGuizmo::TRANSLATE;
+					if (ImGui::IsKeyPressed(ImGuiKey_R, false))
+						gizmoOperation = ImGuizmo::ROTATE;
+				}
+
+				ImGui::SeparatorText("IK targets");
+				for (size_t i = 0; i < rig.targets.size(); ++i)
+				{
+					IkTarget& target = rig.targets[i];
+					ImGui::PushID(static_cast<int>(i));
+					if (ImGui::TreeNode(rig.targetName(i).c_str()))
+					{
+						ImGui::DragFloat3("Position", &target.position.x, 0.01f);
+						glm::vec3 eulerDeg = glm::degrees(glm::eulerAngles(target.rotation));
+						if (ImGui::DragFloat3("Rotation (deg)", &eulerDeg.x, 0.5f))
+							target.rotation = glm::normalize(glm::quat(glm::radians(eulerDeg)));
+						ImGui::TreePop();
+					}
+					ImGui::PopID();
+				}
+				if (ImGui::Button("Reset targets"))
+					rig.resetTargets();
+			}
 			ImGui::End();
+
+			// Replay timeline pinned across the bottom of the window. No
+			// auto-play: clicking/dragging snaps to the nearest recorded
+			// frame, whose devices are fed to the solver next frame.
+			if (controller.mode() == Mode::Replay && replay.hasRecording())
+			{
+				const float timelineHeight = 64.0f;
+				ImGui::SetNextWindowPos(ImVec2(0.0f, static_cast<float>(height) - timelineHeight));
+				ImGui::SetNextWindowSize(ImVec2(static_cast<float>(width), timelineHeight));
+				ImGui::Begin("Timeline", nullptr,
+				             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize
+				             | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
+				ImGui::SetNextItemWidth(-FLT_MIN);
+				float timelineTime = replay.frameTime();
+				if (ImGui::SliderFloat("##timeline", &timelineTime, 0.0f,
+				                       replay.recording().duration(), "%.2f s"))
+					replay.seek(timelineTime);
+				ImGui::Text("Frame %zu / %zu  (%.3f s)", replay.frameIndex() + 1,
+				            replay.recording().frames.size(), replay.frameTime());
+				ImGui::End();
+			}
 
 			// Render dear imgui into screen
 			ImGui::Render();

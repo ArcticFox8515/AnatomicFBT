@@ -31,6 +31,12 @@ add_library(TrackingCorrectorLib STATIC
     src/model/Pose.h
     src/model/ModeController.cpp
     src/model/ModeController.h
+    src/model/Recording.cpp
+    src/model/Recording.h
+    src/model/ReplaySession.cpp
+    src/model/ReplaySession.h
+    src/model/SessionRecorder.cpp
+    src/model/SessionRecorder.h
     src/model/TrackedDevice.cpp
     src/model/TrackedDevice.h
     src/model/TrackerCalibration.cpp
@@ -76,7 +82,10 @@ add_executable(TrackingCorrectorTests
     tests/IkMathTest.cpp
     tests/IkSolversTest.cpp
     tests/ModeControllerTest.cpp
+    tests/RecordingTest.cpp
+    tests/ReplaySessionTest.cpp
     tests/RetargetTest.cpp
+    tests/SessionRecorderTest.cpp
     tests/TrackedDeviceTest.cpp
     tests/TrackerCalibrationTest.cpp)
 

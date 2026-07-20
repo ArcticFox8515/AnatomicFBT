@@ -11,12 +11,15 @@ class IkRig;
 // Application mode: ManualPose = gizmo-dragged targets (no VR input);
 // Calibration = targets mirror raw device poses while the skeleton rests,
 // until both triggers freeze device->target offsets; Capture = offsets
-// applied every frame, IK solver active.
+// applied every frame, IK solver active; Replay = identical to Capture,
+// except the caller feeds recorded device snapshots (calibrated once from
+// the recording's first frame via calibrateFromFrame) instead of live ones.
 enum class Mode
 {
     ManualPose,
     Calibration,
-    Capture
+    Capture,
+    Replay
 };
 
 // What the render loop should do with the rig after ModeController::update.
@@ -58,6 +61,23 @@ public:
         calibration_.clear();
         mode_ = Mode::Calibration;
     }
+
+    // Enters replay: drops any previously captured offsets. The caller then
+    // calibrates from a recording's first frame (calibrateFromFrame) and
+    // feeds recorded device snapshots to update — the solver path is exactly
+    // the Capture one.
+    void switchToReplay()
+    {
+        calibration_.clear();
+        mode_ = Mode::Replay;
+    }
+
+    // Calibrates from one device snapshot exactly as the live gesture path
+    // does (rest pose aligned to the HMD, proximity assignment, frozen
+    // offsets) — given a recording's first frame this reproduces the live
+    // session's offsets bit for bit. Mutates the rig like a calibration
+    // frame; does not change the mode.
+    void calibrateFromFrame(IkRig& rig, const std::vector<TrackedDevice>& devices);
 
     // Live device->target assignment from the last calibration frame (for UI;
     // device indices are positions in the device list passed to update).

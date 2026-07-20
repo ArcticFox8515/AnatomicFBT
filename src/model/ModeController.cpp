@@ -29,10 +29,19 @@ FramePlan ModeController::update(IkRig& rig, const std::vector<TrackedDevice>& d
     }
 
     case Mode::Capture:
+    case Mode::Replay:
         plan.goals = updateCaptureFrame(rig, calibration_, devices);
         plan.solve = SolveMode::Goals;
         break;
     }
 
     return plan;
+}
+
+void ModeController::calibrateFromFrame(IkRig& rig, const std::vector<TrackedDevice>& devices)
+{
+    calibration_.clear();
+    const CalibrationFrame frame = updateCalibrationFrame(rig, devices);
+    liveAssignment_ = frame.assignment;
+    captureOffsets(calibration_, frame, devices);
 }

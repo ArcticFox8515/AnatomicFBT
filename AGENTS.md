@@ -21,7 +21,9 @@ Requires Conan 2 and Visual Studio 2022. Windows-only (`WIN32` exe, `WinMain` en
 - Running the exe creates `user-skeleton.json` / `user-ikrig.json` /
   `user-avatar-skeleton.json` in the working directory on first start (load-or-create
   pattern); invalid files fall back to defaults with the full error logged to
-  `logs/trackingcorrector.log` (rotating, 3×5MB).
+  `logs/trackingcorrector.log` (rotating, 3×5MB). Every capture session is also
+  recorded to `recording.tcrec` in the working directory (overwritten per session —
+  copy/rename to keep).
 
 ## Directory / file map
 
@@ -171,8 +173,8 @@ tests/                GoogleTest suites mirroring src/model.
   - `updateCaptureFrame(rig, calibration, devices)` — one capture-mode frame:
     mirrors raw device poses into the targets and returns solver goals (copy +
     `applyOffsets`). Goals always parallel the rig's targets.
-- `ModeController` (`ModeController.h/.cpp`) — the ManualPose/Calibration/Capture
-  state machine, hardware-free (fed `TrackedDevice` snapshots + the trigger
+- `ModeController` (`ModeController.h/.cpp`) — the ManualPose/Calibration/Capture/
+  Replay state machine, hardware-free (fed `TrackedDevice` snapshots + the trigger
   gesture per frame). Owns the `TrackerCalibration` and the live assignment
   (for UI). `update(rig, devices, captureGesture)` mutates the rig per the mode
   and returns a `FramePlan{SolveMode solve (None|Targets|Goals), goals,
@@ -183,7 +185,48 @@ tests/                GoogleTest suites mirroring src/model.
   a stale or wrongly-sized vector (regression: this crashed on the transition
   frame when goal production lived in main.cpp's if/else-if chain).
   `switchToCalibration()` clears the offsets; the gesture is ignored outside
-  Calibration. `Mode` enum lives here too.
+  Calibration. Replay shares the Capture branch of `update` verbatim — the
+  solver cannot tell recorded devices from live ones; `switchToReplay()` clears
+  the offsets and `calibrateFromFrame(rig, devices)` re-runs the exact live
+  calibration path (rest+align, proximity assignment, `captureOffsets`) on a
+  recording's first frame, reproducing the live session's offsets bit for bit.
+  `Mode` enum lives here too.
+- `Recording` (`Recording.h/.cpp`) — binary capture-session recording of the
+  device snapshots fed to `ModeController::update` (inputs only, so different
+  skeletons/solvers/calibrations can be tested against the same session).
+  Format (`.tcrec`, little-endian, documented in the header): magic+version,
+  roster (device ids + kinds, frozen on the first frame), then fixed-size
+  frames of absolute time (f32 seconds) + one pose per roster device in roster
+  order. Frame 0 is the exact calibration input. A device absent from a frame
+  is written with its last known pose (the live dropout effect — the target
+  doesn't move), so every frame is self-contained and randomly seekable;
+  mid-session devices unknown to the roster are ignored. `RecordingWriter`
+  streams to a `std::ostream` (nothing buffered — a crash costs at most the
+  trailing frame); `loadRecording(istream)` throws `Error` on malformed input
+  or zero complete frames but silently drops a truncated trailing frame;
+  `RecordingFrame.devices` is ready to feed to `update`. `nearestFrameIndex`
+  snaps a timeline click to the closest frame time. `kRecordingFileExtension`
+  (`.tcrec`) lives here too.
+- `SessionRecorder` (`SessionRecorder.h/.cpp`) — automatic capture-session
+  recording lifecycle, log- and file-system-free: streams come from an injected
+  `StreamFactory` (tests use string streams; main.cpp supplies "open
+  `recording.tcrec` truncated"). `update(mode, capturedOffsets, now, devices)`
+  is called once per frame right after `ModeController::update`: the
+  calibration→capture transition starts a new recording whose frame 0 holds
+  exactly the devices calibration froze offsets from; every further Capture
+  frame appends at `now - start`; leaving Capture stops. Failures never throw
+  (a broken recording must not break the capture) — they stop the recording
+  and surface once in the returned `Event{started, stopped, error}`, which the
+  caller logs.
+- `ReplaySession` (`ReplaySession.h/.cpp`) — replay-mode state, UI- and
+  hardware-free: the recording file list (`scan(directory)` — sorted
+  `*.tcrec`), the loaded recording, and the timeline position.
+  `load(index, controller, rig)` opens the file and recalibrates via
+  `ModeController::calibrateFromFrame` on frame 0, then seeks to frame 0;
+  throws `Error` on failure, leaving the file list intact and no recording
+  loaded. `seek(time)` snaps to `nearestFrameIndex`; `currentDevices()` is the
+  per-frame `update` input (empty without a recording — skeleton idles);
+  `frameTime()/frameIndex()/files()/loadedIndex()/hasRecording()` feed the UI.
 
 ### View layer (`src/view/`)
 
@@ -239,7 +282,18 @@ both-triggers edge freezes the offsets via `captureOffsets` and switches to Capt
 **Capture** — `updateCaptureFrame` (model layer) writes raw device poses into the targets (so
 rendered markers show exactly what OpenVR reports, same as Calibration) and returns solver goals
 (raw poses + offsets on a copy), `rig.solve(plan.goals)` consumes
-them. Targets are never rewritten for display purposes. All of the above is driven
+them. Targets are never rewritten for display purposes. Every capture session is
+also recorded to `recording.tcrec` — the whole lifecycle lives in
+`SessionRecorder` (model layer); main.cpp only supplies the file-stream factory,
+passes `glfwGetTime()` as the clock, and logs the returned events. **Replay** —
+devices come from a loaded recording's current frame instead of OpenVR (no
+polling, no gesture); all state lives in `ReplaySession` (model layer):
+entering the mode calls `scan(".")` and loads the first file (recalibrating
+from its frame 0); with no files the skeleton idles at rest. The panel lists
+`files()` (click = `load()`), and a borderless timeline window pinned across
+the bottom holds a full-width slider bound to `frameTime()` that calls
+`seek()` — no auto-play, `currentDevices()` is fed to `update` each frame.
+All of the above is driven
 by `ModeController::update` — main.cpp's only mode logic is: poll poses once per
 frame, read the trigger edge in Calibration only (stateful), call `update`,
 execute the returned `FramePlan`.
