@@ -48,7 +48,7 @@ TEST(SolveAnchor, PinsRootPositionAndRotation)
 {
     Skeleton skeleton = Skeleton::makeDefault();
     IkTarget target;
-    target.jointIndex = findJoint(skeleton, "head");
+    target.jointIndex = findJoint(skeleton, "Head");
     target.position = glm::vec3(0.5f, 1.2f, -0.3f);
     target.rotation = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 
@@ -213,16 +213,16 @@ TEST(SolveChain, WorksOnDefaultSkeletonSpine)
 {
     Skeleton skeleton = Skeleton::makeDefault();
     const std::vector<int> chain = {
-        findJoint(skeleton, "neck"), findJoint(skeleton, "upper_chest"),
-        findJoint(skeleton, "chest"), findJoint(skeleton, "waist"),
-        findJoint(skeleton, "hip")};
+        findJoint(skeleton, "Neck"), findJoint(skeleton, "Chest"),
+        findJoint(skeleton, "Spine"), findJoint(skeleton, "Waist"),
+        findJoint(skeleton, "Hips")};
 
     IkTarget target;
     target.jointIndex = chain.back();
     target.position = glm::vec3(0.0f, 1.3f, 0.0f);  // 0.4 m below head: spine curls
 
     const WorldTransforms wt = computeWorldTransforms(skeleton);
-    solveChain(skeleton, wt, findJoint(skeleton, "head"), chain, target);
+    solveChain(skeleton, wt, findJoint(skeleton, "Head"), chain, target);
 
     const std::vector<glm::vec3> solved = computeWorldPositions(skeleton);
     expectVecNear(solved[chain.back()], target.position, 0.01f);
@@ -231,10 +231,10 @@ TEST(SolveChain, WorksOnDefaultSkeletonSpine)
 TEST(SolveTwoBone, PlacesMiddleJointOnGoalBendingTowardPole)
 {
     Skeleton skeleton = Skeleton::makeDefault();
-    const int socket = findJoint(skeleton, "left_hip");
-    const int j1 = findJoint(skeleton, "left_upper_leg");
-    const int j2 = findJoint(skeleton, "left_lower_leg");
-    const int tip = findJoint(skeleton, "left_foot");
+    const int socket = findJoint(skeleton, "LeftHip");
+    const int j1 = findJoint(skeleton, "LeftUpperLeg");
+    const int j2 = findJoint(skeleton, "LeftLowerLeg");
+    const int tip = findJoint(skeleton, "LeftFoot");
 
     IkTarget target;
     target.jointIndex = tip;
@@ -254,10 +254,10 @@ TEST(SolveTwoBone, PlacesMiddleJointOnGoalBendingTowardPole)
 TEST(SolveTwoBone, OverreachStretchesTowardGoal)
 {
     Skeleton skeleton = Skeleton::makeDefault();
-    const int socket = findJoint(skeleton, "left_hip");
-    const int j1 = findJoint(skeleton, "left_upper_leg");
-    const int j2 = findJoint(skeleton, "left_lower_leg");
-    const int tip = findJoint(skeleton, "left_foot");
+    const int socket = findJoint(skeleton, "LeftHip");
+    const int j1 = findJoint(skeleton, "LeftUpperLeg");
+    const int j2 = findJoint(skeleton, "LeftLowerLeg");
+    const int tip = findJoint(skeleton, "LeftFoot");
 
     IkTarget target;
     target.jointIndex = tip;
@@ -280,13 +280,13 @@ TEST(SolveTwoBone, RotatedSocketStillReachesTarget)
     // rotated socket (e.g. a rolled hip) they must be composed on top of the
     // socket frame, or the whole limb points off by the socket rotation.
     Skeleton skeleton = Skeleton::makeDefault();
-    const int hip = findJoint(skeleton, "hip");
+    const int hip = findJoint(skeleton, "Hips");
     skeleton.joints[hip].localRot = glm::angleAxis(glm::radians(30.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 
-    const int socket = findJoint(skeleton, "left_hip");
-    const int j1 = findJoint(skeleton, "left_upper_leg");
-    const int j2 = findJoint(skeleton, "left_lower_leg");
-    const int tip = findJoint(skeleton, "left_foot");
+    const int socket = findJoint(skeleton, "LeftHip");
+    const int j1 = findJoint(skeleton, "LeftUpperLeg");
+    const int j2 = findJoint(skeleton, "LeftLowerLeg");
+    const int tip = findJoint(skeleton, "LeftFoot");
 
     IkTarget target;
     target.jointIndex = tip;
@@ -306,10 +306,10 @@ TEST(SolveTwoBone, RotatedSocketStillReachesTarget)
 TEST(SolveTwoBone, TipBoneTakesTargetRotation)
 {
     Skeleton skeleton = Skeleton::makeDefault();
-    const int socket = findJoint(skeleton, "right_shoulder");
-    const int j1 = findJoint(skeleton, "right_upper_arm");
-    const int j2 = findJoint(skeleton, "right_lower_arm");
-    const int tip = findJoint(skeleton, "right_hand");
+    const int socket = findJoint(skeleton, "RightShoulder");
+    const int j1 = findJoint(skeleton, "RightUpperArm");
+    const int j2 = findJoint(skeleton, "RightLowerArm");
+    const int tip = findJoint(skeleton, "RightHand");
 
     IkTarget target;
     target.jointIndex = tip;

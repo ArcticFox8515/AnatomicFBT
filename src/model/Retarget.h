@@ -19,7 +19,7 @@ struct RetargetMap
     std::vector<std::optional<int>> dstToSrc;
 
     // The anchor pair: the dst joint whose world position is pinned to the
-    // matching src joint's position (typically "head" — the HMD stays fixed,
+    // matching src joint's position (typically "Head" — the HMD stays fixed,
     // the avatar root is placed under it), or nullopt when no name matches.
     std::optional<int> anchorDst;
     std::optional<int> anchorSrc;

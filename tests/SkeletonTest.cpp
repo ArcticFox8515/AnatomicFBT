@@ -167,7 +167,7 @@ TEST(DefaultSkeleton, IsValidAndOrdered)
             EXPECT_LT(skeleton.joints[i].parentIndex, static_cast<int>(i)) << "parent must come before child";
     }
     EXPECT_EQ(rootCount, 1);
-    EXPECT_EQ(skeleton.joints.front().name, "head");
+    EXPECT_EQ(skeleton.joints.front().name, "Head");
 }
 
 TEST(ComputeWorldPositions, AccumulatesOffsets)

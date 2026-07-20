@@ -43,8 +43,8 @@ TEST(IkRigConfigDeserialization, DuplicateTargetsThrow)
     const nlohmann::json j = nlohmann::json::parse(R"(
     {
         "targets": [
-            { "bone": "head", "solver": "anchor" },
-            { "bone": "head", "solver": "chain" }
+            { "bone": "Head", "solver": "anchor" },
+            { "bone": "Head", "solver": "chain" }
         ]
     })");
     EXPECT_THROW(j.get<IkRigConfig>(), std::runtime_error);
@@ -54,7 +54,7 @@ TEST(IkRigConfigDeserialization, LegacyStringTargetsThrow)
 {
     const nlohmann::json j = nlohmann::json::parse(R"(
     {
-        "targets": ["head", "hip"]
+        "targets": ["Head", "Hips"]
     })");
     EXPECT_THROW(j.get<IkRigConfig>(), nlohmann::json::exception);
 }
@@ -86,7 +86,7 @@ TEST(IkRigConfigDeserialization, MissingSectionsGetDefaults)
 
 TEST(IkRigConfigDeserialization, TargetsMustBeArray)
 {
-    const nlohmann::json j = nlohmann::json::parse(R"({ "targets": "head" })");
+    const nlohmann::json j = nlohmann::json::parse(R"({ "targets": "Head" })");
     EXPECT_THROW(j.get<IkRigConfig>(), nlohmann::json::exception);
 }
 
@@ -130,7 +130,7 @@ TEST(IkRigLoadConfig, UnknownLimitBoneThrows)
 TEST(IkRigLoadConfig, AnchorOnNonRootThrows)
 {
     IkRigConfig config;
-    config.targets = {{"hip", SolverType::Anchor}};
+    config.targets = {{"Hips", SolverType::Anchor}};
     IkRig rig(Skeleton::makeDefault());
     EXPECT_THROW(rig.loadConfig(config), std::runtime_error);
 }
@@ -138,7 +138,7 @@ TEST(IkRigLoadConfig, AnchorOnNonRootThrows)
 TEST(IkRigLoadConfig, ChainOnRootThrows)
 {
     IkRigConfig config;
-    config.targets = {{"head", SolverType::Chain}};
+    config.targets = {{"Head", SolverType::Chain}};
     IkRig rig(Skeleton::makeDefault());
     EXPECT_THROW(rig.loadConfig(config), std::runtime_error);
 }
@@ -146,7 +146,7 @@ TEST(IkRigLoadConfig, ChainOnRootThrows)
 TEST(IkRigLoadConfig, TwoBoneWithTooFewAncestorsThrows)
 {
     IkRigConfig config;
-    config.targets = {{"upper_chest", SolverType::TwoBone}};  // head->neck->upper_chest: only 2
+    config.targets = {{"Chest", SolverType::TwoBone}};  // Head->Neck->Chest: only 2
     IkRig rig(Skeleton::makeDefault());
     EXPECT_THROW(rig.loadConfig(config), std::runtime_error);
 }
@@ -154,7 +154,7 @@ TEST(IkRigLoadConfig, TwoBoneWithTooFewAncestorsThrows)
 TEST(IkRigLoadConfig, TwoBoneWithoutMiddleBonePoleThrows)
 {
     IkRigConfig config;
-    config.targets = {{"left_foot", SolverType::TwoBone}};  // no limits entry -> no pole
+    config.targets = {{"LeftFoot", SolverType::TwoBone}};  // no limits entry -> no pole
     IkRig rig(Skeleton::makeDefault());
     EXPECT_THROW(rig.loadConfig(config), std::runtime_error);
 }
@@ -243,7 +243,7 @@ TEST(IkRigSolve, MovingAllTargetsTranslatesWholeSkeleton)
 TEST(IkRigSolve, HeadTargetDrivesRootPose)
 {
     IkRig rig = makeDefaultRig();
-    IkTarget* head = findTarget(rig, "head");
+    IkTarget* head = findTarget(rig, "Head");
     ASSERT_NE(head, nullptr);
     head->position = glm::vec3(0.5f, 1.2f, -0.3f);
     head->rotation = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
@@ -262,7 +262,7 @@ TEST(IkRigSolve, HeadTargetDrivesRootPose)
 TEST(IkRigSolve, SolveFromExplicitGoalsLeavesTargetsUntouched)
 {
     IkRig rig = makeDefaultRig();
-    IkTarget* head = findTarget(rig, "head");
+    IkTarget* head = findTarget(rig, "Head");
     ASSERT_NE(head, nullptr);
     const size_t headIndex = static_cast<size_t>(head - rig.targets.data());
     const glm::vec3 targetBefore = rig.targets[headIndex].position;
@@ -289,20 +289,20 @@ TEST(IkRigSolve, SolveFromGoalsWithWrongSizeThrows)
 TEST(IkRigSolve, FootTargetPlacesAnkleWithKneeForward)
 {
     IkRig rig = makeDefaultRig();
-    IkTarget* foot = findTarget(rig, "left_foot");
+    IkTarget* foot = findTarget(rig, "LeftFoot");
     ASSERT_NE(foot, nullptr);
     foot->position = glm::vec3(0.1f, 0.5f, -0.4f);
 
     rig.solve();
 
     const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
-    const int ankle = findJoint(rig, "left_lower_leg");
-    const int knee = findJoint(rig, "left_upper_leg");
+    const int ankle = findJoint(rig, "LeftLowerLeg");
+    const int knee = findJoint(rig, "LeftUpperLeg");
     ASSERT_GE(ankle, 0);
     ASSERT_GE(knee, 0);
 
     // The ankle lands on the goal implied by the foot target.
-    const glm::vec3 goal = foot->position - foot->rotation * rig.skeleton.joints[findJoint(rig, "left_foot")].restOffset;
+    const glm::vec3 goal = foot->position - foot->rotation * rig.skeleton.joints[findJoint(rig, "LeftFoot")].restOffset;
     expectVecNear(wt.positions[ankle], goal, 1e-3f);
     // The knee bends forward (-Z), not backward.
     EXPECT_LT(wt.positions[knee].z, -0.1f);
@@ -311,31 +311,31 @@ TEST(IkRigSolve, FootTargetPlacesAnkleWithKneeForward)
 TEST(IkRigSolve, HandTargetPlacesWrist)
 {
     IkRig rig = makeDefaultRig();
-    IkTarget* hand = findTarget(rig, "right_hand");
+    IkTarget* hand = findTarget(rig, "RightHand");
     ASSERT_NE(hand, nullptr);
     hand->position = glm::vec3(-0.5f, 1.3f, -0.3f);
 
     rig.solve();
 
     const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
-    const int wrist = findJoint(rig, "right_lower_arm");
+    const int wrist = findJoint(rig, "RightLowerArm");
     ASSERT_GE(wrist, 0);
-    const glm::vec3 goal = hand->position - hand->rotation * rig.skeleton.joints[findJoint(rig, "right_hand")].restOffset;
+    const glm::vec3 goal = hand->position - hand->rotation * rig.skeleton.joints[findJoint(rig, "RightHand")].restOffset;
     expectVecNear(wt.positions[wrist], goal, 1e-3f);
 }
 
 TEST(IkRigSolve, HipTargetCrouchesSpine)
 {
     IkRig rig = makeDefaultRig();
-    IkTarget* hip = findTarget(rig, "hip");
+    IkTarget* hip = findTarget(rig, "Hips");
     ASSERT_NE(hip, nullptr);
     hip->position = glm::vec3(0.0f, 1.3f, 0.0f);  // 0.4m below the head: spine must curl
 
     rig.solve();
 
     const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
-    const int hipJoint = findJoint(rig, "hip");
-    const int chest = findJoint(rig, "chest");
+    const int hipJoint = findJoint(rig, "Hips");
+    const int chest = findJoint(rig, "Spine");
     ASSERT_GE(hipJoint, 0);
     ASSERT_GE(chest, 0);
     expectVecNear(wt.positions[hipJoint], hip->position, 0.01f);
@@ -347,18 +347,18 @@ TEST(IkRigSolve, HipTargetCrouchesSpine)
 TEST(IkRigSolve, OverreachedFootStretchesLegWithoutExploding)
 {
     IkRig rig = makeDefaultRig();
-    IkTarget* foot = findTarget(rig, "left_foot");
+    IkTarget* foot = findTarget(rig, "LeftFoot");
     ASSERT_NE(foot, nullptr);
     foot->position = glm::vec3(0.1f, 0.02f, -3.0f);  // far beyond leg length
 
     rig.solve();
 
     const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
-    const int socket = findJoint(rig, "left_hip");
-    const int ankle = findJoint(rig, "left_lower_leg");
+    const int socket = findJoint(rig, "LeftHip");
+    const int ankle = findJoint(rig, "LeftLowerLeg");
     // Leg fully extended: ankle at chain length from the socket, toward the goal.
     EXPECT_NEAR(glm::length(wt.positions[ankle] - wt.positions[socket]), 0.9f, 1e-3f);
-    const glm::vec3 goal = foot->position - foot->rotation * rig.skeleton.joints[findJoint(rig, "left_foot")].restOffset;
+    const glm::vec3 goal = foot->position - foot->rotation * rig.skeleton.joints[findJoint(rig, "LeftFoot")].restOffset;
     const glm::vec3 aim = glm::normalize(goal - wt.positions[socket]);
     const glm::vec3 ankleDir = glm::normalize(wt.positions[ankle] - wt.positions[socket]);
     EXPECT_NEAR(glm::dot(ankleDir, aim), 1.0f, 1e-3f);
@@ -371,51 +371,51 @@ TEST(IkRigSolve, HeadPitchKeepsHipAndLegsStable)
     // which otherwise sends the legs haywire.
     IkRig rig = makeDefaultRig();
     const std::vector<glm::vec3> rest = computeWorldPositions(rig.skeleton);
-    IkTarget* head = findTarget(rig, "head");
+    IkTarget* head = findTarget(rig, "Head");
     ASSERT_NE(head, nullptr);
     head->rotation = glm::angleAxis(glm::radians(75.0f), glm::vec3(1.0f, 0.0f, 0.0f));
 
     rig.solve();
 
     const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
-    const int hip = findJoint(rig, "hip");
+    const int hip = findJoint(rig, "Hips");
     ASSERT_GE(hip, 0);
     EXPECT_NEAR(glm::abs(glm::dot(wt.rotations[hip], glm::quat(1.0f, 0.0f, 0.0f, 0.0f))), 1.0f, 0.05f);
 
-    IkTarget* leftFoot = findTarget(rig, "left_foot");
-    IkTarget* rightFoot = findTarget(rig, "right_foot");
+    IkTarget* leftFoot = findTarget(rig, "LeftFoot");
+    IkTarget* rightFoot = findTarget(rig, "RightFoot");
     ASSERT_NE(leftFoot, nullptr);
     ASSERT_NE(rightFoot, nullptr);
-    const int leftFootJoint = findJoint(rig, "left_foot");
-    const int rightFootJoint = findJoint(rig, "right_foot");
+    const int leftFootJoint = findJoint(rig, "LeftFoot");
+    const int rightFootJoint = findJoint(rig, "RightFoot");
     expectVecNear(wt.positions[leftFootJoint], leftFoot->position, 0.02f);
     expectVecNear(wt.positions[rightFootJoint], rightFoot->position, 0.02f);
 
     // With all leg targets at rest, the legs stay at the rest pose.
-    const int leftKnee = findJoint(rig, "left_upper_leg");
+    const int leftKnee = findJoint(rig, "LeftUpperLeg");
     expectVecNear(wt.positions[leftKnee], rest[leftKnee], 0.02f);
 }
 
 TEST(IkRigSolve, HeadYawKeepsHipLevel)
 {
     IkRig rig = makeDefaultRig();
-    IkTarget* head = findTarget(rig, "head");
+    IkTarget* head = findTarget(rig, "Head");
     ASSERT_NE(head, nullptr);
     head->rotation = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 
     rig.solve();
 
     const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
-    const int hip = findJoint(rig, "hip");
+    const int hip = findJoint(rig, "Hips");
     ASSERT_GE(hip, 0);
     EXPECT_NEAR(glm::abs(glm::dot(wt.rotations[hip], glm::quat(1.0f, 0.0f, 0.0f, 0.0f))), 1.0f, 0.05f);
 
-    IkTarget* leftFoot = findTarget(rig, "left_foot");
-    IkTarget* rightFoot = findTarget(rig, "right_foot");
+    IkTarget* leftFoot = findTarget(rig, "LeftFoot");
+    IkTarget* rightFoot = findTarget(rig, "RightFoot");
     ASSERT_NE(leftFoot, nullptr);
     ASSERT_NE(rightFoot, nullptr);
-    const int leftFootJoint = findJoint(rig, "left_foot");
-    const int rightFootJoint = findJoint(rig, "right_foot");
+    const int leftFootJoint = findJoint(rig, "LeftFoot");
+    const int rightFootJoint = findJoint(rig, "RightFoot");
     expectVecNear(wt.positions[leftFootJoint], leftFoot->position, 0.02f);
     expectVecNear(wt.positions[rightFootJoint], rightFoot->position, 0.02f);
 }
@@ -428,8 +428,8 @@ TEST(IkRigSolve, HipRollKeepsFeetOnTargetsAndLegsDown)
     // Head and hip drop slightly: at full rest extension a rolled hip is
     // unreachable for both the spine and the raised-side leg.
     IkRig rig = makeDefaultRig();
-    IkTarget* head = findTarget(rig, "head");
-    IkTarget* hip = findTarget(rig, "hip");
+    IkTarget* head = findTarget(rig, "Head");
+    IkTarget* hip = findTarget(rig, "Hips");
     ASSERT_NE(head, nullptr);
     ASSERT_NE(hip, nullptr);
     head->position.y -= 0.1f;
@@ -439,24 +439,24 @@ TEST(IkRigSolve, HipRollKeepsFeetOnTargetsAndLegsDown)
     rig.solve();
 
     const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
-    const int hipJoint = findJoint(rig, "hip");
+    const int hipJoint = findJoint(rig, "Hips");
     ASSERT_GE(hipJoint, 0);
     expectVecNear(wt.positions[hipJoint], hip->position, 0.01f);
 
-    IkTarget* leftFoot = findTarget(rig, "left_foot");
-    IkTarget* rightFoot = findTarget(rig, "right_foot");
+    IkTarget* leftFoot = findTarget(rig, "LeftFoot");
+    IkTarget* rightFoot = findTarget(rig, "RightFoot");
     ASSERT_NE(leftFoot, nullptr);
     ASSERT_NE(rightFoot, nullptr);
-    const int leftFootJoint = findJoint(rig, "left_foot");
-    const int rightFootJoint = findJoint(rig, "right_foot");
+    const int leftFootJoint = findJoint(rig, "LeftFoot");
+    const int rightFootJoint = findJoint(rig, "RightFoot");
     expectVecNear(wt.positions[leftFootJoint], leftFoot->position, 0.02f);
     expectVecNear(wt.positions[rightFootJoint], rightFoot->position, 0.02f);
 
     // Upper legs still point roughly downward from the hip (not sideways).
-    const int leftUpperLeg = findJoint(rig, "left_upper_leg");
-    const int rightUpperLeg = findJoint(rig, "right_upper_leg");
-    const int leftHipSocket = findJoint(rig, "left_hip");
-    const int rightHipSocket = findJoint(rig, "right_hip");
+    const int leftUpperLeg = findJoint(rig, "LeftUpperLeg");
+    const int rightUpperLeg = findJoint(rig, "RightUpperLeg");
+    const int leftHipSocket = findJoint(rig, "LeftHip");
+    const int rightHipSocket = findJoint(rig, "RightHip");
     const glm::vec3 leftDir = glm::normalize(wt.positions[leftUpperLeg] - wt.positions[leftHipSocket]);
     const glm::vec3 rightDir = glm::normalize(wt.positions[rightUpperLeg] - wt.positions[rightHipSocket]);
     EXPECT_LT(leftDir.y, -0.7f);
@@ -466,8 +466,8 @@ TEST(IkRigSolve, HipRollKeepsFeetOnTargetsAndLegsDown)
 TEST(IkRigSolve, HipSwayKeepsFeetPlanted)
 {
     IkRig rig = makeDefaultRig();
-    IkTarget* head = findTarget(rig, "head");
-    IkTarget* hip = findTarget(rig, "hip");
+    IkTarget* head = findTarget(rig, "Head");
+    IkTarget* hip = findTarget(rig, "Hips");
     ASSERT_NE(head, nullptr);
     ASSERT_NE(hip, nullptr);
     head->position.y -= 0.1f;  // slack: the rest pose is fully extended
@@ -477,16 +477,16 @@ TEST(IkRigSolve, HipSwayKeepsFeetPlanted)
     rig.solve();
 
     const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
-    const int hipJoint = findJoint(rig, "hip");
+    const int hipJoint = findJoint(rig, "Hips");
     ASSERT_GE(hipJoint, 0);
     expectVecNear(wt.positions[hipJoint], hip->position, 0.01f);
 
-    IkTarget* leftFoot = findTarget(rig, "left_foot");
-    IkTarget* rightFoot = findTarget(rig, "right_foot");
+    IkTarget* leftFoot = findTarget(rig, "LeftFoot");
+    IkTarget* rightFoot = findTarget(rig, "RightFoot");
     ASSERT_NE(leftFoot, nullptr);
     ASSERT_NE(rightFoot, nullptr);
-    const int leftFootJoint = findJoint(rig, "left_foot");
-    const int rightFootJoint = findJoint(rig, "right_foot");
+    const int leftFootJoint = findJoint(rig, "LeftFoot");
+    const int rightFootJoint = findJoint(rig, "RightFoot");
     expectVecNear(wt.positions[leftFootJoint], leftFoot->position, 0.02f);
     expectVecNear(wt.positions[rightFootJoint], rightFoot->position, 0.02f);
 }
@@ -494,7 +494,7 @@ TEST(IkRigSolve, HipSwayKeepsFeetPlanted)
 TEST(IkRigConfigValidation, DuplicateTargetsThrow)
 {
     IkRigConfig config;
-    config.targets = {{"head", SolverType::Anchor}, {"head", SolverType::Chain}};
+    config.targets = {{"Head", SolverType::Anchor}, {"Head", SolverType::Chain}};
     EXPECT_THROW(config.validate(), std::runtime_error);
 }
 

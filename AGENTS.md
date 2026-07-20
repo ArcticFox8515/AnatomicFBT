@@ -48,6 +48,28 @@ src/vr/               OpenVR device tracking (exe-only; converts OpenVR state in
 src/bindings/         Vendored ImGui backends (imgui_impl_glfw/opengl3). AUTO-COPIED by
                       conanfile.py from the imgui package — gitignored, never edit.
 tests/                GoogleTest suites mirroring src/model.
+unity/                Standalone Unity Editor tooling (C#), copied into a project's
+                      Editor/ folder — NOT part of the C++ build. `AvatarSkeletonExporter.cs`
+                      copies a humanoid avatar's skeleton to our skeleton JSON with no
+                      interpretation (no per-bone logic): one joint per humanoid-mapped
+                      transform, named by the `HumanBodyBones` enum member verbatim
+                      (`Hips`, `LeftUpperLeg`, …); parent = nearest mapped ancestor.
+                      The one representation gap it bridges: Unity puts a bone's
+                      transform at the START of the bone, our format puts a joint at the
+                      END, so each joint is placed at the bone end, computed generically
+                      — a bone with mapped children sits at the average of the children's
+                      positions; a leaf sits at a child transform named `<name>_end`
+                      (Blender FBX leaf-bone convention) if present, else at the average
+                      of all its child transforms' positions, else default length
+                      (0.1×humanScale) along the bone direction; the root (`Hips`) at its
+                      own transform. World positions taken (bakes in-scene scale) →
+                      Animator-root frame (translation+rotation removed, scale kept) →
+                      our axes (x,y,z)→(-x,y,-z); offsets are child−parent. Root special
+                      case: Unity's single `Hips` bone (root carries no bone in our
+                      format) explodes into one joint per child at the child's own start
+                      — `Spine`→`Waist`, `LeftUpperLeg`→`LeftHip`, `RightUpperLeg`→`RightHip`
+                      (names avoiding `HumanBodyBones` members) — and those children
+                      reparent onto them so their bones pivot correctly.
 ```
 
 ## Classes & responsibilities
@@ -59,6 +81,11 @@ tests/                GoogleTest suites mirroring src/model.
   `std::runtime_error`.
 - `GlmJson.h` — nlohmann `to_json`/`from_json` for `glm::vec3`, defined in
   `namespace glm` so ADL finds them; shared by all config (de)serialization.
+- `BoneNames` (`BoneNames.h`) — `inline constexpr const char*` for every default
+  skeleton bone name (`BoneNames::Head`, `BoneNames::LeftHand`, …), shared by
+  `Skeleton::makeDefault()` and `IkRigConfig::makeDefault()`. The names follow
+  Unity's `HumanBodyBones` naming — exactly what `unity/AvatarSkeletonExporter.cs`
+  emits — so an exported avatar skeleton retargets by name with no translation.
 - `Skeleton` (`Skeleton.h/.cpp`) — flat `std::vector<Joint>`, kept sorted
   parent-before-child. `Joint` = `{name, parentIndex (optional<int>), restOffset (vec3,
   meters), localRot (quat, identity at rest, NOT serialized)}`. The skeleton also has a
@@ -66,12 +93,13 @@ tests/                GoogleTest suites mirroring src/model.
   with orientation `localRot`; the root's `restOffset` is not applied by FK, it only
   seeds `rootPosition` at load time. `localRot(i)` always means "rotation of the bone
   ending at joint i, relative to the parent joint's world orientation".
-  - `Skeleton::makeDefault()` — 22-joint SlimeVR-style **head-rooted** skeleton (head is
-    root, spine goes downward; left side at +X). Bone names are snake_case:
-    `head, neck, upper_chest, chest, waist, hip, left/right_{hip,upper_leg,lower_leg,
-    foot,shoulder,upper_arm,lower_arm,hand}`.
-  - `Skeleton::makeDefaultHipRooted()` — same skeleton re-rooted at `hip` with the
-    spine chain reversed (`hip → waist → … → head`), like VRChat/Unity avatars; rest
+  - `Skeleton::makeDefault()` — 22-joint SlimeVR-style **head-rooted** skeleton (Head is
+    root, spine goes downward; left side at +X). Bone names come from `BoneNames.h`:
+    the spine chain runs `Head → Neck → Chest → Spine → Waist → Hips` (our
+    shoulder-parent "upper chest" is Unity's `Chest`, our mid-spine "chest" is Unity's
+    `Spine`), plus `Left/Right{Hip,UpperLeg,LowerLeg,Foot,Shoulder,UpperArm,LowerArm,Hand}`.
+  - `Skeleton::makeDefaultHipRooted()` — same skeleton re-rooted at `Hips` with the
+    spine chain reversed (`Hips → Waist → … → Head`), like VRChat/Unity avatars; rest
     world positions are identical. Default for `user-avatar-skeleton.json`. Built by
     an internal `reroot()` helper (reverses the ancestor chain, negating offsets —
     valid only while rest rotations are identity).
@@ -92,7 +120,7 @@ tests/                GoogleTest suites mirroring src/model.
   `anchor|chain|two_bone`) + per-bone `JointLimits`
   (`twistMinDeg/twistMaxDeg/swingConeDeg` + optional `pole` vec3 — the bend direction
   of that bone's hinge in the limb socket's frame, required on the middle bone of
-  two-bone chains). `makeDefault()`: anchor on head, chain on hip, two-bone on
+  two-bone chains). `makeDefault()`: anchor on Head, chain on Hips, two-bone on
   hands/feet; hinge limits + poles for knees/elbows (knees forward −Z, elbows
   down/back), cones for hips/shoulders. `from_json` parses declaratively (via
   per-struct `from_json` for `TargetConfig`/`JointLimits`), then calls the
@@ -141,7 +169,7 @@ tests/                GoogleTest suites mirroring src/model.
   world rotation onto each dst joint (`localRot = inverse(parentWorld) * world`,
   parent-before-child), leaves unmatched dst joints at rest, then shifts
   `dst.rootPosition` so the anchor joint (dst joint named like the src root, i.e.
-  `head` = the fixed HMD) lands exactly on its src world position.
+  `Head` = the fixed HMD) lands exactly on its src world position.
   `unmatchedBones(dst, map)` lists dst joints with no match (logged once at startup).
 - `Pose` (`Pose.h`) — header-only `Pose{position, rotation}` + `compose`/`inverse`
   rigid-pose math + `yawOnly(quat)` (heading without pitch/roll; treats -Z as the

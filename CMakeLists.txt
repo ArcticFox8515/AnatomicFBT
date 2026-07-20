@@ -16,6 +16,7 @@ find_package(GTest REQUIRED)
 add_library(TrackingCorrectorLib STATIC
     src/model/Error.h
     src/model/GlmJson.h
+    src/model/BoneNames.h
     src/model/Skeleton.cpp
     src/model/Skeleton.h
     src/model/IkRigConfig.cpp

@@ -1,5 +1,6 @@
 #include "Skeleton.h"
 
+#include "BoneNames.h"
 #include "Error.h"
 #include "GlmJson.h"
 
@@ -123,32 +124,32 @@ Skeleton Skeleton::makeDefault()
     };
 
     // Head-rooted spine (SlimeVR-style), left side at +X.
-    add("head", "", {0.0f, 1.70f, 0.0f});
-    add("neck", "head", {0.0f, -0.10f, 0.0f});
-    add("upper_chest", "neck", {0.0f, -0.10f, 0.0f});
-    add("chest", "upper_chest", {0.0f, -0.15f, 0.0f});
-    add("waist", "chest", {0.0f, -0.15f, 0.0f});
-    add("hip", "waist", {0.0f, -0.20f, 0.0f});
+    add(BoneNames::Head, "", {0.0f, 1.70f, 0.0f});
+    add(BoneNames::Neck, BoneNames::Head, {0.0f, -0.10f, 0.0f});
+    add(BoneNames::Chest, BoneNames::Neck, {0.0f, -0.10f, 0.0f});
+    add(BoneNames::Spine, BoneNames::Chest, {0.0f, -0.15f, 0.0f});
+    add(BoneNames::Waist, BoneNames::Spine, {0.0f, -0.15f, 0.0f});
+    add(BoneNames::Hips, BoneNames::Waist, {0.0f, -0.20f, 0.0f});
 
-    add("left_hip", "hip", {0.10f, 0.0f, 0.0f});
-    add("left_upper_leg", "left_hip", {0.0f, -0.45f, 0.0f});
-    add("left_lower_leg", "left_upper_leg", {0.0f, -0.45f, 0.0f});
-    add("left_foot", "left_lower_leg", {0.0f, 0.0f, -0.08f});
+    add(BoneNames::LeftHip, BoneNames::Hips, {0.10f, 0.0f, 0.0f});
+    add(BoneNames::LeftUpperLeg, BoneNames::LeftHip, {0.0f, -0.45f, 0.0f});
+    add(BoneNames::LeftLowerLeg, BoneNames::LeftUpperLeg, {0.0f, -0.45f, 0.0f});
+    add(BoneNames::LeftFoot, BoneNames::LeftLowerLeg, {0.0f, 0.0f, -0.08f});
 
-    add("right_hip", "hip", {-0.10f, 0.0f, 0.0f});
-    add("right_upper_leg", "right_hip", {0.0f, -0.45f, 0.0f});
-    add("right_lower_leg", "right_upper_leg", {0.0f, -0.45f, 0.0f});
-    add("right_foot", "right_lower_leg", {0.0f, 0.0f, -0.08f});
+    add(BoneNames::RightHip, BoneNames::Hips, {-0.10f, 0.0f, 0.0f});
+    add(BoneNames::RightUpperLeg, BoneNames::RightHip, {0.0f, -0.45f, 0.0f});
+    add(BoneNames::RightLowerLeg, BoneNames::RightUpperLeg, {0.0f, -0.45f, 0.0f});
+    add(BoneNames::RightFoot, BoneNames::RightLowerLeg, {0.0f, 0.0f, -0.08f});
 
-    add("left_shoulder", "upper_chest", {0.20f, 0.0f, 0.0f});
-    add("left_upper_arm", "left_shoulder", {0.28f, 0.0f, 0.0f});
-    add("left_lower_arm", "left_upper_arm", {0.26f, 0.0f, 0.0f});
-    add("left_hand", "left_lower_arm", {0.18f, 0.0f, 0.0f});
+    add(BoneNames::LeftShoulder, BoneNames::Chest, {0.20f, 0.0f, 0.0f});
+    add(BoneNames::LeftUpperArm, BoneNames::LeftShoulder, {0.28f, 0.0f, 0.0f});
+    add(BoneNames::LeftLowerArm, BoneNames::LeftUpperArm, {0.26f, 0.0f, 0.0f});
+    add(BoneNames::LeftHand, BoneNames::LeftLowerArm, {0.18f, 0.0f, 0.0f});
 
-    add("right_shoulder", "upper_chest", {-0.20f, 0.0f, 0.0f});
-    add("right_upper_arm", "right_shoulder", {-0.28f, 0.0f, 0.0f});
-    add("right_lower_arm", "right_upper_arm", {-0.26f, 0.0f, 0.0f});
-    add("right_hand", "right_lower_arm", {-0.18f, 0.0f, 0.0f});
+    add(BoneNames::RightShoulder, BoneNames::Chest, {-0.20f, 0.0f, 0.0f});
+    add(BoneNames::RightUpperArm, BoneNames::RightShoulder, {-0.28f, 0.0f, 0.0f});
+    add(BoneNames::RightLowerArm, BoneNames::RightUpperArm, {-0.26f, 0.0f, 0.0f});
+    add(BoneNames::RightHand, BoneNames::RightLowerArm, {-0.18f, 0.0f, 0.0f});
 
     for (const Joint& joint : skeleton.joints)
         if (!joint.parentIndex)
@@ -222,7 +223,7 @@ Skeleton reroot(const Skeleton& skeleton, const std::string& newRootName)
 
 Skeleton Skeleton::makeDefaultHipRooted()
 {
-    return reroot(makeDefault(), "hip");
+    return reroot(makeDefault(), BoneNames::Hips);
 }
 
 WorldTransforms computeWorldTransforms(const Skeleton& skeleton)

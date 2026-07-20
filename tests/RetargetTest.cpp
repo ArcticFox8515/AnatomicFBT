@@ -40,7 +40,7 @@ TEST(HipRootedDefaultSkeleton, SameRestPoseAsDefault)
         if (!hipRooted.joints[i].parentIndex)
         {
             ++rootCount;
-            EXPECT_EQ(hipRooted.joints[i].name, "hip");
+            EXPECT_EQ(hipRooted.joints[i].name, "Hips");
         }
         else
         {
@@ -51,10 +51,10 @@ TEST(HipRootedDefaultSkeleton, SameRestPoseAsDefault)
     EXPECT_EQ(rootCount, 1);
 
     // The spine chain now runs upward: head's parent is the neck.
-    const int headIndex = indexOf(hipRooted, "head");
+    const int headIndex = indexOf(hipRooted, "Head");
     ASSERT_GE(headIndex, 0);
     ASSERT_TRUE(hipRooted.joints[headIndex].parentIndex.has_value());
-    EXPECT_EQ(*hipRooted.joints[headIndex].parentIndex, indexOf(hipRooted, "neck"));
+    EXPECT_EQ(*hipRooted.joints[headIndex].parentIndex, indexOf(hipRooted, "Neck"));
 
     // Rest world positions are unchanged by the rerooting.
     const std::vector<glm::vec3> restPositions = computeWorldPositions(headRooted);
@@ -76,17 +76,17 @@ TEST(RetargetPose, ReproducesWorldPoseAcrossDifferentRoots)
     src.rootPosition = glm::vec3(0.3f, 1.9f, -0.2f);
     const glm::quat yaw = glm::angleAxis(glm::radians(35.0f), glm::vec3(0.0f, 1.0f, 0.0f));
     const glm::quat pitch = glm::angleAxis(glm::radians(-20.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-    src.joints[indexOf(src, "head")].localRot = yaw * pitch;
+    src.joints[indexOf(src, "Head")].localRot = yaw * pitch;
     // Twist about the bone axis on the spine: must survive the chain reversal.
-    src.joints[indexOf(src, "neck")].localRot =
+    src.joints[indexOf(src, "Neck")].localRot =
         glm::angleAxis(glm::radians(40.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-    src.joints[indexOf(src, "waist")].localRot =
+    src.joints[indexOf(src, "Waist")].localRot =
         glm::angleAxis(glm::radians(15.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-    src.joints[indexOf(src, "left_upper_leg")].localRot =
+    src.joints[indexOf(src, "LeftUpperLeg")].localRot =
         glm::angleAxis(glm::radians(50.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-    src.joints[indexOf(src, "left_lower_leg")].localRot =
+    src.joints[indexOf(src, "LeftLowerLeg")].localRot =
         glm::angleAxis(glm::radians(-60.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-    src.joints[indexOf(src, "right_upper_arm")].localRot =
+    src.joints[indexOf(src, "RightUpperArm")].localRot =
         glm::angleAxis(glm::radians(45.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 
     Skeleton dst = Skeleton::makeDefaultHipRooted();
@@ -119,13 +119,13 @@ TEST(RetargetPose, UnmatchedBonesStayAtRest)
     // Extra bones on both sides; appended last, so parent-before-child holds.
     Joint cape;
     cape.name = "cape";
-    cape.parentIndex = indexOf(dst, "hip");
+    cape.parentIndex = indexOf(dst, "Hips");
     cape.restOffset = glm::vec3(0.0f, 0.0f, -0.3f);
     dst.joints.push_back(cape);
 
     Joint antenna;
     antenna.name = "antenna";
-    antenna.parentIndex = indexOf(src, "head");
+    antenna.parentIndex = indexOf(src, "Head");
     antenna.restOffset = glm::vec3(0.0f, 0.2f, 0.0f);
     src.joints.push_back(antenna);
 
@@ -134,7 +134,7 @@ TEST(RetargetPose, UnmatchedBonesStayAtRest)
     ASSERT_EQ(unmatched.size(), 1u);
     EXPECT_EQ(unmatched[0], "cape");
 
-    src.joints[indexOf(src, "waist")].localRot =
+    src.joints[indexOf(src, "Waist")].localRot =
         glm::angleAxis(glm::radians(30.0f), glm::vec3(1.0f, 0.0f, 0.0f));
     retargetPose(src, dst, map);
 
@@ -145,9 +145,9 @@ TEST(RetargetPose, UnmatchedBonesStayAtRest)
 TEST(RetargetPose, AnchorsHeadWithDifferentProportions)
 {
     Skeleton src = Skeleton::makeDefault();
-    src.joints[indexOf(src, "waist")].localRot =
+    src.joints[indexOf(src, "Waist")].localRot =
         glm::angleAxis(glm::radians(20.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-    src.joints[indexOf(src, "left_upper_leg")].localRot =
+    src.joints[indexOf(src, "LeftUpperLeg")].localRot =
         glm::angleAxis(glm::radians(35.0f), glm::vec3(1.0f, 0.0f, 0.0f));
 
     // Same topology, 20% longer bones.
@@ -163,8 +163,8 @@ TEST(RetargetPose, AnchorsHeadWithDifferentProportions)
     const WorldTransforms dstWorld = computeWorldTransforms(dst);
 
     // The head (HMD anchor) lands exactly...
-    expectNearVec3(dstWorld.positions[indexOf(dst, "head")],
-        srcWorld.positions[indexOf(src, "head")], 1e-4f);
+    expectNearVec3(dstWorld.positions[indexOf(dst, "Head")],
+        srcWorld.positions[indexOf(src, "Head")], 1e-4f);
     // ...rotations still transfer by name...
     for (size_t i = 0; i < dst.joints.size(); ++i)
     {
@@ -174,8 +174,8 @@ TEST(RetargetPose, AnchorsHeadWithDifferentProportions)
                 srcWorld.rotations[static_cast<size_t>(*map.dstToSrc[i])], 1e-4f);
     }
     // ...but the proportion difference shows up at the feet.
-    const float footDistance = glm::distance(dstWorld.positions[indexOf(dst, "left_foot")],
-        srcWorld.positions[indexOf(src, "left_foot")]);
+    const float footDistance = glm::distance(dstWorld.positions[indexOf(dst, "LeftFoot")],
+        srcWorld.positions[indexOf(src, "LeftFoot")]);
     EXPECT_GT(footDistance, 0.01f);
 }
 
@@ -190,7 +190,7 @@ TEST(RetargetPose, NoMatchingNamesLeavesDstUntouched)
     })");
     Skeleton dst = j.get<Skeleton>();
     Skeleton src = Skeleton::makeDefault();
-    src.joints[indexOf(src, "waist")].localRot =
+    src.joints[indexOf(src, "Waist")].localRot =
         glm::angleAxis(glm::radians(30.0f), glm::vec3(1.0f, 0.0f, 0.0f));
 
     const RetargetMap map = buildRetargetMap(src, dst);

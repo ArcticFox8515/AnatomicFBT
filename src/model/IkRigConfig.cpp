@@ -1,5 +1,6 @@
 #include "IkRigConfig.h"
 
+#include "BoneNames.h"
 #include "Error.h"
 #include "GlmJson.h"
 
@@ -80,12 +81,12 @@ IkRigConfig IkRigConfig::makeDefault()
 {
 	IkRigConfig config;
 	config.targets = {
-		{"head", SolverType::Anchor},
-		{"left_hand", SolverType::TwoBone},
-		{"right_hand", SolverType::TwoBone},
-		{"left_foot", SolverType::TwoBone},
-		{"right_foot", SolverType::TwoBone},
-		{"hip", SolverType::Chain},
+		{BoneNames::Head, SolverType::Anchor},
+		{BoneNames::LeftHand, SolverType::TwoBone},
+		{BoneNames::RightHand, SolverType::TwoBone},
+		{BoneNames::LeftFoot, SolverType::TwoBone},
+		{BoneNames::RightFoot, SolverType::TwoBone},
+		{BoneNames::Hips, SolverType::Chain},
 	};
 
 	auto add = [&config](std::string bone, float twistMin, float twistMax, float swingCone,
@@ -106,15 +107,15 @@ IkRigConfig IkRigConfig::makeDefault()
 	const glm::vec3 elbowPole = glm::normalize(glm::vec3{0.0f, -1.0f, 1.0f});
 
 	// Knees and elbows: hinges with near-zero twist, bending toward the pole.
-	add("left_lower_leg", -5.0f, 5.0f, 150.0f, kneePole);
-	add("right_lower_leg", -5.0f, 5.0f, 150.0f, kneePole);
-	add("left_lower_arm", -5.0f, 5.0f, 150.0f, elbowPole);
-	add("right_lower_arm", -5.0f, 5.0f, 150.0f, elbowPole);
+	add(BoneNames::LeftLowerLeg, -5.0f, 5.0f, 150.0f, kneePole);
+	add(BoneNames::RightLowerLeg, -5.0f, 5.0f, 150.0f, kneePole);
+	add(BoneNames::LeftLowerArm, -5.0f, 5.0f, 150.0f, elbowPole);
+	add(BoneNames::RightLowerArm, -5.0f, 5.0f, 150.0f, elbowPole);
 	// Hips and shoulders: wide cones, moderate twist.
-	add("left_upper_leg", -30.0f, 45.0f, 120.0f);
-	add("right_upper_leg", -45.0f, 30.0f, 120.0f);
-	add("left_upper_arm", -90.0f, 90.0f, 170.0f);
-	add("right_upper_arm", -90.0f, 90.0f, 170.0f);
+	add(BoneNames::LeftUpperLeg, -30.0f, 45.0f, 120.0f);
+	add(BoneNames::RightUpperLeg, -45.0f, 30.0f, 120.0f);
+	add(BoneNames::LeftUpperArm, -90.0f, 90.0f, 170.0f);
+	add(BoneNames::RightUpperArm, -90.0f, 90.0f, 170.0f);
 
 	return config;
 }

@@ -42,7 +42,7 @@ public:
     std::vector<TargetConfig> targets;
     std::vector<JointLimits> limits;
 
-    // Anchor on head, chain on hip, two-bone on hands/feet; hinge limits with
+    // Anchor on Head, chain on Hips, two-bone on hands/feet; hinge limits with
     // poles for knees/elbows, cones for hips/shoulders.
     static IkRigConfig makeDefault();
 

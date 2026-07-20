@@ -29,8 +29,8 @@ public:
     // Builds the default SlimeVR-style head-rooted skeleton.
     static Skeleton makeDefault();
 
-    // Builds the same skeleton as makeDefault() but rooted at "hip" with the
-    // spine chain reversed (hip -> waist -> chest -> ... -> head), like
+    // Builds the same skeleton as makeDefault() but rooted at "Hips" with the
+    // spine chain reversed (Hips -> Waist -> ... -> Head), like
     // VRChat/Unity avatars. Rest world positions are identical.
     static Skeleton makeDefaultHipRooted();
 };

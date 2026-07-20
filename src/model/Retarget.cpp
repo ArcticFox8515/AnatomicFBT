@@ -34,7 +34,7 @@ RetargetMap buildRetargetMap(const Skeleton& src, const Skeleton& dst)
         if (!joint.parentIndex)
         {
             // The root has no bone; match it by plain name (e.g. the pelvis
-            // orientation transfers onto the avatar's "hip" root joint).
+            // orientation transfers onto the avatar's "Hips" root joint).
             if (const auto it = srcIndexOf.find(joint.name); it != srcIndexOf.end())
                 map.dstToSrc[i] = it->second;
             continue;
@@ -45,7 +45,7 @@ RetargetMap buildRetargetMap(const Skeleton& src, const Skeleton& dst)
             map.dstToSrc[i] = it->second;
     }
 
-    // Anchor on the joint sharing the src root's name (e.g. "head"); fall back
+    // Anchor on the joint sharing the src root's name (e.g. "Head"); fall back
     // to the dst root's name match.
     for (size_t i = 0; i < src.joints.size(); ++i)
         if (!src.joints[i].parentIndex)
