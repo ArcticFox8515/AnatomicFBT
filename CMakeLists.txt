@@ -17,6 +17,8 @@ add_library(TrackingCorrectorLib STATIC
     src/model/Error.h
     src/model/GlmJson.h
     src/model/BoneNames.h
+    src/model/BodyProportions.cpp
+    src/model/BodyProportions.h
     src/model/Skeleton.cpp
     src/model/Skeleton.h
     src/model/IkRigConfig.cpp
@@ -79,6 +81,7 @@ enable_testing()
 
 add_executable(TrackingCorrectorTests
     tests/SkeletonTest.cpp
+    tests/BodyProportionsTest.cpp
     tests/IkRigTest.cpp
     tests/IkMathTest.cpp
     tests/IkSolversTest.cpp

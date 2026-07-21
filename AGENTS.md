@@ -18,7 +18,7 @@ Requires Conan 2 and Visual Studio 2022. Windows-only (`WIN32` exe, `WinMain` en
 - `run-tests.bat` — `ctest --test-dir build -C Debug --output-on-failure`.
 - `CMakeUserPresets.json` only includes the Conan-generated presets file and is
   gitignored — regenerate via the .bat, don't hand-edit.
-- Running the exe creates `user-skeleton.json` / `user-ikrig.json` /
+- Running the exe creates `user-proportions.json` / `user-ikrig.json` /
   `user-avatar-skeleton.json` in the working directory on first start (load-or-create
   pattern); invalid files fall back to defaults with the full error logged to
   `logs/trackingcorrector.log` (rotating, 3×5MB). Every capture session is also
@@ -86,6 +86,17 @@ unity/                Standalone Unity Editor tooling (C#), copied into a projec
   `Skeleton::makeDefault()` and `IkRigConfig::makeDefault()`. The names follow
   Unity's `HumanBodyBones` naming — exactly what `unity/AvatarSkeletonExporter.cs`
   emits — so an exported avatar skeleton retargets by name with no translation.
+- `BodyProportions` (`BodyProportions.h/.cpp`) — user body measurements
+  (`user-proportions.json`): 9 tape-measurable floats (meters, symmetric L/R):
+  `neckLength`, `shoulderHeight`, `navelHeight`, `shoulderWidth`, `hipWidth`,
+  `upperArmLength`, `lowerArmLength`, `upperLegLength`, `lowerLegLength`. Pure
+  value type — JSON + `validate()` (positive lengths; `shoulderHeight >
+  navelHeight > hip line`), NO skeleton knowledge (one-way dependency:
+  Skeleton → BodyProportions). `shoulderHeight`/`navelHeight` are heights above
+  the floor of the shoulder line (arm attachment) and the navel (lower-spine
+  bend); `neckLength` spans the skull base (Neck) down to the shoulder line
+  (Chest). The IK skeleton is never serialized — only proportions
+  are; the hierarchy is fixed and rebuilt at runtime.
 - `Skeleton` (`Skeleton.h/.cpp`) — flat `std::vector<Joint>`, kept sorted
   parent-before-child. `Joint` = `{name, parentIndex (optional<int>), restOffset (vec3,
   meters), localRot (quat, identity at rest, NOT serialized)}`. The skeleton also has a
@@ -93,11 +104,21 @@ unity/                Standalone Unity Editor tooling (C#), copied into a projec
   with orientation `localRot`; the root's `restOffset` is not applied by FK, it only
   seeds `rootPosition` at load time. `localRot(i)` always means "rotation of the bone
   ending at joint i, relative to the parent joint's world orientation".
-  - `Skeleton::makeDefault()` — 22-joint SlimeVR-style **head-rooted** skeleton (Head is
-    root, spine goes downward; left side at +X). Bone names come from `BoneNames.h`:
+  - `Skeleton::makeDefault(proportions = {})` — 22-joint SlimeVR-style **head-rooted**
+    skeleton (Head is root, spine goes downward; left side at +X) scaled to
+    `BodyProportions`. Bone lengths equal the proportions; landmark heights hold
+    relative to the skeleton's own ankles (Chest at `shoulderHeight`, Waist at
+    `navelHeight`, Hips at `upperLeg + lowerLeg` above the ankles — the skeleton
+    has no floor frame). Root rest Y = `shoulderHeight + neckLength` only seeds
+    `rootPosition` (calibration aligns the root to the HMD at runtime). Bone names
+    come from `BoneNames.h`:
     the spine chain runs `Head → Neck → Chest → Spine → Waist → Hips` (our
     shoulder-parent "upper chest" is Unity's `Chest`, our mid-spine "chest" is Unity's
     `Spine`), plus `Left/Right{Hip,UpperLeg,LowerLeg,Foot,Shoulder,UpperArm,LowerArm,Hand}`.
+    Head-height (0.15, Head→Neck) and hand/foot bone lengths (0.12/0.08) are internal
+    constants — hand/foot lengths provably cancel out of the capture-mode IK
+    (calibration offset gains exactly the term `solveTwoBone` subtracts back); the
+    fictional mid-spine joint splits its span at the midpoint.
   - `Skeleton::makeDefaultHipRooted()` — same skeleton re-rooted at `Hips` with the
     spine chain reversed (`Hips → Waist → … → Head`), like VRChat/Unity avatars; rest
     world positions are identical. Default for `user-avatar-skeleton.json`. Built by

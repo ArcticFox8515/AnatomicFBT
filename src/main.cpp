@@ -19,6 +19,7 @@
 #include <spdlog/sinks/rotating_file_sink.h>
 #include "bindings/imgui_impl_glfw.h"
 #include "bindings/imgui_impl_opengl3.h"
+#include "model/BodyProportions.h"
 #include "model/IkRig.h"
 #include "model/IkRigConfig.h"
 #include "model/ModeController.h"
@@ -32,7 +33,7 @@
 #include "view/Scene.h"
 #include "vr/OpenVrTracking.h"
 
-constexpr char kSkeletonPath[] = "user-skeleton.json";
+constexpr char kProportionsPath[] = "user-proportions.json";
 constexpr char kIkRigPath[] = "user-ikrig.json";
 constexpr char kAvatarSkeletonPath[] = "user-avatar-skeleton.json";
 constexpr char kRecordingPath[] = "recording.tcrec";
@@ -130,7 +131,9 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 	// Setup Dear ImGui style
 	ImGui::StyleColorsDark();
 
-	const Skeleton skeleton = loadOrCreate<Skeleton>(kSkeletonPath, Skeleton::makeDefault);
+	// The IK skeleton is the fixed default hierarchy scaled to the user's
+	// measured body proportions (user-proportions.json).
+	const Skeleton skeleton = Skeleton::makeDefault(loadOrCreate<BodyProportions>(kProportionsPath, &BodyProportions::makeDefault));
 	IkRig rig(skeleton);
 	try
 	{

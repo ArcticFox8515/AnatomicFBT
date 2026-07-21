@@ -433,7 +433,7 @@ TEST(IkRigSolve, HipRollKeepsFeetOnTargetsAndLegsDown)
     ASSERT_NE(head, nullptr);
     ASSERT_NE(hip, nullptr);
     head->position.y -= 0.1f;
-    hip->position = glm::vec3(0.0f, 0.95f, 0.0f);
+    hip->position.y -= 0.05f;
     hip->rotation = glm::angleAxis(glm::radians(30.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 
     rig.solve();

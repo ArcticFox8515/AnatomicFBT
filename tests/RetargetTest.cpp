@@ -66,8 +66,9 @@ TEST(HipRootedDefaultSkeleton, SameRestPoseAsDefault)
         expectNearVec3(hipPositions[i], restPositions[static_cast<size_t>(srcIndex)], 1e-6f);
     }
 
-    // The root sits at the hip's rest height (1.70 - 0.10 - 0.10 - 0.15 - 0.15 - 0.20).
-    expectNearVec3(hipRooted.rootPosition, glm::vec3(0.0f, 1.0f, 0.0f), 1e-6f);
+    // The hip-rooted root sits where the head-rooted skeleton's Hips joint rests.
+    expectNearVec3(hipRooted.rootPosition,
+                   restPositions[static_cast<size_t>(indexOf(headRooted, "Hips"))], 1e-6f);
 }
 
 TEST(RetargetPose, ReproducesWorldPoseAcrossDifferentRoots)
