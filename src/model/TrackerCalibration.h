@@ -84,13 +84,26 @@ struct CalibrationFrame
     DeviceAssignment assignment;       // deviceIndex entries are positions in
                                        // the device list passed in (for UI)
     std::vector<Pose> boneWorldPoses;  // per-target world poses of the resting,
-                                       // HMD-aligned skeleton (for calibrate())
+                                       // root-aligned skeleton (for calibrate())
 };
 
 // Runs one calibration frame on the rig: resets the skeleton to the rest
-// pose, aligns the root to the HMD (position + yawOnly heading) when one is
-// present, matches devices to targets by proximity, and mirrors the matched
-// devices' raw poses into the rig's targets (what gets rendered).
+// pose, places the root from the HMD, matches devices to targets by
+// proximity, and mirrors the matched devices' raw poses into the rig's
+// targets (what gets rendered).
+//
+// Root placement: the HMD sits an arbitrary offset away from the Head joint,
+// so the root is NOT pinned to the HMD position. The user T-poses, and in a
+// T-pose the midpoint of the hands coincides with the Chest joint (the end
+// of the neck bone) — an exact invariant of the rest skeleton. The hands are
+// the two Controller-kind devices (the calibration gesture itself requires
+// two controllers, so they are always present). When both are tracked, the
+// root is shifted so the FK Chest lands on the measured midpoint; the
+// correction is masked in the HMD-yaw frame, keeping height and forward from
+// the hands and taking lateral from the HMD (assumed centered on the head).
+// Without an HMD or both controllers the root falls back to plain HMD
+// alignment; with no HMD it is left as-is. The HMD's offset from the Head
+// joint ends up in the head target's Binding like every other target.
 CalibrationFrame updateCalibrationFrame(IkRig& rig, const std::vector<TrackedDevice>& devices);
 
 // Freezes a calibration frame into per-target offsets: binds each assigned

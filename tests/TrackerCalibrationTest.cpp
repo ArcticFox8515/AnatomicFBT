@@ -5,6 +5,7 @@
 
 #include <cmath>
 
+#include "model/BoneNames.h"
 #include "model/IkRig.h"
 #include "model/IkRigConfig.h"
 #include "model/Skeleton.h"
@@ -43,6 +44,53 @@ int rootJointIndex(const Skeleton& skeleton)
         if (!skeleton.joints[i].parentIndex)
             return static_cast<int>(i);
     return -1;
+}
+
+int findJointIndex(const Skeleton& skeleton, const char* name)
+{
+    for (size_t i = 0; i < skeleton.joints.size(); ++i)
+        if (skeleton.joints[i].name == name)
+            return static_cast<int>(i);
+    return -1;
+}
+
+int findTargetIndex(const IkRig& rig, const char* jointName)
+{
+    const int joint = findJointIndex(rig.skeleton, jointName);
+    for (size_t t = 0; t < rig.targets.size(); ++t)
+        if (rig.targets[t].jointIndex == joint)
+            return static_cast<int>(t);
+    return -1;
+}
+
+// A T-posing user whose HMD is offset from the Head joint: every bone sits at
+// its rest offset from the true root pose {rootPos, yaw}, the hand devices
+// sit on the hand joints (optionally shifted by handShift in the body frame,
+// modeling asymmetric arm spread), and the HMD sits hmdOffset (in the head
+// frame) away from the Head joint with a slightly pitched rotation.
+struct TPoseScene
+{
+    glm::quat yaw;
+    glm::vec3 rootPos;
+    std::vector<TrackedDevice> devices;
+};
+
+TPoseScene makeTPoseScene(const IkRig& rig, const glm::vec3& rootPos, const glm::quat& yaw,
+                          const glm::vec3& hmdOffset, const glm::vec3& handShift = glm::vec3(0.0f))
+{
+    const WorldTransforms rest = computeWorldTransforms(rig.skeleton);
+    const glm::vec3 restRoot = rest.positions[rootJointIndex(rig.skeleton)];
+    auto worldAt = [&](const char* joint)
+    {
+        return rootPos + yaw * (rest.positions[findJointIndex(rig.skeleton, joint)] - restRoot)
+            + yaw * handShift;
+    };
+    const glm::quat hmdRot = yaw * glm::angleAxis(glm::radians(15.0f), glm::vec3(1, 0, 0));
+    return {yaw,
+            rootPos,
+            {{0, TrackedDeviceKind::Hmd, {rootPos + yaw * hmdOffset, hmdRot}},
+             {1, TrackedDeviceKind::Controller, {worldAt(BoneNames::LeftHand), hmdRot}},
+             {2, TrackedDeviceKind::Controller, {worldAt(BoneNames::RightHand), hmdRot}}}};
 }
 } // namespace
 
@@ -244,6 +292,8 @@ TEST(CalibrationFrame, NoDevicesResetsPoseAndLeavesEverythingElse)
                        {targetsBefore[i].position, targetsBefore[i].rotation});
 }
 
+// Without controllers the hand-midpoint refinement cannot run, so the root
+// falls back to plain HMD alignment (position + yawOnly heading).
 TEST(CalibrationFrame, HmdAlignsRootPositionAndHeading)
 {
     IkRig rig = makeRig();
@@ -351,6 +401,79 @@ TEST(CalibrationFrame, CaptureOffsetsBindsStableIdsAndReproducesBonePoses)
     calibration.applyOffsets(goals);
     for (size_t i = 0; i < goals.size(); ++i)
         expectPoseNear({goals[i].position, goals[i].rotation}, frame.boneWorldPoses[i]);
+}
+
+TEST(CalibrationFrame, HandMidpointPlacesRootAtAnatomicalHead)
+{
+    IkRig rig = makeRig();
+    const int root = rootJointIndex(rig.skeleton);
+    // The HMD sits 9 cm below and 12 cm in front of the Head joint; the user
+    // faces 30 degrees off the world -Z.
+    const TPoseScene scene = makeTPoseScene(rig, {0.4f, 1.58f, -0.3f},
+                                            glm::angleAxis(glm::radians(30.0f), glm::vec3(0, 1, 0)),
+                                            {0.0f, -0.09f, -0.12f});
+
+    const CalibrationFrame frame = updateCalibrationFrame(rig, scene.devices);
+
+    // The root lands on the anatomical head position, not on the HMD, with
+    // the yaw-only heading (HMD pitch stripped).
+    EXPECT_TRUE(glm::all(glm::epsilonEqual(rig.skeleton.rootPosition, scene.rootPos, 1e-4f)))
+        << "rootPosition (" << rig.skeleton.rootPosition.x << ", " << rig.skeleton.rootPosition.y
+        << ", " << rig.skeleton.rootPosition.z << ")";
+    expectPoseNear({{0, 0, 0}, rig.skeleton.joints[root].localRot}, {{0, 0, 0}, scene.yaw}, 1e-4f);
+    // The reported head bone pose is the true root pose.
+    const int headTarget = findTargetIndex(rig, BoneNames::Head);
+    ASSERT_GE(headTarget, 0);
+    expectPoseNear(frame.boneWorldPoses[headTarget], makePose(scene.rootPos, scene.yaw), 1e-4f);
+}
+
+TEST(CalibrationFrame, HandMidpointCorrectionIgnoresLateralComponent)
+{
+    IkRig rig = makeRig();
+    // Facing 90 degrees; both hands shifted 5 cm to the body-left (asymmetric
+    // arm spread). The midpoint's lateral component must be discarded — the
+    // HMD is assumed centered on the head.
+    const TPoseScene scene =
+        makeTPoseScene(rig, {-0.2f, 1.6f, 0.5f},
+                       glm::angleAxis(glm::half_pi<float>(), glm::vec3(0, 1, 0)),
+                       {0.0f, -0.08f, -0.1f}, {0.05f, 0.0f, 0.0f});
+
+    updateCalibrationFrame(rig, scene.devices);
+
+    EXPECT_TRUE(glm::all(glm::epsilonEqual(rig.skeleton.rootPosition, scene.rootPos, 1e-4f)))
+        << "rootPosition (" << rig.skeleton.rootPosition.x << ", " << rig.skeleton.rootPosition.y
+        << ", " << rig.skeleton.rootPosition.z << ")";
+}
+
+TEST(CaptureFrame, HeadGoalTracksAnatomicalHeadNotHmd)
+{
+    IkRig rig = makeRig();
+    TrackerCalibration calibration;
+    const TPoseScene scene = makeTPoseScene(rig, {0.4f, 1.58f, -0.3f},
+                                            glm::angleAxis(glm::radians(30.0f), glm::vec3(0, 1, 0)),
+                                            {0.0f, -0.09f, -0.12f});
+    const CalibrationFrame frame = updateCalibrationFrame(rig, scene.devices);
+    captureOffsets(calibration, frame, scene.devices);
+
+    // The user steps and turns: every device moves by the same rigid
+    // transform T.
+    const Pose t{{0.6f, 0.0f, -0.4f}, glm::angleAxis(glm::radians(80.0f), glm::vec3(0, 1, 0))};
+    std::vector<TrackedDevice> moved;
+    for (const TrackedDevice& device : scene.devices)
+        moved.push_back({device.id, device.kind, compose(t, device.pose)});
+
+    const std::vector<IkTarget> goals = updateCaptureFrame(rig, calibration, moved);
+
+    // goal = T * device * inverse(device) * bone = T * bone: the head goal
+    // tracks the anatomical head pose captured at calibration, not the HMD.
+    const int headTarget = findTargetIndex(rig, BoneNames::Head);
+    ASSERT_GE(headTarget, 0);
+    expectPoseNear({goals[headTarget].position, goals[headTarget].rotation},
+                   compose(t, makePose(scene.rootPos, scene.yaw)), 1e-4f);
+    const int leftHand = findTargetIndex(rig, BoneNames::LeftHand);
+    ASSERT_GE(leftHand, 0);
+    expectPoseNear({goals[leftHand].position, goals[leftHand].rotation},
+                   compose(t, frame.boneWorldPoses[leftHand]), 1e-4f);
 }
 
 TEST(CaptureFrame, GoalsAreOffsetCopiesOfRawDevicePoses)

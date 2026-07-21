@@ -73,10 +73,10 @@ public:
     }
 
     // Calibrates from one device snapshot exactly as the live gesture path
-    // does (rest pose aligned to the HMD, proximity assignment, frozen
-    // offsets) — given a recording's first frame this reproduces the live
-    // session's offsets bit for bit. Mutates the rig like a calibration
-    // frame; does not change the mode.
+    // does (rest pose with the root placed from the HMD and the T-pose hand
+    // landmark, proximity assignment, frozen offsets) — given a recording's
+    // first frame this reproduces the live session's offsets bit for bit.
+    // Mutates the rig like a calibration frame; does not change the mode.
     void calibrateFromFrame(IkRig& rig, const std::vector<TrackedDevice>& devices);
 
     // Live device->target assignment from the last calibration frame (for UI;

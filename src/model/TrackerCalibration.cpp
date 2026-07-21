@@ -1,9 +1,21 @@
 #include "TrackerCalibration.h"
 
+#include "BoneNames.h"
 #include "IkRig.h"
 #include "Skeleton.h"
 
 #include <limits>
+
+namespace
+{
+int findJointByName(const Skeleton& skeleton, const char* name)
+{
+    for (size_t i = 0; i < skeleton.joints.size(); ++i)
+        if (skeleton.joints[i].name == name)
+            return static_cast<int>(i);
+    return -1;
+}
+} // namespace
 
 DeviceAssignment assignDevicesToTargets(const std::vector<glm::vec3>& devicePositions,
                                         const std::vector<glm::vec3>& targetPositions)
@@ -141,8 +153,28 @@ CalibrationFrame updateCalibrationFrame(IkRig& rig, const std::vector<TrackedDev
     const TrackedDevice* hmd = findHmd(devices);
     if (hmd && rootIndex >= 0)
     {
+        const glm::quat hmdYaw = yawOnly(hmd->pose.rotation);
         rig.skeleton.rootPosition = hmd->pose.position;
-        rig.skeleton.joints[rootIndex].localRot = yawOnly(hmd->pose.rotation);
+        rig.skeleton.joints[rootIndex].localRot = hmdYaw;
+
+        // Refine the root from the T-pose landmark: the midpoint of the two
+        // controllers (the hands) coincides with the Chest joint (end of the
+        // neck bone) in the rest skeleton. The correction is masked in the
+        // HMD-yaw frame: height and forward come from the hands, lateral from
+        // the HMD (assumed centered on the head).
+        std::vector<const TrackedDevice*> controllers;
+        for (const TrackedDevice& device : devices)
+            if (device.kind == TrackedDeviceKind::Controller)
+                controllers.push_back(&device);
+        const int chest = findJointByName(rig.skeleton, BoneNames::Chest);
+        if (controllers.size() >= 2 && chest >= 0)
+        {
+            const glm::vec3 chestPos = computeWorldTransforms(rig.skeleton).positions[chest];
+            const glm::vec3 handMidpoint =
+                (controllers[0]->pose.position + controllers[1]->pose.position) * 0.5f;
+            const glm::vec3 delta = glm::inverse(hmdYaw) * (handMidpoint - chestPos);
+            rig.skeleton.rootPosition += hmdYaw * glm::vec3(0.0f, delta.y, delta.z);
+        }
     }
 
     const WorldTransforms wt = computeWorldTransforms(rig.skeleton);

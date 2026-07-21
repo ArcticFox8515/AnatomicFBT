@@ -212,10 +212,22 @@ unity/                Standalone Unity Editor tooling (C#), copied into a projec
   transforms targets into solver goals (`goal = target * offset`, on a copy).
   `clear()` on (re-)entering calibration.
   - `updateCalibrationFrame(rig, devices)` — one calibration-mode frame: resets
-    the skeleton to rest, aligns the root to the HMD (position + `yawOnly`
-    heading), proximity-matches devices to targets, mirrors matched raw device
-    poses into the targets. Returns `CalibrationFrame{assignment (device-list
-    positions, for UI), boneWorldPoses (for calibrate())}`.
+    the skeleton to rest, places the root from the HMD, proximity-matches
+    devices to targets, mirrors matched raw device poses into the targets.
+    Returns `CalibrationFrame{assignment (device-list positions, for UI),
+    boneWorldPoses (for calibrate())}`.
+    Root placement: the HMD sits an arbitrary offset away from the Head
+    joint, so the root is NOT pinned to the HMD position. In T-pose the
+    midpoint of the two Controller-kind devices (the hands — the calibration
+    gesture itself requires two controllers) coincides with the Chest joint
+    (end of the neck bone) — an exact invariant of the rest skeleton — so
+    whenever both controllers are tracked, the root is shifted so the FK
+    Chest lands on the measured midpoint; the correction is masked in the
+    HMD-yaw frame, keeping height and forward from the hands and taking
+    lateral from the HMD (assumed centered on the head). Without an HMD or
+    both controllers it falls back to plain HMD alignment, and with no HMD
+    at all the root is left as-is. The HMD's offset from the Head joint ends
+    up in the head target's Binding like every other target.
   - `captureOffsets(calibration, frame, devices)` — freezes a frame into offsets:
     translates the assignment's list positions to stable device ids and calls
     `calibrate()`.
@@ -237,7 +249,8 @@ unity/                Standalone Unity Editor tooling (C#), copied into a projec
   Calibration. Replay shares the Capture branch of `update` verbatim — the
   solver cannot tell recorded devices from live ones; `switchToReplay()` clears
   the offsets and `calibrateFromFrame(rig, devices)` re-runs the exact live
-  calibration path (rest+align, proximity assignment, `captureOffsets`) on a
+  calibration path (rest + HMD/hand-landmark root placement, proximity
+  assignment, `captureOffsets`) on a
   recording's first frame, reproducing the live session's offsets bit for bit.
   `Mode` enum lives here too.
 - `Recording` (`Recording.h/.cpp`) — binary capture-session recording of the
@@ -325,7 +338,8 @@ Calibration mode; failure → log + Manual Pose mode).
 
 Modes (`enum class Mode`, model layer): **ManualPose** — gizmo-dragged targets, `rig.solve()` each
 frame, no VR input. **Calibration** — no IK; per frame `updateCalibrationFrame`
-(model layer) rests the skeleton with root aligned to the HMD and mirrors proximity-
+(model layer) rests the skeleton with the root placed from the HMD via the
+T-pose hand-midpoint landmark (see `TrackerCalibration` above) and mirrors proximity-
 matched raw device poses into the targets (`liveAssignment` kept for UI feedback);
 both-triggers edge freezes the offsets via `captureOffsets` and switches to Capture.
 **Capture** — `updateCaptureFrame` (model layer) writes raw device poses into the targets (so
