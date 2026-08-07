@@ -11,6 +11,11 @@
 #include "spike/SpikeObserver.h"
 #include "spike/SpikeServer.h"
 
+#include "FakePipe.h"
+#include "link/MessageChannel.h"
+#include "link/Pipe.h"
+#include "link/Protocol.h"
+
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -21,6 +26,25 @@
 
 namespace
 {
+// Builds a complete frame (8-byte header + payload) for feeding the read side.
+std::vector<std::uint8_t> frame(link::MessageType type, const std::uint8_t* payload,
+                                std::size_t size)
+{
+    std::vector<std::uint8_t> out;
+    const std::uint32_t len = static_cast<std::uint32_t>(size);
+    out.push_back(static_cast<std::uint8_t>(len & 0xFF));
+    out.push_back(static_cast<std::uint8_t>((len >> 8) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>((len >> 16) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>((len >> 24) & 0xFF));
+    const std::uint16_t t = static_cast<std::uint16_t>(type);
+    out.push_back(static_cast<std::uint8_t>(t & 0xFF));
+    out.push_back(static_cast<std::uint8_t>((t >> 8) & 0xFF));
+    out.push_back(0);
+    out.push_back(0);
+    out.insert(out.end(), payload, payload + size);
+    return out;
+}
+
 class NoInterfaceHooks : public spike::InterfaceHooks
 {
 public:
@@ -94,7 +118,7 @@ public:
 class SpikeServerTest : public ::testing::Test
 {
 protected:
-    SpikeServerTest() : observer_(logger_, hooks_, [] { return 0.0; })
+    SpikeServerTest() : observer_(logger_, hooks_, [] { return 0.0; }, channel_)
     {
         logger_.setSink([this](const char* message) { lines_.emplace_back(message); });
     }
@@ -110,9 +134,10 @@ protected:
     std::vector<std::string> lines_;
     spike::Logger logger_;
     NoInterfaceHooks hooks_;
-    spike::SpikeObserver observer_;
+    link::MessageChannel channel_{[] { return nullptr; }};
+    spike::SpikeObserver observer_{logger_, hooks_, [] { return 0.0; }, channel_};
     FakeServerEnvironment environment_;
-    spike::SpikeServer server_{logger_, observer_, environment_};
+    spike::SpikeServer server_{logger_, observer_, environment_, channel_};
 };
 
 TEST_F(SpikeServerTest, InitHooksInTheOrderTheContextForcesOnUs)
@@ -219,6 +244,43 @@ TEST_F(SpikeServerTest, StandbyIsNeverBlocked)
     // An observation-only driver has no reason to keep the user's headset awake; the
     // answer SteamVR gets is the provider's, not a constant inside the DLL.
     EXPECT_FALSE(server_.shouldBlockStandbyMode());
+}
+
+// ---------------------------------------------------------- channel wiring ----
+
+class SpikeServerPipeTest : public ::testing::Test
+{
+protected:
+    SpikeServerPipeTest() : observer_(logger_, hooks_, [] { return 0.0; }, channel_),
+                            server_(logger_, observer_, environment_, channel_)
+    {
+        logger_.setSink([this](const char* message) { lines_.emplace_back(message); });
+    }
+
+    std::vector<std::string> lines_;
+    spike::Logger logger_;
+    NoInterfaceHooks hooks_;
+    link_test::FakePipe pipe_;
+    link::MessageChannel channel_{link_test::borrowPipeFactory(pipe_)};
+    spike::SpikeObserver observer_{logger_, hooks_, [] { return 0.0; }, channel_};
+    FakeServerEnvironment environment_;
+    spike::SpikeServer server_{logger_, observer_, environment_, channel_};
+};
+
+TEST_F(SpikeServerPipeTest, OnPoseForwardsThroughTheChannelAfterInit)
+{
+    ASSERT_EQ(server_.init(nullptr), vr::VRInitError_None);
+
+    server_.runFrame();  // connects the pipe (factory hands out the FakePipe)
+
+    vr::DriverPose_t pose{};
+    pose.poseIsValid = true;
+    pose.deviceIsConnected = true;
+    observer_.onPose(3, pose, sizeof(pose));
+
+    // The pose was forwarded: the pipe received a DevicePose frame.
+    const std::size_t oneFrame = sizeof(link::DevicePose) + 8;  // 8-byte header
+    EXPECT_EQ(pipe_.written.size(), oneFrame);
 }
 
 // --------------------------------------------------------------- watchdog ----

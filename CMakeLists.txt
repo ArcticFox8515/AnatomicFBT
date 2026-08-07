@@ -129,6 +129,11 @@ target_include_directories(SpikeLib PUBLIC src)
 target_include_directories(SpikeLib PUBLIC
     $<TARGET_PROPERTY:openvr::openvr,INTERFACE_INCLUDE_DIRECTORIES>)
 
+# SpikeLib uses the link layer (MessageChannel, PipeFactoryFn) for the
+# driver-side server (doc/driver-plan.md step 3). PUBLIC so the driver DLL,
+# spike_client and tests all get LinkLib transitively.
+target_link_libraries(SpikeLib PUBLIC LinkLib)
+
 # The driver DLL links NO openvr_api: openvr_driver.h is header-only for drivers
 # (vrserver.exe supplies the implementations through the vtables it hands to Init),
 # so only the include dirs are taken from the conan target.

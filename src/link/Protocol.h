@@ -1,12 +1,14 @@
 #pragma once
 
-// Wire types for the driver link (doc/driver-plan.md phase A, step 2).
+// Wire types for the driver link (doc/driver-plan.md phase A, step 3).
 //
-// Two messages cover everything the app consumes from the tracking provider
-// today (see OpenVrTracking.cpp pollPoses): device metadata (its kind — the
-// only thing the app knows a device by besides its id), and the per-device
-// pose (id + position + rotation + the one validity predicate). Nothing else
-// from `DriverPose_t` is read downstream yet, so nothing else is on the wire.
+// A single message — `DevicePose` — covers everything the app consumes from the
+// tracking provider today (see OpenVrTracking.cpp pollPoses): the device's kind
+// and serial (the only things the app knows a device by besides its id) and the
+// per-device pose (id + position + rotation + the one validity predicate). The
+// separate metadata message was folded into the pose in step 3 so the channel
+// carries one frame per device update, not two. Nothing else from
+// `DriverPose_t` is read downstream yet, so nothing else is on the wire.
 //
 // The wire format is POD structs with explicit-width fields, memcpy'd whole —
 // same style as `.tcrec` (Recording.cpp writeRaw/readRaw), except we copy the
@@ -31,7 +33,7 @@
 
 namespace link
 {
-// Pinned wire values for the `kind` field of DeviceMetadata. Do not renumber:
+// Pinned wire values for the `deviceKind` field of DevicePose. Do not renumber:
 // an existing driver speaks the old numbers.
 enum class DeviceKind : std::uint8_t
 {
@@ -54,33 +56,34 @@ enum class TrackingState : std::uint8_t
 
 // Message types. Their wire values are pinned; a future type gets the next
 // free number. Unknown types are skipped by the framing layer, not rejected.
+// `DeviceMetadata` (1) was removed in step 3 — its fields folded into
+// `DevicePose` — so a frame with type 1 from an older driver is now silently
+// skipped by a newer app.
 enum class MessageType : std::uint16_t
 {
-    DeviceMetadata = 1,
     DevicePose = 2,
 };
 
 // Largest payload the framing layer will accept. Frames above this are a
-// protocol error rather than a buffer to grow into — a pose is ~36 bytes,
-// metadata is ~8, and a 64 KiB cap leaves headroom without admitting a runaway
-// allocation.
+// protocol error rather than a buffer to grow into — a pose is ~68 bytes and a
+// 64 KiB cap leaves headroom without admitting a runaway allocation.
 inline constexpr std::uint32_t kMaxPayloadBytes = 65536;
 
-// Wire PODs. Fields are explicit-width; natural-alignment padding is the same
-// on both ends (MSVC x64), so `sizeof(struct)` is the on-wire payload length.
-//   DeviceMetadata: u32 deviceId, u8 kind.
-//   DevicePose:     u32 deviceId, u8 tracking, f32 pos[3], f32 rot[4] (xyzw).
-struct DeviceMetadata
-{
-    std::uint32_t deviceId = 0;
-    DeviceKind kind = DeviceKind::Other;
-};
+// Largest serial string carried on the wire. OpenVR serials ("LHR-XXXXXXXX")
+// are short; 32 bytes is ample and keeps the pose POD compact.
+inline constexpr std::uint32_t kMaxSerialBytes = 32;
 
+// Wire POD. Fields are explicit-width; natural-alignment padding is the same
+// on both ends (MSVC x64), so `sizeof(struct)` is the on-wire payload length.
+//   DevicePose: u32 deviceId, u8 tracking, u8 deviceKind, 2 pad,
+//               f32 pos[3], f32 rot[4] (xyzw), char serial[32].
 struct DevicePose
 {
     std::uint32_t deviceId = 0;
     TrackingState tracking = TrackingState::Lost;
+    DeviceKind deviceKind = DeviceKind::Other;
     float position[3] = {0.0f, 0.0f, 0.0f};
     float rotation[4] = {0.0f, 0.0f, 0.0f, 1.0f};  // xyzw, identity
+    char serial[kMaxSerialBytes] = {};
 };
 } // namespace link

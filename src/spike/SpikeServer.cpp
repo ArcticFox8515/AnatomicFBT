@@ -36,9 +36,9 @@ void* serveFactoryRequest(Logger& logger, const char* interfaceName, int* return
     return nullptr;
 }
 
-SpikeServer::SpikeServer(Logger& logger, SpikeObserver& observer,
-                         ServerEnvironment& environment)
-    : log_(logger), observer_(observer), environment_(environment)
+SpikeServer::SpikeServer(Logger& logger, SpikeObserver& observer, ServerEnvironment& environment,
+                         link::MessageChannel& channel)
+    : log_(logger), observer_(observer), environment_(environment), channel_(channel)
 {
 }
 
@@ -106,7 +106,12 @@ void SpikeServer::cleanup()
 
 void SpikeServer::runFrame()
 {
-    runGuarded([&] { observer_.onRunFrame(); });
+    runGuarded([&] {
+        observer_.onRunFrame();
+
+                std::vector<link::Message> messages;
+        channel_.receive(messages);
+    });
 }
 
 void SpikeServer::enterStandby()

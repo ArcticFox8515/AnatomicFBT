@@ -17,6 +17,10 @@
 #include "spike/SpikeObserver.h"
 #include "spike/SpikePoseMath.h"
 
+#include "FakePipe.h"
+#include "link/MessageChannel.h"
+#include "link/Protocol.h"
+
 #include <gtest/gtest.h>
 
 #include <map>
@@ -122,7 +126,7 @@ vr::DriverPose_t makePose(double x = 1.0)
 class SpikeObserverTest : public ::testing::Test
 {
 protected:
-    SpikeObserverTest() : observer_(logger_, hooks_, [this] { return now_; })
+    SpikeObserverTest() : observer_(logger_, hooks_, [this] { return now_; }, channel_)
     {
         logger_.setSink([this](const char* message) { lines_.emplace_back(message); });
     }
@@ -162,7 +166,9 @@ protected:
     spike::Logger logger_;
     FakeInterfaceHooks hooks_;
     FakeProperties properties_;
-    spike::SpikeObserver observer_;
+    link_test::FakePipe pipe_;
+    link::MessageChannel channel_{link_test::borrowPipeFactory(pipe_)};
+    spike::SpikeObserver observer_{logger_, hooks_, [this] { return now_; }, channel_};
 };
 
 // ------------------------------------------------- GetGenericInterface dispatch ----
@@ -394,6 +400,105 @@ TEST_F(SpikeObserverTest, APoseSteamVRReportsAsInvalidIsNotComposed)
     EXPECT_FALSE(logged("B = A o dFh"));
     EXPECT_FALSE(logged("worldFromDriver"));
     EXPECT_FALSE(logged("driverFromHead"));
+}
+
+// -------------------------------------------------------- pose forwarding ----
+
+// Parses the first frame from `written` (8-byte header + DevicePose payload)
+// and returns it, or fails the test if the wire does not match.
+link::DevicePose parseFirstPose(const std::vector<std::uint8_t>& written)
+{
+    constexpr std::size_t kHeader = 8;
+    EXPECT_GE(written.size(), kHeader + sizeof(link::DevicePose));
+    link::DevicePose restored;
+    std::memcpy(&restored, written.data() + kHeader, sizeof(restored));
+    return restored;
+}
+
+TEST_F(SpikeObserverTest, ForwardsAPoseAsTheBCompositionWithClassAndSerial)
+{
+    bringUpTracker();  // metadata known: tracker, "LHR-TESTTRACKER"; pose stored
+    lines_.clear();
+
+    std::vector<link::Message> dummy;
+    channel_.receive(dummy);  // construct the pipe
+
+    observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t));
+
+    // One frame on the wire: header (8) + DevicePose (68).
+    ASSERT_EQ(pipe_.written.size(), 8u + sizeof(link::DevicePose));
+    const link::DevicePose wire = parseFirstPose(pipe_.written);
+    EXPECT_EQ(wire.deviceId, kTracker);
+    EXPECT_EQ(wire.deviceKind, link::DeviceKind::Tracker);
+    EXPECT_EQ(wire.tracking, link::TrackingState::Tracking);
+    EXPECT_STREQ(wire.serial, "LHR-TESTTRACKER");
+
+    // The world-space pose is the "B" composition BothCandidateCompositions
+    // logs above: with makePose() (x=1), B.pos = {9, 2.5, -3},
+    // B.rot = {w=-1, x=0, y=0, z=0} (xyzw: 0, 0, 0, -1).
+    EXPECT_FLOAT_EQ(wire.position[0], 9.0f);
+    EXPECT_FLOAT_EQ(wire.position[1], 2.5f);
+    EXPECT_FLOAT_EQ(wire.position[2], -3.0f);
+    EXPECT_FLOAT_EQ(wire.rotation[0], 0.0f);  // x
+    EXPECT_FLOAT_EQ(wire.rotation[1], 0.0f);  // y
+    EXPECT_FLOAT_EQ(wire.rotation[2], 0.0f);  // z
+    EXPECT_FLOAT_EQ(wire.rotation[3], -1.0f); // w
+}
+
+TEST_F(SpikeObserverTest, ForwardsAnInvalidPoseAsTrackingLost)
+{
+    // No pose validation: an invalid pose is still forwarded, but with
+    // tracking=Lost so the app drops the device this frame.
+    bringUpTracker();
+    lines_.clear();
+
+    std::vector<link::Message> dummy;
+    channel_.receive(dummy);  // construct the pipe
+
+    vr::DriverPose_t untracked = makePose();
+    untracked.poseIsValid = false;
+    observer_.onPose(kTracker, untracked, sizeof(vr::DriverPose_t));
+
+    const link::DevicePose wire = parseFirstPose(pipe_.written);
+    EXPECT_EQ(wire.tracking, link::TrackingState::Lost);
+    EXPECT_EQ(wire.deviceKind, link::DeviceKind::Tracker);
+}
+
+TEST_F(SpikeObserverTest, ATruncatedPoseIsNotForwarded)
+{
+    bringUpTracker();
+    lines_.clear();
+
+    std::vector<link::Message> dummy;
+    channel_.receive(dummy);  // construct the pipe
+
+    observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t) - 8);
+    EXPECT_TRUE(pipe_.written.empty());
+}
+
+TEST_F(SpikeObserverTest, DeviceIdentityGetterReturnsCachedClassAndSerial)
+{
+    properties_.add(kTracker, {"LHR-TESTTRACKER", "Vive Tracker", "lighthouse",
+                               vr::TrackedDeviceClass_GenericTracker,
+                               vr::TrackedControllerRole_Invalid});
+    observer_.setProperties(&properties_);
+    observer_.onInit();
+    observer_.onRunFrame();  // housekeeping reads the metadata
+
+    int deviceClass = vr::TrackedDeviceClass_Invalid;
+    std::string serial;
+    EXPECT_TRUE(observer_.deviceIdentity(kTracker, deviceClass, serial));
+    EXPECT_EQ(deviceClass, vr::TrackedDeviceClass_GenericTracker);
+    EXPECT_EQ(serial, "LHR-TESTTRACKER");
+}
+
+TEST_F(SpikeObserverTest, DeviceIdentityGetterReturnsFalseForUnknownDevice)
+{
+    int deviceClass = 999;
+    std::string serial = "stale";
+    EXPECT_FALSE(observer_.deviceIdentity(kTracker, deviceClass, serial));
+    EXPECT_EQ(deviceClass, 999);  // unchanged
+    EXPECT_EQ(serial, "stale");
 }
 
 // ------------------------------------------------------------------- rates ----

@@ -50,7 +50,7 @@ Conan 2 + Visual Studio 2022. Windows-only (`WIN32` exe, `WinMain` entry).
 | `TrackingCorrectorLib` | STATIC | `src/model` + `src/view`; glm, json, GLEW, glfw |
 | `LinkLib` | STATIC | `src/link` IPC seam + framing + protocol; std lib only |
 | `TrackingCorrector` | WIN32 exe | `src/main.cpp`, `src/vr`, imgui/imguizmo, spdlog, openvr |
-| `SpikeLib` | STATIC | all `src/spike` logic; openvr headers only |
+| `SpikeLib` | STATIC | all `src/spike` logic; openvr headers only; links `LinkLib` (step 3 server) |
 | `driver_00trackingcorrector` | SHARED | `src/spike/SpikeDriver.cpp` + SpikeLib, minhook, spdlog |
 | `spike_client` | exe | `src/spike/SpikeClient.cpp` + SpikeLib, openvr |
 | `TrackingCorrectorTests` | exe | `tests/`, gtest; add new suites here |
@@ -69,13 +69,16 @@ src/link/       Driver<->app IPC: `Pipe` transport seam (1:1 to a Win32 named-pi
                 step 5 of doc/driver-plan.md; the mock pipe lives in tests/FakePipe.h.
 src/spike/      THROWAWAY step-1 spike of doc/driver-plan.md: observation-only SteamVR
                 driver that hooks GetGenericInterface / TrackedDeviceAdded /
-                TrackedDevicePoseUpdated and logs. All logic in SpikeLib; SpikeDriver.cpp
+                TrackedDevicePoseUpdated and logs. Step 3: onPose forwards each pose
+                to a `link::MessageChannel` (driver-side server) so the app can
+                consume driver-side poses. All logic in SpikeLib; SpikeDriver.cpp
                 and SpikeClient.cpp are pure adapters. Input capture is NOT part of it
                 (neither IVRDriverInput hooks nor PollNextEvent deliver buttons).
 src/driverdll/00trackingcorrector/driver.vrdrivermanifest  — copied next to bin/win64/.
 src/bindings/   Vendored ImGui backends, auto-copied by conanfile.py. Generated.
 tests/          GoogleTest suites mirroring src/model, src/link and src/spike.
-                `FakePipe.h` is the `link::Pipe` mock used by the link suites.
+                `FakePipe.h` is the `link::Pipe` mock used by the link suites and
+                the spike server pipe-lifecycle tests (`borrowPipeFactory`).
 unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
 ```
 
@@ -143,27 +146,32 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
 
 - `Pipe` — transport seam, one method per Win32 named-pipe file-handle op
   (`write`/`read`/`close`, poll-based, never blocks; `IoStatus` =
-  `Ok|Pending|Closed|Failed`). An already-connected byte stream — endpoint
-  construction (`CreateNamedPipe`/`ConnectNamedPipe` server, `WaitNamedPipe`/
-   `CreateFile` client) is out of scope, it is step 5 of doc/driver-plan.md and
-  the only part of this layer not unit-tested. Partial transfers are
-  first-class so the real impl can be overlapped-with-owned-buffer or
-  `PIPE_NOWAIT` without the interface changing.
-- `Protocol` — wire types only (no codec): `DeviceMetadata` (id+kind) and
-  `DevicePose` (id+tracking+pos+rot) as naturally-aligned PODs, memcpy'd
-  whole — same style as `.tcrec`'s `writeRaw`/`readRaw` but one struct copy.
-  `DeviceKind`/`TrackingState`/`MessageType` are this layer's own enums with
-  pinned wire values; the driver maps `ETrackedDeviceClass` -> `DeviceKind`,
-  the app maps `DeviceKind` -> `TrackedDeviceKind`. `tracking` collapses the
-  two booleans the app ANDs in `OpenVrTracking::pollPoses`; zero = drop the
-  device this frame (it then holds its last pose).
+  `Ok|Pending|Closed|Failed`). An already-connected byte stream; endpoint
+  construction arrives at step 5 via `PipeFactoryFn` (`std::function<std::shared_ptr<Pipe>()>` —
+  `shared_ptr` so a factory owning a pre-made pipe is copyable into `std::function` and a
+  concurrent `send` can snapshot the pointer across a `receive` drop). The real Win32
+  factory is the only part of this layer not unit-tested. Partial transfers are
+  first-class so the real impl can be overlapped-with-owned-buffer or `PIPE_NOWAIT`
+  without the interface changing.
+- `Protocol` — wire types only (no codec): `DevicePose`
+  (id+tracking+kind+pos+rot+serial[32]) as a naturally-aligned POD, memcpy'd whole —
+  same style as `.tcrec`'s `writeRaw`/`readRaw` but one struct copy. The separate
+  `DeviceMetadata` message was folded into `DevicePose` in step 3; wire type 1 from an
+  older driver is silently skipped (forward compat). `DeviceKind`/`TrackingState`/
+  `MessageType` are this layer's own enums with pinned wire values; the driver maps
+  `ETrackedDeviceClass` -> `DeviceKind`, the app maps `DeviceKind` ->
+  `TrackedDeviceKind`. `tracking` collapses the two booleans the app ANDs in
+  `OpenVrTracking::pollPoses`; zero = drop the device this frame (it then holds its
+  last pose).
 - `MessageChannel` — length-prefixed framing (u32 length, u16 type, payload)
-  + reassembly over a `Pipe`. `send` frames into an outbound buffer capped at
-  `kMaxPayloadBytes` (returns false when full — drop policy is the
-   publisher's, step 3), `flush` retries the tail, `receive` drains the pipe
-  and yields complete frames. Unknown types are skipped (consumed, not
-  emitted); `length > kMaxPayloadBytes` is a permanent `Failed` (stream sync
-  unrecoverable). Single-threaded, frame-driven.
+  + reassembly over a `Pipe`. Takes a `PipeFactoryFn`: constructs pipes via the
+  factory from `receive()`, drops a dead pipe (Closed/Failed/oversize length)
+  and resets for the next client. `send` frames into an outbound buffer capped
+  at `kMaxPayloadBytes` (returns false when full or when there is no pipe — drop
+  policy is the publisher's), `receive` drains the pipe and yields complete
+  frames. Unknown types are skipped (consumed, not emitted); `length >
+  kMaxPayloadBytes` drops the pipe (stream sync unrecoverable for this client,
+  the next one gets a fresh start). `lastError()` exposes the drop reason.
 
 ## View, VR, entry point
 

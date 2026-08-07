@@ -166,6 +166,12 @@ void detourTrackedDevicePoseUpdated(vr::IVRServerDriverHost* self, uint32_t inde
 // rest of the state here: a hook thread may still be inside a detour when the DLL's
 // static destructors would otherwise run.
 
+link::MessageChannel& channel()
+{
+    static link::MessageChannel* instance = new link::MessageChannel([] { return nullptr; });
+    return *instance;
+}
+
 spike::DriverHookSet& hooks()
 {
     static spike::DriverHookSet* instance = new spike::DriverHookSet(
@@ -179,7 +185,7 @@ spike::DriverHookSet& hooks()
 spike::SpikeObserver& observer()
 {
     static spike::SpikeObserver* instance =
-        new spike::SpikeObserver(log(), hooks(), &nowSeconds);
+        new spike::SpikeObserver(log(), hooks(), &nowSeconds, channel());
     return *instance;
 }
 
@@ -316,7 +322,7 @@ public:
 
 private:
     OpenVrServerEnvironment environment_;
-    spike::SpikeServer server_{log(), observer(), environment_};
+    spike::SpikeServer server_{log(), observer(), environment_, channel()};
 };
 
 class SpikeWatchdogProvider final : public vr::IVRWatchdogProvider

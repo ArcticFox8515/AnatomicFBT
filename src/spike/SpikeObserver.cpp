@@ -4,12 +4,34 @@
 #include "SpikeNames.h"
 #include "SpikePoseMath.h"
 
+#include "link/MessageChannel.h"
+#include "link/Protocol.h"
+
+#include <algorithm>
+#include <cstring>
 #include <utility>
 
 namespace spike
 {
-SpikeObserver::SpikeObserver(Logger& logger, InterfaceHooks& hooks, NowFn now)
-    : log_(logger), hooks_(hooks), now_(std::move(now))
+namespace
+{
+// vr::ETrackedDeviceClass -> link::DeviceKind. The link layer is openvr-free, so
+// the mapping lives here in the spike (which sees both).
+link::DeviceKind deviceClassToKind(int deviceClass)
+{
+    switch (deviceClass)
+    {
+    case vr::TrackedDeviceClass_HMD: return link::DeviceKind::Hmd;
+    case vr::TrackedDeviceClass_Controller: return link::DeviceKind::Controller;
+    case vr::TrackedDeviceClass_GenericTracker: return link::DeviceKind::Tracker;
+    default: return link::DeviceKind::Other;
+    }
+}
+} // namespace
+
+SpikeObserver::SpikeObserver(Logger& logger, InterfaceHooks& hooks, NowFn now,
+                             link::MessageChannel& channel)
+    : log_(logger), hooks_(hooks), now_(std::move(now)), channel_(channel)
 {
 }
 
@@ -64,27 +86,37 @@ void SpikeObserver::onPose(uint32_t index, const vr::DriverPose_t& pose, uint32_
     if (index >= vr::k_unMaxTrackedDeviceCount)
         return;
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    DeviceRecord& device = devices_[index];
-    ++device.poseCount;
-
     const bool sizeOk = poseStructSize >= sizeof(vr::DriverPose_t);
-    if (sizeOk)
+
+    // --- pose record update (under mutex, as today) ---
+    bool firstPose = false;
     {
-        device.lastPose = pose;
-        device.lastPoseValid = true;
-    }
-    else if (!poseSizeWarned_)
-    {
-        poseSizeWarned_ = true;
-        log_.logf("TrackedDevicePoseUpdated: unPoseStructSize=%u < sizeof(DriverPose_t)=%zu — "
-                  "pose contents NOT read for such callers",
-                  poseStructSize, sizeof(vr::DriverPose_t));
+        std::lock_guard<std::mutex> lock(mutex_);
+        DeviceRecord& device = devices_[index];
+        ++device.poseCount;
+
+        if (sizeOk)
+        {
+            device.lastPose = pose;
+            device.lastPoseValid = true;
+        }
+        else if (!poseSizeWarned_)
+        {
+            poseSizeWarned_ = true;
+            log_.logf("TrackedDevicePoseUpdated: unPoseStructSize=%u < sizeof(DriverPose_t)=%zu — "
+                      "pose contents NOT read for such callers",
+                      poseStructSize, sizeof(vr::DriverPose_t));
+        }
+
+        if (!device.poseSeen)
+        {
+            device.poseSeen = true;
+            firstPose = true;
+        }
     }
 
-    if (!device.poseSeen)
+    if (firstPose)
     {
-        device.poseSeen = true;
         if (sizeOk)
             log_.logf("first pose update from device %u (poseIsValid=%d connected=%d)", index,
                       static_cast<int>(pose.poseIsValid),
@@ -92,6 +124,61 @@ void SpikeObserver::onPose(uint32_t index, const vr::DriverPose_t& pose, uint32_
         else
             log_.logf("first pose update from device %u (truncated pose struct)", index);
     }
+
+    // A truncated pose struct cannot be converted — its fields beyond the
+    // caller's struct size do not exist.
+    if (!sizeOk)
+        return;
+
+    // --- read cached metadata (via the thread-safe getter) ---
+    int deviceClass = vr::TrackedDeviceClass_Invalid;
+    std::string serial;
+    deviceIdentity(index, deviceClass, serial);
+
+    // --- convert + forward (no mutex on this path) ---
+    link::DevicePose wire;
+    wire.deviceId = index;
+    wire.deviceKind = deviceClassToKind(deviceClass);
+    wire.tracking = (pose.poseIsValid && pose.deviceIsConnected)
+                        ? link::TrackingState::Tracking
+                        : link::TrackingState::Lost;
+
+    // World-space pose = worldFromDriver o local o driverFromHead — the same
+    // "B" composition logPoseSamples computes for the A/B comparison. For
+    // trackers driverFromHead is identity, so this reduces to A; for the HMD
+    // it includes the head transform the app's client-side pose carries.
+    const RigidPose worldFromDriver{{pose.vecWorldFromDriverTranslation[0],
+                                     pose.vecWorldFromDriverTranslation[1],
+                                     pose.vecWorldFromDriverTranslation[2]},
+                                    {pose.qWorldFromDriverRotation.w,
+                                     pose.qWorldFromDriverRotation.x,
+                                     pose.qWorldFromDriverRotation.y,
+                                     pose.qWorldFromDriverRotation.z}};
+    const RigidPose local{{pose.vecPosition[0], pose.vecPosition[1], pose.vecPosition[2]},
+                          {pose.qRotation.w, pose.qRotation.x, pose.qRotation.y,
+                           pose.qRotation.z}};
+    const RigidPose driverFromHead{{pose.vecDriverFromHeadTranslation[0],
+                                    pose.vecDriverFromHeadTranslation[1],
+                                    pose.vecDriverFromHeadTranslation[2]},
+                                   {pose.qDriverFromHeadRotation.w,
+                                    pose.qDriverFromHeadRotation.x,
+                                    pose.qDriverFromHeadRotation.y,
+                                    pose.qDriverFromHeadRotation.z}};
+    const RigidPose world = compose(compose(worldFromDriver, local), driverFromHead);
+
+    wire.position[0] = static_cast<float>(world.pos.x);
+    wire.position[1] = static_cast<float>(world.pos.y);
+    wire.position[2] = static_cast<float>(world.pos.z);
+    wire.rotation[0] = static_cast<float>(world.rot.x);
+    wire.rotation[1] = static_cast<float>(world.rot.y);
+    wire.rotation[2] = static_cast<float>(world.rot.z);
+    wire.rotation[3] = static_cast<float>(world.rot.w);
+
+    const std::size_t n = (std::min)(serial.size(), sizeof(wire.serial) - 1);
+    std::memcpy(wire.serial, serial.data(), n);
+
+    channel_.send(link::MessageType::DevicePose,
+                  reinterpret_cast<const std::uint8_t*>(&wire), sizeof(wire));
 }
 
 void SpikeObserver::onInit()
@@ -142,6 +229,19 @@ void SpikeObserver::onCleanup()
                   deviceClassName(device.deviceClass), device.serial.c_str(),
                    static_cast<unsigned long long>(device.poseCount));
     }
+}
+
+bool SpikeObserver::deviceIdentity(uint32_t index, int& deviceClass, std::string& serial)
+{
+    if (index >= vr::k_unMaxTrackedDeviceCount)
+        return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const DeviceRecord& device = devices_[index];
+    if (!device.metadataKnown)
+        return false;
+    deviceClass = device.deviceClass;
+    serial = device.serial;
+    return true;
 }
 
 // Proves that a driver can enumerate *any* device's metadata by index, without ever

@@ -17,8 +17,17 @@
 // nothing here calls into vrserver. Button/input capture is NOT part of the driver
 // DLL's job: it is handled by a separate background client app, so this observer
 // never polls VR events.
+//
+// Step 3 (doc/driver-plan.md): the observer forwards each pose to its
+// `link::MessageChannel` (passed in at construction) so the app can consume
+// driver-side poses without polling OpenVR itself. The convert+forward path runs
+// with no mutex held — the metadata read (via `deviceIdentity`, which locks
+// internally) happens first, then the pose is converted to the wire POD and
+// handed to the channel outside the lock.
 
 #include "SpikeLog.h"
+
+#include "link/MessageChannel.h"
 
 #include <openvr_driver.h>
 
@@ -64,7 +73,8 @@ constexpr double kStatsSeconds = 5.0;
 class SpikeObserver
 {
 public:
-    SpikeObserver(Logger& logger, InterfaceHooks& hooks, NowFn now);
+    SpikeObserver(Logger& logger, InterfaceHooks& hooks, NowFn now,
+                  link::MessageChannel& channel);
 
     // Available only once the driver context is initialized; nullptr means "no
     // metadata this frame".
@@ -81,6 +91,11 @@ public:
     void onInit();
     void onRunFrame();
     void onCleanup();
+
+    // Thread-safe metadata getter (locks `mutex_` internally). Returns false
+    // when the device's metadata is not known yet; the caller gets the cached
+    // class + serial otherwise.
+    bool deviceIdentity(uint32_t index, int& deviceClass, std::string& serial);
 
 private:
     struct DeviceRecord
@@ -107,6 +122,7 @@ private:
     Logger& log_;
     InterfaceHooks& hooks_;
     NowFn now_;
+    link::MessageChannel& channel_;
 
     std::mutex mutex_;
     DeviceProperties* properties_ = nullptr;

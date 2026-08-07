@@ -1,6 +1,6 @@
 #pragma once
 
-// Test double for `link::Pipe` (doc/driver-plan.md phase A, step 2).
+// Test double for `link::Pipe` (doc/driver-plan.md phase A, step 3).
 //
 // Scripts the same calls the real Win32 pipe handles — `write`, `read`,
 // `close` — so the framing layer is exercised without Win32, threads, or a
@@ -10,6 +10,7 @@
 #include "link/Pipe.h"
 
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -128,4 +129,16 @@ public:
 
     std::string lastError() const override { return lastErrorText; }
 };
+
+// A PipeFactoryFn that hands out a borrowed FakePipe (non-owning shared_ptr
+// with a no-op deleter), so a test can script the pipe across the channel's
+// construct/drop cycle in owning mode. The same FakePipe is returned on every
+// call, so a drop+reconnect reuses it — the test resets `written`/`readQueue`
+// between phases as needed.
+inline link::PipeFactoryFn borrowPipeFactory(FakePipe& pipe)
+{
+    return [&pipe] {
+        return std::shared_ptr<link::Pipe>(&pipe, [](link::Pipe*) {});
+    };
+}
 } // namespace link_test

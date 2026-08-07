@@ -1,6 +1,6 @@
 #pragma once
 
-// IPC transport seam for the driver link (doc/driver-plan.md phase A, step 2).
+// IPC transport seam for the driver link (doc/driver-plan.md phase A, step 3).
 //
 // A `Pipe` is an already-connected, full-duplex byte stream between the driver
 // (server) and the app (client). It maps 1:1 onto the Win32 named-pipe file
@@ -8,10 +8,12 @@
 // implementation (step 5) is three forwarders and the framing layer (built on
 // top of this seam) is testable without Win32, threads, or a network.
 //
-// Endpoint construction is deliberately out of scope: `CreateNamedPipe` +
-// `ConnectNamedPipe` (server) and `WaitNamedPipe` + `CreateFile` (client) are
-// connection establishment, not stream operations, and they are asymmetrical
-// between the two ends. A `Pipe` is what you get *after* the connection is up.
+// Endpoint construction arrives at step 5 as a `PipeFactoryFn` (defined below):
+// the server's `CreateNamedPipe` + `ConnectNamedPipe` and the client's
+// `WaitNamedPipe` + `CreateFile` are asymmetrical, so they live in the adapter,
+// not in this base class. `MessageChannel` owns the pipe it constructs via the
+// factory and drops it when it dies; a `Pipe` is what you get *after* the
+// connection is up.
 //
 // The contract is poll-based: neither method ever blocks. A frame-driven
 // caller (the driver's `RunFrame`, the app's main loop) retries on `Pending`
@@ -26,10 +28,25 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <string>
 
 namespace link
 {
+class Pipe;
+
+// Factory that constructs a new, already-connected `Pipe` instance (the server
+// side of the named-pipe handshake — `CreateNamedPipe` + `ConnectNamedPipe`,
+// step 5 of doc/driver-plan.md). The real Win32 implementation is the only part
+// of this layer not covered by unit tests; the `MessageChannel` calls it from
+// `receive()` to accept a connection and drops the pipe when it dies, so the
+// server owns no pipe-handling code outside this seam. Returns a null
+// `shared_ptr` when no client is connected yet — the channel retries on the
+// next frame. `shared_ptr` (rather than `unique_ptr`) so a factory that owns a
+// pre-made pipe can be captured in a copyable `std::function`, and so a `send`
+// on the hook thread can hold a copy that outlives a concurrent `receive` drop.
+using PipeFactoryFn = std::function<std::shared_ptr<Pipe>()>;
 // One per `Pipe` method call. `Pending` means "no progress now, not an error" —
 // the caller retries on the next frame.
 enum class IoStatus

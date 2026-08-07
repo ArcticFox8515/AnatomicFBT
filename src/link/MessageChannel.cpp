@@ -12,16 +12,11 @@ namespace
 struct FrameHeader
 {
     std::uint32_t payloadLength = 0;
-    MessageType type = MessageType::DeviceMetadata;
+    MessageType type = MessageType::DevicePose;
 };
 } // namespace
 
-MessageChannel::MessageChannel(Pipe& pipe) : pipe_(pipe) {}
-
-MessageChannel::State MessageChannel::state() const
-{
-    return state_;
-}
+MessageChannel::MessageChannel(PipeFactoryFn factory) : factory_(std::move(factory)) {}
 
 std::string MessageChannel::lastError() const
 {
@@ -33,9 +28,17 @@ void MessageChannel::appendOutbound(const std::uint8_t* data, std::size_t size)
     outbound_.insert(outbound_.end(), data, data + size);
 }
 
+void MessageChannel::dropPipe()
+{
+    pipe_.reset();
+    outbound_.clear();
+    outboundOffset_ = 0;
+    inbound_.clear();
+}
+
 bool MessageChannel::send(MessageType type, const std::uint8_t* payload, std::size_t size)
 {
-    if (state_ != State::Open)
+    if (!pipe_)
         return false;
     if (size > kMaxPayloadBytes)
         return false;
@@ -55,16 +58,14 @@ bool MessageChannel::send(MessageType type, const std::uint8_t* payload, std::si
     if (size)
         appendOutbound(payload, size);
 
-    // Write from the front: old backlog + the new frame together. The pipe is
-    // non-blocking, so a `Pending` here just leaves the tail buffered; the next
-    // `send` retries from `outboundOffset_`. No separate drain trigger — if the
-    // pipe is stuck, retrying synchronously would return `Pending` again, and
-    // if there is nothing new to send there is nothing to retry into.
+    // Snapshot the shared_ptr so a concurrent `receive` drop cannot free the
+    // Pipe out from under this write.
+    auto pipe = pipe_;
     while (outboundOffset_ < outbound_.size())
     {
         std::size_t written = 0;
         const std::size_t remaining = outbound_.size() - outboundOffset_;
-        const IoStatus status = pipe_.write(outbound_.data() + outboundOffset_, remaining,
+        const IoStatus status = pipe->write(outbound_.data() + outboundOffset_, remaining,
                                             written);
         switch (status)
         {
@@ -74,11 +75,12 @@ bool MessageChannel::send(MessageType type, const std::uint8_t* payload, std::si
         case IoStatus::Pending:
             return true;
         case IoStatus::Closed:
-            state_ = State::Closed;
+            lastError_.clear();
+            dropPipe();
             return true;
         case IoStatus::Failed:
-            state_ = State::Failed;
-            lastError_ = pipe_.lastError();
+            lastError_ = pipe->lastError();
+            dropPipe();
             return true;
         }
     }
@@ -95,7 +97,7 @@ std::size_t MessageChannel::drainPipe()
     for (;;)
     {
         std::size_t read = 0;
-        const IoStatus status = pipe_.read(buffer, sizeof(buffer), read);
+        const IoStatus status = pipe_->read(buffer, sizeof(buffer), read);
         switch (status)
         {
         case IoStatus::Ok:
@@ -107,11 +109,12 @@ std::size_t MessageChannel::drainPipe()
         case IoStatus::Pending:
             return totalRead;
         case IoStatus::Closed:
-            state_ = State::Closed;
+            lastError_.clear();
+            dropPipe();
             return totalRead;
         case IoStatus::Failed:
-            state_ = State::Failed;
-            lastError_ = pipe_.lastError();
+            lastError_ = pipe_->lastError();
+            dropPipe();
             return totalRead;
         }
     }
@@ -128,11 +131,7 @@ bool MessageChannel::parseFrames(std::vector<Message>& out)
         const MessageType type = header.type;
 
         if (payloadLength > kMaxPayloadBytes)
-        {
-            state_ = State::Failed;
-            lastError_ = "payload length exceeds maximum";
-            break;
-        }
+            return false;  // stream unrecoverable — caller drops the pipe
 
         if (inbound_.size() - consumed < sizeof(FrameHeader) + payloadLength)
             break;  // not a whole frame yet
@@ -140,7 +139,7 @@ bool MessageChannel::parseFrames(std::vector<Message>& out)
         // Unknown types are skipped (consumed, not emitted): that is how an
         // older app survives a newer driver. The known set is the current
         // MessageType enum; a future type is invisible to this build.
-        const bool known = type == MessageType::DeviceMetadata || type == MessageType::DevicePose;
+        const bool known = type == MessageType::DevicePose;
         if (known)
         {
             const std::uint8_t* payload = inbound_.data() + consumed + sizeof(FrameHeader);
@@ -156,13 +155,31 @@ bool MessageChannel::parseFrames(std::vector<Message>& out)
 
 std::size_t MessageChannel::receive(std::vector<Message>& out)
 {
-    if (state_ != State::Open)
+    // Construct a pipe if there is none. The factory returns nullptr when no
+    // client is connected yet — retry next frame.
+    if (!pipe_)
+    {
+        pipe_ = factory_();
+        if (!pipe_)
+            return 0;
+        // A new connection: clear any stale error from a previous drop and
+        // discard buffered bytes (no snapshot on connect).
+        lastError_.clear();
+        outbound_.clear();
+        outboundOffset_ = 0;
+        inbound_.clear();
+    }
+
+    if (!pipe_)
         return 0;
 
     const std::size_t before = out.size();
     drainPipe();
-    if (state_ == State::Open)
-        parseFrames(out);
+    if (pipe_ && !parseFrames(out))
+    {
+        lastError_ = "payload length exceeds maximum";
+        dropPipe();
+    }
     return out.size() - before;
 }
 } // namespace link

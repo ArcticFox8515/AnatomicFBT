@@ -20,6 +20,8 @@
 #include "spike/SpikeDriverHooks.h"
 #include "spike/SpikeLog.h"
 
+#include "link/MessageChannel.h"
+
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -233,7 +235,8 @@ protected:
                                   reinterpret_cast<void*>(&detourC)};
     spike::DriverHookSet hooks_{api_, logger_, detours_};
 
-    spike::SpikeObserver observer_{logger_, hooks_, [] { return 0.0; }};
+    link::MessageChannel channel_{[] { return nullptr; }};
+    spike::SpikeObserver observer_{logger_, hooks_, [] { return 0.0; }, channel_};
 };
 
 // ---------------------------------------------------------- the index table ----

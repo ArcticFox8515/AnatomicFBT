@@ -12,6 +12,8 @@
 #include "SpikeLog.h"
 #include "SpikeObserver.h"
 
+#include "link/MessageChannel.h"
+
 #include <openvr_driver.h>
 
 #include <string>
@@ -76,7 +78,8 @@ public:
 class SpikeServer
 {
 public:
-    SpikeServer(Logger& logger, SpikeObserver& observer, ServerEnvironment& environment);
+    SpikeServer(Logger& logger, SpikeObserver& observer, ServerEnvironment& environment,
+                link::MessageChannel& channel);
 
     vr::EVRInitError init(vr::IVRDriverContext* context);
     void cleanup();
@@ -91,6 +94,7 @@ private:
     Logger& log_;
     SpikeObserver& observer_;
     ServerEnvironment& environment_;
+    link::MessageChannel& channel_;
 };
 
 class WatchdogEnvironment
