@@ -20,7 +20,7 @@
 // it just means "try again next frame". `send` never blocks on a full pipe —
 // it buffers outbound bytes up to `kMaxPayloadBytes` and refuses (returns
 // false) once full; what to drop when that happens is the publisher's policy
-// (step 4), not this layer's.
+// (step 3), not this layer's.
 
 #include "Pipe.h"
 #include "Protocol.h"

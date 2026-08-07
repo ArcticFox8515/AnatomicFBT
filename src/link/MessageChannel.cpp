@@ -41,7 +41,7 @@ bool MessageChannel::send(MessageType type, const std::uint8_t* payload, std::si
         return false;
 
     // Refuse if the frame would overflow the outbound cap. What to drop then
-    // is the publisher's policy (step 4), not this layer's.
+    // is the publisher's policy (step 3), not this layer's.
     const std::size_t frameSize = sizeof(FrameHeader) + size;
     const std::size_t pending = outbound_.size() - outboundOffset_;
     if (pending + frameSize > kMaxPayloadBytes)

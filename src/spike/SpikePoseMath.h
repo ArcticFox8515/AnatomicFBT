@@ -2,8 +2,7 @@
 
 // Throwaway step-1 spike (doc/driver-plan.md): the DriverPose_t -> world pose
 // composition, kept openvr-free and header-only so it can be unit-tested without
-// SteamVR (tests/SpikeDriverTest.cpp). Superseded by src/driver/DriverPoseMath at
-// step 3.
+// SteamVR (tests/SpikeDriverTest.cpp).
 //
 // Doubles throughout: DriverPose_t is double-precision and this math is the one
 // thing in the spike that must be provably exact.

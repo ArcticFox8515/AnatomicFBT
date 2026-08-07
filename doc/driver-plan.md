@@ -49,25 +49,21 @@ corrections will be applied.
    messages as memcpy'd PODs (`DeviceMetadata`, `DevicePose`). Tests cover split
    reads, several frames per read, header split mid-field, partial writes,
    unknown-type skip, oversize-length failure, and peer-close. The mock pipe
-   lives in the test target; the real Win32 pipe is step 6.
-3. **Pose math** — the `DriverPose_t` -> world pose composition (verified in the
-   spike against the numeric case captured from the live run) promoted out of
-   `src/spike/SpikePoseMath.h` into the driver-side step, where `DriverPose_t` is
-   in scope. The protocol carries the composed pose only.
-4. **Driver-side server** — device table, metadata resolution, publish policy, client
+   lives in the test target; the real Win32 pipe is step 5.
+3. **Driver-side server** — device table, metadata resolution, publish policy, client
    lifecycle, sanity gates on incoming poses; tested against the in-memory channel, plus
    a written argument for the concurrency of its shared state.
-5. **App-side link** — bytes to device snapshots (kind mapping, validity filter,
+4. **App-side link** — bytes to device snapshots (kind mapping, validity filter,
    ordering), disconnect, reconnect. The app's existing device type,
    recording format, mode/calibration/replay logic and old recordings stay untouched.
-6. **Real pipe implementation** — the only part not covered by unit tests, kept as thin as
+5. **Real pipe implementation** — the only part not covered by unit tests, kept as thin as
    possible; app reconnects periodically while disconnected.
-7. **Promote the spike into the real driver** — reuse its hook and provider machinery,
+6. **Promote the spike into the real driver** — reuse its hook and provider machinery,
    drop the observation-only code and the spike client, point the detours at the transport
    layer, close the two known concurrency defects (unsynchronized publication of the
    trampoline pointer, and clearing it during teardown while pose threads run). Live
    SteamVR run; `ctest -C Release` as well as Debug.
-8. **App migration** — poses from the driver link, trigger gesture from the background
+7. **App migration** — poses from the driver link, trigger gesture from the background
    session, connection status in the UI, docs updated.
 
 ## Risks

@@ -5,7 +5,7 @@
 // A `Pipe` is an already-connected, full-duplex byte stream between the driver
 // (server) and the app (client). It maps 1:1 onto the Win32 named-pipe file
 // handle operations — `WriteFile`, `ReadFile`, `CloseHandle` — so the real
-// implementation (step 6) is three forwarders and the framing layer (built on
+// implementation (step 5) is three forwarders and the framing layer (built on
 // top of this seam) is testable without Win32, threads, or a network.
 //
 // Endpoint construction is deliberately out of scope: `CreateNamedPipe` +
@@ -16,7 +16,7 @@
 // The contract is poll-based: neither method ever blocks. A frame-driven
 // caller (the driver's `RunFrame`, the app's main loop) retries on `Pending`
 // until it gets `Ok`, `Closed`, or `Failed`. This keeps the seam free of
-// overlapped-IO bookkeeping — step 6 can pick either a pending overlapped
+// overlapped-IO bookkeeping — step 5 can pick either a pending overlapped
 // read with an owned buffer behind this interface, or `PIPE_NOWAIT` (both
 // satisfy "never blocks"); the choice does not leak through here.
 //
@@ -40,7 +40,7 @@ enum class IoStatus
     Failed,  // a system error; see lastError()
 };
 
-// An already-connected byte stream. The real implementation (step 6) wraps a
+// An already-connected byte stream. The real implementation (step 5) wraps a
 // Win32 `HANDLE` to a named-pipe instance; the test double (tests/FakePipe.h)
 // scripts the same calls. No method throws.
 class Pipe

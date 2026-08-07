@@ -5,7 +5,7 @@
 // Scripts the same calls the real Win32 pipe handles — `write`, `read`,
 // `close` — so the framing layer is exercised without Win32, threads, or a
 // network. Lives in the test target only; the real implementation arrives at
-// step 6 and is the only part of the link not covered by unit tests.
+// step 5 and is the only part of the link not covered by unit tests.
 
 #include "link/Pipe.h"
 
