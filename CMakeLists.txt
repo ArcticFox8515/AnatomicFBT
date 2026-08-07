@@ -80,6 +80,20 @@ target_link_libraries(${PROJECT_NAME}
 
 enable_testing()
 
+# --- Driver link: IPC channel + protocol (doc/driver-plan.md phase A) -------
+# Shared by the driver DLL and the app; depends on the standard library only
+# (no model code, no glm, no openvr, no spdlog), so the driver links no model
+# code and the types evolve independently. The real Win32 pipe (step 6) is the
+# only part of this layer not covered by unit tests.
+
+add_library(LinkLib STATIC
+    src/link/Pipe.h
+    src/link/Protocol.h
+    src/link/MessageChannel.cpp
+    src/link/MessageChannel.h)
+
+target_include_directories(LinkLib PUBLIC src)
+
 # --- Step-1 spike of doc/driver-plan.md: throwaway, observation-only ---------
 # Everything under src/spike is deleted once the real driver exists.
 
@@ -154,6 +168,8 @@ add_executable(TrackingCorrectorTests
     tests/ReplaySessionTest.cpp
     tests/RetargetTest.cpp
     tests/SessionRecorderTest.cpp
+    tests/LinkProtocolTest.cpp
+    tests/LinkMessageChannelTest.cpp
     tests/SpikeClientReportTest.cpp
     tests/SpikeDriverEnvironmentTest.cpp
     tests/SpikeDriverHooksTest.cpp
@@ -169,6 +185,7 @@ add_executable(TrackingCorrectorTests
 target_link_libraries(TrackingCorrectorTests
     TrackingCorrectorLib
     SpikeLib
+    LinkLib
     GTest::gtest
     GTest::gtest_main
 )

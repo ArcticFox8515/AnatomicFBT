@@ -48,6 +48,7 @@ Conan 2 + Visual Studio 2022. Windows-only (`WIN32` exe, `WinMain` entry).
 | Target | Kind | Contents / deps |
 |---|---|---|
 | `TrackingCorrectorLib` | STATIC | `src/model` + `src/view`; glm, json, GLEW, glfw |
+| `LinkLib` | STATIC | `src/link` IPC seam + framing + protocol; std lib only |
 | `TrackingCorrector` | WIN32 exe | `src/main.cpp`, `src/vr`, imgui/imguizmo, spdlog, openvr |
 | `SpikeLib` | STATIC | all `src/spike` logic; openvr headers only |
 | `driver_00trackingcorrector` | SHARED | `src/spike/SpikeDriver.cpp` + SpikeLib, minhook, spdlog |
@@ -60,6 +61,12 @@ Conan 2 + Visual Studio 2022. Windows-only (`WIN32` exe, `WinMain` entry).
 src/model/      Pure data + math + JSON. NO OpenGL/OpenVR — unit-testable.
 src/view/       All OpenGL rendering (Scene).
 src/vr/         OpenVR device tracking (exe-only; the only place openvr.h is included).
+src/link/       Driver<->app IPC: `Pipe` transport seam (1:1 to a Win32 named-pipe file
+                handle: write/read/close, poll-based, never blocks), `MessageChannel`
+                framing/reassembly over it, and the wire protocol's two messages as
+                memcpy'd PODs. Standard library only — no model, no glm, no openvr, no
+                spdlog — so the driver DLL links no model code. The real Win32 pipe is
+                step 6 of doc/driver-plan.md; the mock pipe lives in tests/FakePipe.h.
 src/spike/      THROWAWAY step-1 spike of doc/driver-plan.md: observation-only SteamVR
                 driver that hooks GetGenericInterface / TrackedDeviceAdded /
                 TrackedDevicePoseUpdated and logs. All logic in SpikeLib; SpikeDriver.cpp
@@ -67,7 +74,8 @@ src/spike/      THROWAWAY step-1 spike of doc/driver-plan.md: observation-only S
                 (neither IVRDriverInput hooks nor PollNextEvent deliver buttons).
 src/driverdll/00trackingcorrector/driver.vrdrivermanifest  — copied next to bin/win64/.
 src/bindings/   Vendored ImGui backends, auto-copied by conanfile.py. Generated.
-tests/          GoogleTest suites mirroring src/model and src/spike.
+tests/          GoogleTest suites mirroring src/model, src/link and src/spike.
+                `FakePipe.h` is the `link::Pipe` mock used by the link suites.
 unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
 ```
 
@@ -130,6 +138,32 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   reports via `Event{started, stopped, error}`.
 - `ReplaySession` — recording file list (`scan`), loaded recording, timeline position;
   `load` recalibrates from frame 0, `currentDevices()` feeds `update`.
+
+## Link layer (`src/link/`)
+
+- `Pipe` — transport seam, one method per Win32 named-pipe file-handle op
+  (`write`/`read`/`close`, poll-based, never blocks; `IoStatus` =
+  `Ok|Pending|Closed|Failed`). An already-connected byte stream — endpoint
+  construction (`CreateNamedPipe`/`ConnectNamedPipe` server, `WaitNamedPipe`/
+  `CreateFile` client) is out of scope, it is step 6 of doc/driver-plan.md and
+  the only part of this layer not unit-tested. Partial transfers are
+  first-class so the real impl can be overlapped-with-owned-buffer or
+  `PIPE_NOWAIT` without the interface changing.
+- `Protocol` — wire types only (no codec): `DeviceMetadata` (id+kind) and
+  `DevicePose` (id+tracking+pos+rot) as naturally-aligned PODs, memcpy'd
+  whole — same style as `.tcrec`'s `writeRaw`/`readRaw` but one struct copy.
+  `DeviceKind`/`TrackingState`/`MessageType` are this layer's own enums with
+  pinned wire values; the driver maps `ETrackedDeviceClass` -> `DeviceKind`,
+  the app maps `DeviceKind` -> `TrackedDeviceKind`. `tracking` collapses the
+  two booleans the app ANDs in `OpenVrTracking::pollPoses`; zero = drop the
+  device this frame (it then holds its last pose).
+- `MessageChannel` — length-prefixed framing (u32 length, u16 type, payload)
+  + reassembly over a `Pipe`. `send` frames into an outbound buffer capped at
+  `kMaxPayloadBytes` (returns false when full — drop policy is the
+  publisher's, step 4), `flush` retries the tail, `receive` drains the pipe
+  and yields complete frames. Unknown types are skipped (consumed, not
+  emitted); `length > kMaxPayloadBytes` is a permanent `Failed` (stream sync
+  unrecoverable). Single-threaded, frame-driven.
 
 ## View, VR, entry point
 
