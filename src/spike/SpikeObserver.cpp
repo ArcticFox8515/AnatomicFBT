@@ -285,6 +285,22 @@ void SpikeObserver::logPoseSamples()
             continue;
 
         const vr::DriverPose_t& pose = device.lastPose;
+
+        log_.logf("pose dev %u %s \"%s\" valid=%d connected=%d result=%d timeOffset=%.5f", i,
+                  deviceClassName(device.deviceClass), device.serial.c_str(),
+                  static_cast<int>(pose.poseIsValid), static_cast<int>(pose.deviceIsConnected),
+                  static_cast<int>(pose.result), pose.poseTimeOffset);
+
+        // `lastPoseValid` means "a pose struct was stored", not that SteamVR vouches
+        // for it. Standby drops poseIsValid to 0 while still sending poses 80 s stale;
+        // base stations send an all-zero quaternion with valid=0; the Tundra Tracker
+        // reported 9 km with valid=1. Composing those produces numbers, not
+        // information, in the same format as the A/B lines the spike exists to
+        // compare — so gate the composition on poseIsValid and keep only the header
+        // (which is how standby staleness became visible at all).
+        if (!pose.poseIsValid)
+            continue;
+
         const RigidPose worldFromDriver{{pose.vecWorldFromDriverTranslation[0],
                                          pose.vecWorldFromDriverTranslation[1],
                                          pose.vecWorldFromDriverTranslation[2]},
@@ -305,10 +321,6 @@ void SpikeObserver::logPoseSamples()
         const RigidPose a = compose(worldFromDriver, local);
         const RigidPose b = compose(a, driverFromHead);
 
-        log_.logf("pose dev %u %s \"%s\" valid=%d connected=%d result=%d timeOffset=%.5f", i,
-                  deviceClassName(device.deviceClass), device.serial.c_str(),
-                  static_cast<int>(pose.poseIsValid), static_cast<int>(pose.deviceIsConnected),
-                  static_cast<int>(pose.result), pose.poseTimeOffset);
         log_.logf("     local            %s", formatPose(local).c_str());
         log_.logf("     worldFromDriver  %s", formatPose(worldFromDriver).c_str());
         log_.logf("     driverFromHead   %s", formatPose(driverFromHead).c_str());

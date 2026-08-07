@@ -61,6 +61,12 @@ private:
     void* target_ = nullptr;
     void* original_ = nullptr;
     const char* name_ = "";
+    // Reentrancy guard: a second install() on this hook object that lands while the
+    // first is still inside MH_CreateHook (the live double-install race, §5.2) must
+    // not walk into a second create. Serialized via the hook object, not the version
+    // string: vrserver hands the same interface to every driver, and Init hooks
+    // eagerly on top of that — two callers, one hook object.
+    bool installing_ = false;
 };
 
 // Typed façade: the detours need the original as a callable function pointer.
