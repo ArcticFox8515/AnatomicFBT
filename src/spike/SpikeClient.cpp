@@ -14,7 +14,11 @@
 
 #include "SpikeClientReport.h"
 #include "SpikeLog.h"
+#include "SpikeLogFile.h"
 #include "SpikePoseMath.h"
+
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/basic_file_sink.h>
 
 #include <windows.h>
 
@@ -26,6 +30,30 @@
 
 namespace
 {
+class Win32ProcessApi final : public spike::ProcessApi
+{
+public:
+    unsigned long environmentVariable(const char* name, char* buffer,
+                                      unsigned long size) override
+    {
+        return GetEnvironmentVariableA(name, buffer, size);
+    }
+
+    unsigned long executablePath(char* buffer, unsigned long size) override
+    {
+        return GetModuleFileNameA(nullptr, buffer, size);
+    }
+};
+
+// spdlog owns the file, the timestamps, the flushing and creating the directory the
+// path names; the spike Logger already formats the whole line, hence "%v".
+spike::LogSink fileSink(const std::string& path)
+{
+    auto logger = spdlog::basic_logger_mt("spike-client", path);
+    logger->set_pattern("%v");
+    return [logger](const char* message) { logger->info(message); };
+}
+
 std::string stringProperty(vr::IVRSystem* system, vr::TrackedDeviceIndex_t index,
                           vr::ETrackedDeviceProperty property)
 {
@@ -80,11 +108,13 @@ int main(int argc, char** argv)
     const int durationSeconds = argc > 1 ? std::atoi(argv[1]) : 0;
 
     spike::Logger& log = spike::log();
-    spike::openProcessLog(log, "client-spike");
-    log.setSink([](const char* message) {
-        std::puts(message);
-        std::fflush(stdout);
-    });
+    Win32ProcessApi processApi;
+    log.setSink(spike::compositeSink(
+        fileSink(spike::processLogPath(processApi, spike::kClientLogPrefix)),
+        [](const char* message) {
+            std::puts(message);
+            std::fflush(stdout);
+        }));
 
     vr::EVRInitError initError = vr::VRInitError_None;
     vr::IVRSystem* system = vr::VR_Init(&initError, vr::VRApplication_Background);
@@ -95,7 +125,6 @@ int main(int argc, char** argv)
     }
 
     log.logf("=== TrackingCorrector spike client ===");
-    log.logf("log file: %s", log.filePath().c_str());
     log.logf("sampling once per second%s; Ctrl+C to stop",
              durationSeconds > 0 ? " for a limited time" : "");
 
@@ -110,6 +139,5 @@ int main(int argc, char** argv)
         [] { Sleep(1000); });
 
     vr::VR_Shutdown();
-    log.close();
     return 0;
 }

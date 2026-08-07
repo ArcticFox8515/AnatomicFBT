@@ -44,10 +44,6 @@ struct FactoryProviders
 void* serveFactoryRequest(Logger& logger, const char* interfaceName, int* returnCode,
                           const FactoryProviders& providers);
 
-// The condition the component-creation detours observe on: vrserver both succeeded
-// and gave us a handle to attribute.
-bool componentWasCreated(vr::EVRInputError result, const vr::VRInputComponentHandle_t* handle);
-
 class ServerEnvironment
 {
 public:
@@ -57,7 +53,9 @@ public:
     virtual vr::EVRInitError initContext(vr::IVRDriverContext* context) = 0;
     virtual void cleanupContext() = 0;
 
-    // Sends the log lines to IVRDriverLog as well, so they land in vrserver.txt.
+    // Adds IVRDriverLog (SteamVR's vrserver.txt) as a second destination for the spike
+    // logger's sink, alongside the spdlog file destination the adapter installed. Runs
+    // after initContext so vr::VRDriverLog() is valid when the sink calls it.
     virtual void routeLogToDriverLog() = 0;
 
     // MH_Initialize: nullptr on success, else the status text for the log.
@@ -72,7 +70,6 @@ public:
 
     virtual void hookDriverContext(vr::IVRDriverContext* context) = 0;
     virtual void hookServerDriverHost() = 0;
-    virtual void hookDriverInput() = 0;
     virtual void removeHooks() = 0;
 };
 

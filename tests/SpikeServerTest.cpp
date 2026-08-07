@@ -25,7 +25,6 @@ class NoInterfaceHooks : public spike::InterfaceHooks
 {
 public:
     void hookServerDriverHost(void*) override {}
-    void hookDriverInput(void*) override {}
 };
 
 class FakeServerEnvironment : public spike::ServerEnvironment
@@ -67,8 +66,6 @@ public:
 
     void hookServerDriverHost() override { steps.emplace_back("hookHost"); }
 
-    void hookDriverInput() override { steps.emplace_back("hookInput"); }
-
     void removeHooks() override { steps.emplace_back("removeHooks"); }
 
     vr::EVRInitError contextError = vr::VRInitError_None;
@@ -99,10 +96,7 @@ class SpikeServerTest : public ::testing::Test
 protected:
     SpikeServerTest() : observer_(logger_, hooks_, [] { return 0.0; })
     {
-        logger_.setTimestampSource([] { return std::string("00:00:00.000"); });
         logger_.setSink([this](const char* message) { lines_.emplace_back(message); });
-        logger_.setStream(std::make_shared<std::ostringstream>(),
-                          "C:\\log\\driver-spike-vrserver.log");
     }
 
     bool logged(const std::string& needle) const
@@ -132,12 +126,10 @@ TEST_F(SpikeServerTest, InitHooksInTheOrderTheContextForcesOnUs)
     // The context caches IVRServerDriverHost & co. *before* our GetGenericInterface
     // detour can exist, so those have to be hooked eagerly from the pointers it already
     // holds — and the detour has to be in place before that, for everything after.
-    const std::vector<std::string> expected{"routeLog", "initHooks", "hookContext", "hookHost",
-                                            "hookInput"};
+    const std::vector<std::string> expected{"routeLog", "initHooks", "hookContext", "hookHost"};
     EXPECT_EQ(environment_.steps, expected);
 
     EXPECT_TRUE(logged("=== TrackingCorrector spike driver: server Init ==="));
-    EXPECT_TRUE(logged("log file: C:\\log\\driver-spike-vrserver.log"));
     EXPECT_TRUE(logged("module: C:\\build\\driver_00trackingcorrector.dll pid=4242 "
                        "sizeof(DriverPose_t)="));
     EXPECT_TRUE(logged("Init complete"));
@@ -186,12 +178,6 @@ TEST_F(SpikeServerTest, CleanupUnhooksBeforeTearingDownMinHookAndTheContext)
     EXPECT_EQ(environment_.steps, expected);
     EXPECT_TRUE(logged("=== TrackingCorrector spike driver: Cleanup ==="));
     EXPECT_TRUE(logged("summary: 0 RunFrame calls"));
-
-    // The log is closed last, and stays closed.
-    EXPECT_FALSE(logger_.isOpen());
-    const size_t linesAfterCleanup = lines_.size();
-    server_.runFrame();
-    EXPECT_EQ(lines_.size(), linesAfterCleanup);
 }
 
 TEST_F(SpikeServerTest, CleanupStillTearsDownTheContextIfObservationThrows)
@@ -242,9 +228,7 @@ class SpikeWatchdogTest : public ::testing::Test
 protected:
     SpikeWatchdogTest()
     {
-        logger_.setTimestampSource([] { return std::string("00:00:00.000"); });
         logger_.setSink([this](const char* message) { lines_.emplace_back(message); });
-        logger_.setStream(std::make_shared<std::ostringstream>());
     }
 
     bool logged(const std::string& needle) const
@@ -271,7 +255,6 @@ TEST_F(SpikeWatchdogTest, WatchdogInitInstallsNothing)
     watchdog_.cleanup();
     EXPECT_EQ(environment_.contextCleanups, 1);
     EXPECT_TRUE(logged("watchdog Cleanup"));
-    EXPECT_FALSE(logger_.isOpen());
 }
 
 TEST_F(SpikeWatchdogTest, AFailedWatchdogContextIsPassedBack)
@@ -303,16 +286,6 @@ TEST(SpikeFactory, AnythingElseIncludingNullIsUnknown)
               spike::FactoryRequest::Unknown);
 }
 
-TEST(SpikeFactory, ComponentCreationIsObservedOnlyWhenVrserverGaveUsAHandle)
-{
-    const vr::VRInputComponentHandle_t handle = 100;
-    EXPECT_TRUE(spike::componentWasCreated(vr::VRInputError_None, &handle));
-    // Reading *handle in either of these cases is reading uninitialized memory.
-    EXPECT_FALSE(spike::componentWasCreated(vr::VRInputError_None, nullptr));
-    EXPECT_FALSE(spike::componentWasCreated(vr::VRInputError_InvalidHandle, &handle));
-    EXPECT_FALSE(spike::componentWasCreated(vr::VRInputError_InvalidHandle, nullptr));
-}
-
 // HmdDriverFactory's body. It lives here rather than in the DLL because the DLL is
 // compiled into no test binary — SpikeDriverTest reaches it only through LoadLibrary,
 // which proves the export works, not that these decisions are right.
@@ -321,20 +294,22 @@ class SpikeServeFactoryRequest : public ::testing::Test
 protected:
     void SetUp() override
     {
-        logger_.setTimestampSource([] { return std::string("00:00:00.000"); });
-        logger_.setStream(stream_);
+        logger_.setSink([this](const char* message) { lines_.emplace_back(message); });
     }
 
     bool logged(const std::string& needle) const
     {
-        return stream_->str().find(needle) != std::string::npos;
+        for (const std::string& line : lines_)
+            if (line.find(needle) != std::string::npos)
+                return true;
+        return false;
     }
 
     int serverObject_ = 0;
     int watchdogObject_ = 0;
     spike::FactoryProviders providers_{&serverObject_, &watchdogObject_};
 
-    std::shared_ptr<std::ostringstream> stream_ = std::make_shared<std::ostringstream>();
+    std::vector<std::string> lines_;
     spike::Logger logger_;
 };
 

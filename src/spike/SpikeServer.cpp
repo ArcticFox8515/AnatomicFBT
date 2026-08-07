@@ -17,11 +17,6 @@ FactoryRequest classifyFactoryRequest(const char* interfaceName)
     return FactoryRequest::Unknown;
 }
 
-bool componentWasCreated(vr::EVRInputError result, const vr::VRInputComponentHandle_t* handle)
-{
-    return result == vr::VRInputError_None && handle != nullptr;
-}
-
 void* serveFactoryRequest(Logger& logger, const char* interfaceName, int* returnCode,
                           const FactoryProviders& providers)
 {
@@ -65,7 +60,6 @@ vr::EVRInitError SpikeServer::init(vr::IVRDriverContext* context)
         environment_.routeLogToDriverLog();
 
         log_.logf("=== TrackingCorrector spike driver: server Init ===");
-        log_.logf("log file: %s", log_.filePath().c_str());
         log_.logf("module: %s pid=%lu sizeof(DriverPose_t)=%zu",
                   environment_.modulePath().c_str(), environment_.processId(),
                   sizeof(vr::DriverPose_t));
@@ -85,10 +79,6 @@ vr::EVRInitError SpikeServer::init(vr::IVRDriverContext* context)
         environment_.hookDriverContext(context);
 
         environment_.hookServerDriverHost();
-        // Triggers the detour above (IVRDriverInput is not fetched by the context init
-        // macro), which installs the input hooks; the eager call is a fallback and is a
-        // no-op when the detour already did it.
-        environment_.hookDriverInput();
 
         log_.logf("Init complete");
         return vr::VRInitError_None;
@@ -112,7 +102,6 @@ void SpikeServer::cleanup()
         environment_.shutdownHookLibrary();
     });
     environment_.cleanupContext();
-    log_.close();
 }
 
 void SpikeServer::runFrame()
@@ -157,6 +146,5 @@ void SpikeWatchdog::cleanup()
 {
     log_.logf("watchdog Cleanup");
     environment_.cleanupContext();
-    log_.close();
 }
 } // namespace spike

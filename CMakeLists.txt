@@ -101,6 +101,8 @@ add_library(SpikeLib STATIC
     src/spike/SpikeInterfaces.h
     src/spike/SpikeLog.cpp
     src/spike/SpikeLog.h
+    src/spike/SpikeLogFile.cpp
+    src/spike/SpikeLogFile.h
     src/spike/SpikeNames.cpp
     src/spike/SpikeNames.h
     src/spike/SpikeObserver.cpp
@@ -119,7 +121,7 @@ target_include_directories(SpikeLib PUBLIC
 add_library(driver_00trackingcorrector SHARED
     src/spike/SpikeDriver.cpp)
 
-target_link_libraries(driver_00trackingcorrector PRIVATE SpikeLib minhook::minhook)
+target_link_libraries(driver_00trackingcorrector PRIVATE SpikeLib minhook::minhook spdlog::spdlog)
 
 # SteamVR layout: <driver dir>/driver.vrdrivermanifest + bin/win64/driver_<name>.dll,
 # where <name> must match the manifest name and the directory name. Only the Release
@@ -139,7 +141,7 @@ add_custom_command(TARGET driver_00trackingcorrector POST_BUILD
 add_executable(spike_client
     src/spike/SpikeClient.cpp)
 
-target_link_libraries(spike_client PRIVATE SpikeLib openvr::openvr)
+target_link_libraries(spike_client PRIVATE SpikeLib openvr::openvr spdlog::spdlog)
 
 add_executable(TrackingCorrectorTests
     tests/SkeletonTest.cpp
@@ -157,6 +159,7 @@ add_executable(TrackingCorrectorTests
     tests/SpikeDriverHooksTest.cpp
     tests/SpikeDriverTest.cpp
     tests/SpikeHooksTest.cpp
+    tests/SpikeLogFileTest.cpp
     tests/SpikeLogTest.cpp
     tests/SpikeObserverTest.cpp
     tests/SpikeServerTest.cpp

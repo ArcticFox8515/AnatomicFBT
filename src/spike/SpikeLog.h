@@ -4,106 +4,66 @@
 // both the spike driver DLL and the spike client. Deleted with the rest of
 // src/spike once the real driver exists.
 //
-// Structured so that every decision is unit-testable without touching the
-// filesystem, the clock or the environment: the path building and the line
-// formatting are pure functions, and `Logger` is handed a stream, a sink and a
-// timestamp source from outside. The three functions at the bottom of this header
-// are the adapter — branch-free forwarders over Win32 / ofstream — and are the only
-// part of this file exempt from the "every line runs in a test" bar.
+// Logger does one thing: format a line and hand it to a sink. No file, no
+// timestamp, no flush, no mutex — spdlog (installed by the adapter, SpikeDriver.cpp
+// / SpikeClient.cpp) owns destinations, timestamps, buffering and flushing.
+// SpikeLib stays spdlog-free so the test binary does not link it; the spdlog
+// logger is created in the adapter side and wired in via setSink before any
+// hook is installed (see doc/driver-spike-handover.md §5.3).
+//
+// Production invariant: the sink is installed once and never cleared. A hook
+// thread reads `sink_` on every detour entry; the adapter writes it before
+// installing hooks (SpikeServer::init wires logging, then hooks), so the read
+// is sequenced after the write with no lock. setSink is only callable more
+// than once from tests, which are single-threaded.
 
 #include <functional>
-#include <memory>
-#include <mutex>
-#include <ostream>
-#include <string>
 
 namespace spike
 {
 using LogSink = std::function<void(const char*)>;
-using TimestampFn = std::function<std::string()>;
 
-// "C:\...\vrserver.exe" -> "vrserver". A path without a separator or without an
-// extension is handled; an empty path yields "unknown".
-std::string processBaseName(const std::string& modulePath);
-
-// The two pieces of the environment the log path depends on, as values, so the path
-// building stays a pure function.
-struct LogEnvironment
-{
-    std::string localAppData; // empty when the variable is not set
-    std::string modulePath;   // empty when it could not be read
-};
-
-// "<localAppData>\TrackingCorrector\", or "" when LOCALAPPDATA is not set (the log
-// then lands in the working directory rather than nowhere).
-std::string logDirectory(const std::string& localAppData);
-
-// <directory><prefix>-<processName>.log. The process name is part of the file name
-// because SteamVR loads the same DLL into vrserver.exe and vrwatchdog.exe.
-std::string logPath(const LogEnvironment& environment, const std::string& prefix);
-
-// "hh:mm:ss.mmm".
-std::string formatTimestamp(unsigned hours, unsigned minutes, unsigned seconds,
-                            unsigned milliseconds);
-
-// The line as it lands in the file.
-std::string formatLogLine(const std::string& timestamp, const std::string& message);
+// Fans every line out to both sinks, in order (the driver's file sink first, then
+// IVRDriverLog). An empty sink is skipped rather than called — std::function would
+// throw std::bad_function_call, inside a detour running on a vrserver thread.
+LogSink compositeSink(LogSink first, LogSink second);
 
 class Logger
 {
 public:
-    Logger();
+    Logger() = default;
 
-    // First stream wins: every entry point offers one (the DLL is entered through
-    // HmdDriverFactory, both providers' Init, and nothing guarantees an order), and
-    // only the first usable one is kept. Returns whether the logger is open
-    // afterwards — a stream that failed to open is refused rather than stored, so a
-    // log that cannot be written is never the reason the driver fails.
-    bool setStream(std::shared_ptr<std::ostream> stream, std::string path = {});
-
-    // Additional sink receiving the same lines (the DLL routes them to IVRDriverLog
-    // so they also land in vrserver.txt).
+    // Installed once by the adapter before any hook is installed (see header
+    // note). Callable again from tests (single-threaded).
     void setSink(LogSink sink);
 
-    void setTimestampSource(TimestampFn timestamp);
+    // Whether a sink is installed, i.e. whether logged lines go anywhere.
+    bool hasSink() const;
 
-    bool isOpen() const;
-
-    // By value, under the lock: read from hook threads while Init may still be
-    // writing it.
-    std::string filePath() const;
-
-    // printf-style; flushed on every call so a crash keeps the tail.
+    // printf-style; the message is handed to the sink verbatim. If no sink is
+    // installed, the line is dropped. A throw from the sink propagates — every
+    // caller is inside runGuarded (SpikeServer / the detour forwarders).
     void logf(const char* format, ...);
 
-    void write(const std::string& message);
-
-    void close();
+    // The bare-message dispatch logf uses; exposed so tests can send a line
+    // without a format string.
+    void write(const char* message);
 
 private:
-    mutable std::mutex mutex_;
-    std::shared_ptr<std::ostream> stream_;
     LogSink sink_;
-    TimestampFn timestamp_;
-    std::string path_;
 };
 
-// ---- adapter: Win32 / filesystem forwarders, no decisions of their own ----
-
-// Process-wide logger: the detours and the providers are reached through C ABI entry
-// points with nowhere to pass a logger through. Deliberately leaked (never
-// destroyed) because a detour may still run after the DLL's static destructors.
+// Process-wide logger: the detours and the providers are reached through C ABI
+// entry points with nowhere to pass a logger through. Deliberately leaked
+// (never destroyed) because a detour may still run after the DLL's static
+// destructors.
 Logger& log();
 
-// GetEnvironmentVariableA("LOCALAPPDATA") + GetModuleFileNameA; a failed call leaves
-// the corresponding string empty.
-LogEnvironment currentLogEnvironment();
-
-// GetLocalTime + formatTimestamp.
-std::string localTimestamp();
-
-// Offers the logger an append-mode ofstream at logPath(currentLogEnvironment(),
-// prefix), creating the directory if it can. Whether that stream is adopted is
-// Logger::setStream's decision; the return value is Logger's answer.
-bool openProcessLog(Logger& logger, const std::string& prefix);
+// Gives `logger` the sink if it has none yet and returns it, so the adapter's
+// "open the log" accessor is a single expression. Every provider entry point and
+// HmdDriverFactory funnel through it, and only the first arrival may win: by the time
+// the second one runs, ServerEnvironment::routeLogToDriverLog has replaced the sink
+// with the composite that also feeds IVRDriverLog, and re-installing the plain file
+// sink would silently drop SteamVR's copy of the log.
+Logger& loggingTo(Logger& logger, LogSink sink);
 } // namespace spike

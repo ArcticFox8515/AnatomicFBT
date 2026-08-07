@@ -1,6 +1,6 @@
 #pragma once
 
-// Throwaway step-1 spike (doc/driver-plan.md): the driver's six hooks, as data plus
+// Throwaway step-1 spike (doc/driver-plan.md): the driver's three hooks, as data plus
 // behaviour, in SpikeLib rather than in the DLL.
 //
 // Everything here used to live in SpikeDriver.cpp, where no unit test can reach it:
@@ -13,7 +13,13 @@
 //   * the install order and the reverse removal order,
 //   * the body of every detour: forward unchanged, then notify the observer.
 //
-// The DLL keeps only six one-line detour functions whose address MinHook needs.
+// The DLL keeps only three one-line detour functions whose address MinHook needs.
+//
+// Buttons / input are NOT captured by this driver (doc/driver-spike-handover.md §5.1,
+// doc/driver-plan.md "Buttons"): the live run showed zero calls on the hooked
+// IVRDriverInput_003, and PollNextEvent proved unreliable as a substitute. Input is
+// captured by a separate background client app instead, so there is no event polling
+// here — no detour and no PollNextEvent call.
 //
 // openvr_driver.h is included for its types and its interface *layout*; nothing here
 // calls into vrserver.
@@ -35,15 +41,6 @@ using TrackedDeviceAddedFn = bool(*)(vr::IVRServerDriverHost*, const char*, vr::
                                      vr::ITrackedDeviceServerDriver*);
 using TrackedDevicePoseUpdatedFn = void(*)(vr::IVRServerDriverHost*, uint32_t,
                                            const vr::DriverPose_t&, uint32_t);
-using CreateBooleanComponentFn = vr::EVRInputError(*)(vr::IVRDriverInput*,
-                                                      vr::PropertyContainerHandle_t, const char*,
-                                                      vr::VRInputComponentHandle_t*);
-using UpdateBooleanComponentFn = vr::EVRInputError(*)(vr::IVRDriverInput*,
-                                                      vr::VRInputComponentHandle_t, bool, double);
-using CreateScalarComponentFn = vr::EVRInputError(*)(vr::IVRDriverInput*,
-                                                     vr::PropertyContainerHandle_t, const char*,
-                                                     vr::VRInputComponentHandle_t*,
-                                                     vr::EVRScalarType, vr::EVRScalarUnits);
 
 // ---- the vtable index table -------------------------------------------------------
 //
@@ -56,19 +53,13 @@ using CreateScalarComponentFn = vr::EVRInputError(*)(vr::IVRDriverInput*,
 constexpr int kDriverContextGetGenericInterfaceIndex = 0;
 constexpr int kServerDriverHostTrackedDeviceAddedIndex = 0;
 constexpr int kServerDriverHostTrackedDevicePoseUpdatedIndex = 1;
-constexpr int kDriverInputCreateBooleanComponentIndex = 0;
-constexpr int kDriverInputUpdateBooleanComponentIndex = 1;
-constexpr int kDriverInputCreateScalarComponentIndex = 2;
 
 // The log labels, also asserted by tests.
 constexpr const char* kGetGenericInterfaceHookName = "IVRDriverContext::GetGenericInterface";
 constexpr const char* kTrackedDeviceAddedHookName = "IVRServerDriverHost::TrackedDeviceAdded";
 constexpr const char* kPoseUpdatedHookName = "IVRServerDriverHost::TrackedDevicePoseUpdated";
-constexpr const char* kCreateBooleanHookName = "IVRDriverInput::CreateBooleanComponent";
-constexpr const char* kUpdateBooleanHookName = "IVRDriverInput::UpdateBooleanComponent";
-constexpr const char* kCreateScalarHookName = "IVRDriverInput::CreateScalarComponent";
 
-// The six detour addresses. Only the DLL can supply these: MinHook needs the address of
+// The three detour addresses. Only the DLL can supply these: MinHook needs the address of
 // a function with the exact hooked signature, and those functions must live in the
 // module that is allowed to be non-testable.
 struct DriverDetours
@@ -76,13 +67,10 @@ struct DriverDetours
     void* getGenericInterface = nullptr;
     void* trackedDeviceAdded = nullptr;
     void* poseUpdated = nullptr;
-    void* createBoolean = nullptr;
-    void* updateBoolean = nullptr;
-    void* createScalar = nullptr;
 };
 
-// Owns the six hooks and knows where they go. Implements InterfaceHooks so the observer
-// can trigger the two lazy installs the moment vrserver hands the interface over.
+// Owns the three hooks and knows where they go. Implements InterfaceHooks so the observer
+// can trigger the lazy install the moment vrserver hands the interface over.
 class DriverHookSet final : public InterfaceHooks
 {
 public:
@@ -92,7 +80,6 @@ public:
     void hookDriverContext(vr::IVRDriverContext* context);
 
     void hookServerDriverHost(void* host) override;
-    void hookDriverInput(void* input) override;
 
     // Reverse install order: the interface hooks come off before the context hook that
     // discovers them, so a call in flight cannot re-enter a hook being removed.
@@ -101,9 +88,6 @@ public:
     VTableHook<GetGenericInterfaceFn> getGenericInterface;
     VTableHook<TrackedDeviceAddedFn> trackedDeviceAdded;
     VTableHook<TrackedDevicePoseUpdatedFn> poseUpdated;
-    VTableHook<CreateBooleanComponentFn> createBoolean;
-    VTableHook<UpdateBooleanComponentFn> updateBoolean;
-    VTableHook<CreateScalarComponentFn> createScalar;
 
 private:
     DriverDetours detours_;
@@ -131,22 +115,4 @@ bool observeTrackedDeviceAdded(DriverHookSet& hooks, SpikeObserver& observer,
 void observeTrackedDevicePoseUpdated(DriverHookSet& hooks, SpikeObserver& observer,
                                      vr::IVRServerDriverHost* self, uint32_t index,
                                      const vr::DriverPose_t& pose, uint32_t poseStructSize);
-
-vr::EVRInputError observeCreateBooleanComponent(DriverHookSet& hooks, SpikeObserver& observer,
-                                                vr::IVRDriverInput* self,
-                                                vr::PropertyContainerHandle_t container,
-                                                const char* name,
-                                                vr::VRInputComponentHandle_t* handle);
-
-vr::EVRInputError observeUpdateBooleanComponent(DriverHookSet& hooks, SpikeObserver& observer,
-                                                vr::IVRDriverInput* self,
-                                                vr::VRInputComponentHandle_t handle, bool value,
-                                                double timeOffset);
-
-vr::EVRInputError observeCreateScalarComponent(DriverHookSet& hooks, SpikeObserver& observer,
-                                               vr::IVRDriverInput* self,
-                                               vr::PropertyContainerHandle_t container,
-                                               const char* name,
-                                               vr::VRInputComponentHandle_t* handle,
-                                               vr::EVRScalarType type, vr::EVRScalarUnits units);
 } // namespace spike

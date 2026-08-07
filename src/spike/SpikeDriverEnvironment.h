@@ -14,7 +14,8 @@
 //                             CVRPropertyHelpers* that may be null before the context
 //                             is initialized. Tests pass a helper over a fake
 //                             IVRProperties.
-//   * driverLogSink         — the LogSink that copies lines to IVRDriverLog.
+//   * driverLogSink         — the LogSink that copies lines to IVRDriverLog (one of the
+//                             destinations the adapter's composite sink fans out to).
 //   * modulePathOfAddress   — GetModuleHandleEx + GetModuleFileName, composed over a
 //                             seam so the composition is tested and the DLL keeps only
 //                             two argument-marshalling calls.
@@ -61,7 +62,8 @@ private:
 using DriverLogFn = vr::IVRDriverLog*(*)();
 
 // A sink that copies every line to IVRDriverLog (so the spike's output also lands in
-// SteamVR's vrserver.txt) and silently drops it when there is no driver log.
+// SteamVR's vrserver.txt) and silently drops it when there is no driver log. The seam
+// is read on every line because IVRDriverLog appears and disappears with the context.
 LogSink driverLogSink(DriverLogFn driverLog);
 
 // ---- module path ------------------------------------------------------------------

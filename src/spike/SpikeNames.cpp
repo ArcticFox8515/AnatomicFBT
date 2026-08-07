@@ -31,15 +31,4 @@ const char* roleHintName(int role)
     default: return "unknown";
     }
 }
-
-bool endsWith(const std::string& text, const std::string& suffix)
-{
-    return text.size() >= suffix.size()
-           && text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
-
-bool isTriggerClick(const std::string& componentName)
-{
-    return endsWith(componentName, "/input/trigger/click");
-}
 } // namespace spike

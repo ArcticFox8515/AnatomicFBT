@@ -1,4 +1,4 @@
-# OpenVR driver — phase A: move device input to the driver
+# OpenVR driver — phase A: move device poses to the driver
 
 Design doc for the driver half of milestone 4 (`doc/plan.md`). Written before
 implementation; read this first, then `AGENTS.md` for the existing structure.
@@ -11,8 +11,11 @@ trust what the OpenVR *client* API reports — it would be reading back our own
 corrections. The unmodified poses have to come out of the driver instead.
 
 Phase A is therefore the migration: the driver becomes the app's only source of
-device data (metadata, poses, button state), pushed over a named pipe. Pose
-modification and virtual trackers are NOT in this phase, but the pose hook is
+device **poses and metadata**, pushed over a named pipe. Button / input capture
+is NOT part of the driver DLL — the live run showed neither `IVRDriverInput` hooks
+nor `IVRServerDriverHost::PollNextEvent` delivered button events reliably, so a
+separate background client app captures input instead (see "Buttons" below).
+Pose modification and virtual trackers are NOT in this phase, but the pose hook is
 installed now, because it is simultaneously the source of unmodified poses and
 the exact place corrections will later be applied. Protocol type codes >= 128
 are reserved for the app -> driver direction.
@@ -39,8 +42,8 @@ becomes the only place OpenVR headers are included.
   headers only.
 - Vtable indices for MinHook, from that header: `IVRDriverContext::GetGenericInterface`
   = 0; `IVRServerDriverHost_006`: `TrackedDeviceAdded` = 0, `TrackedDevicePoseUpdated`
-  = 1 (matches the index OpenVR-SpaceCalibrator hardcodes); `IVRDriverInput_003`:
-  `CreateBooleanComponent` = 0, `UpdateBooleanComponent` = 1.
+  = 1 (matches the index OpenVR-SpaceCalibrator hardcodes). `PollNextEvent` (slot 5)
+  is NOT used — see "Buttons" below.
 - `IVRProperties_001::TrackedDeviceToPropertyContainer(index)` + `ReadPropertyBatch`
   is the documented way for a driver to look up *any* device's properties by
   device id (stated explicitly in the `GetRawTrackedDevicePoses` docs), so
@@ -85,9 +88,13 @@ without it), `VR_INIT_SERVER_DRIVER_CONTEXT` first in `Init`, then a
 the per-interface hooks lazily as recognized version strings pass by, and
 symmetric teardown in `Cleanup` (stop server -> unhook -> clean up context).
 
-The driver additionally needs `IVRProperties` (metadata) and `IVRDriverInput`
-(buttons), which SpaceCalibrator never touches; both are acquired through the
-same detoured `GetGenericInterface`.
+The driver additionally needs `IVRProperties` (metadata), which SpaceCalibrator
+never touches; it is acquired through the same detoured `GetGenericInterface`.
+Buttons / input are NOT captured by this driver: the live run showed zero calls
+on the hooked `IVRDriverInput_003` (every controller asked for `_004`), and
+`PollNextEvent` proved equally unreliable, so input capture was removed from the
+driver DLL entirely. A separate background client app captures buttons instead —
+see "Buttons" below and `doc/driver-spike-handover.md` §5.1.
 
 | Target | Kind | Deps |
 |---|---|---|
@@ -129,14 +136,13 @@ Driver -> app:
    `OpenVrTracking::pollPoses` applies client-side today moves driver-side, so
    base stations / redirected / display-only devices never reach the wire.
    Consequence: a device is on the wire only once its `Prop_DeviceClass_Int32`
-   has been read, so `DevicePose` / `DeviceButtons` for an id the app has not
-   seen in a `DeviceList` cannot occur.
+   has been read, so `DevicePose` for an id the app has not seen in a
+   `DeviceList` cannot occur.
 2. `DevicePose` — `i32 id, u8 flags (poseIsValid | deviceIsConnected),
    f32[3] position, f32[4] rotation (xyzw), f32 poseTimeOffset`. One per hooked
    pose update.
-3. `DeviceButtons` — `i32 id, u32 mask` (bit 0 = trigger). Sent on change.
 
-Poses and buttons are **state, never events**, so dropping a message when the
+Poses are **state, never events**, so dropping a message when the pipe is busy is
 pipe is busy is harmless. Serial and role hint stay on the wire and in the app's
 UI table only: `TrackedDevice` and the `.tcrec` format are untouched, so
 `ModeController`, `TrackerCalibration`, `SessionRecorder`, `ReplaySession` and
@@ -152,29 +158,34 @@ there — no IPC thread, no ring buffer. The discipline that makes that safe:
 entry point** (an exception escaping into `vrserver.exe` kills SteamVR, so the
 boundary catches everything — the one sanctioned `catch (...)` in this codebase).
 
-- Pose / button hooks (arbitrary vrserver threads) call `DriverServer::onPose` /
-  `onButton`: update the device table, serialize the message, write it. The pipe
-  and the device table are guarded by one lock; the write is asynchronous, and a
-  message that cannot be handed over because the previous write is still in
-  flight is dropped **whole** — never partial bytes, framing must stay intact.
-  Poses and buttons are state, so the next update supersedes a dropped one.
-  `DeviceList` is never dropped: it is retried from `RunFrame`.
+- Pose hooks (arbitrary vrserver threads) call `DriverServer::onPose`: update the
+  device table, serialize the message, write it. The pipe and the device table
+  are guarded by one lock; the write is asynchronous, and a message that cannot
+  be handed over because the previous write is still in flight is dropped
+  **whole** — never partial bytes, framing must stay intact. Poses are state,
+  so the next update supersedes a dropped one. `DeviceList` is never dropped:
+  it is retried from `RunFrame`.
 - One client at a time, newest connection wins (restarting the app reconnects
   cleanly). A write that does not complete within ~1 s drops the client. On
   connect: `Hello` + full `DeviceList`.
 - `RunFrame` does the work that must not happen on a pose thread: accept a
   pending connection; for ids flagged "metadata unknown", read
   `Prop_DeviceClass_Int32`, `Prop_SerialNumber_String`,
-  `Prop_ControllerRoleHint_Int32` and send a fresh `DeviceList`; resolve pending
-  `container -> device id` lookups for boolean components.
+  `Prop_ControllerRoleHint_Int32` and send a fresh `DeviceList`.
 
-Buttons: hook `CreateBooleanComponent` to record `handle -> (container, name)`,
-keeping only names ending in `/input/trigger/click`; resolve `container -> device id`
-by scanning `TrackedDeviceToPropertyContainer(0..k_unMaxTrackedDeviceCount)` in
-`RunFrame`. `UpdateBooleanComponent` sets / clears bit 0 for that device. If the
-step-1 spike shows a controller that exposes no boolean trigger, fall back to
-hooking `UpdateScalarComponent` on `/input/trigger/value` with 0.7 / 0.3
-hysteresis.
+Buttons: NOT captured by this driver. The live run showed zero calls on the
+hooked `IVRDriverInput_003` (every controller asked for `_004`), and
+`PollNextEvent` (slot 5 of the already-hooked host) proved equally unreliable,
+so input capture was removed from the driver DLL entirely
+(`doc/driver-spike-handover.md` §5.1). A separate **background client app**
+captures buttons going forward: it links `openvr_api` as a client
+(`VRApplication_Background` or `_Overlay`) and reads controller state the way
+`src/vr/OpenVrTracking` does today, then forwards the "second trigger goes down
+while the first is held" edge to the main app. The IPC for that hop is TBD
+(named pipe, same style as the driver pipe); the wire protocol from the driver
+carries no `DeviceButtons` message. This keeps phase A's goal — the *main* app
+is OpenVR-free (poses from the driver, buttons from the input client) — at the
+cost of a second helper process that holds an OpenVR session for input only.
 
 ## App side
 
@@ -182,16 +193,16 @@ hysteresis.
 
 - `poll()` drains **all** complete messages in order and returns
   `Event { connected, disconnected, versionMismatch, error }` for main.cpp to
-  log. Button messages are processed in order and accumulate the "second trigger
-  goes down while the first is held" rising edge, so a press landing entirely
-  between two app frames is not lost (strictly better than today's frame-rate
-  sampling of client state).
+  log. (Button state no longer arrives here — see "Buttons" above; it comes from
+  the separate input client app.)
 - `devices()` returns `std::vector<TrackedDevice>`, filtered to valid +
   connected, ascending id — exactly the shape `OpenVrTracking::pollPoses()`
   produces today, so nothing downstream notices the migration. No kind
   filtering here: the driver already sends only HMDs / controllers / trackers.
 - `bothTriggersJustPressed()` — same contract as today (stateful, call once per
-  frame), computed from state, and unit-tested for the first time.
+  frame). With input capture out of the driver DLL this edge is fed from the
+  separate input client app, not from `DriverLink`; the `ModeController`-side
+  contract (a per-frame bool) is unchanged.
 - Reconnect: non-blocking `CreateFile` attempt at most every ~500 ms while
   disconnected (fails instantly when the driver is not loaded). No driver ->
   the app starts in `ManualPose`, exactly like today's "SteamVR unavailable"
@@ -218,16 +229,18 @@ hysteresis.
 ## Steps
 
 1. **Spike DLL (throwaway).** Loads, logs via `IVRDriverLog`, hooks
-   `GetGenericInterface`, `TrackedDevicePoseUpdated`,
-   `CreateBooleanComponent` / `UpdateBooleanComponent`. Logs: device ids /
-   classes / serials, boolean component paths per device, pose update rate per
-   device, `RunFrame` cadence, every interface version string seen in the
-   `GetGenericInterface` detour that we do **not** hook (an unhooked version is
-   otherwise a silent no-op, so it must be loud), and our composed world pose
-   alongside the client-side `TrackingUniverseRaw` pose for the same device
-   (current exe running simultaneously) to **prove the `DriverPose_t`
-   composition**. Closes every remaining unknown before real code is designed
-   around it.
+   `GetGenericInterface`, `TrackedDeviceAdded`, `TrackedDevicePoseUpdated`.
+   Input capture is NOT part of the spike (or the real driver): the live run
+   showed neither `IVRDriverInput` hooks nor `PollNextEvent` delivered buttons,
+   so a separate background client app captures input — see "Buttons" above and
+   `doc/driver-spike-handover.md` §5.1. Logs: device ids / classes / serials,
+   pose update rate per device, `RunFrame` cadence, every interface version
+   string seen in the `GetGenericInterface` detour that we do **not** hook (an
+   unhooked version is otherwise a silent no-op, so it must be loud), and our
+   composed world pose alongside the client-side `TrackingUniverseRaw` pose for
+   the same device (current exe running simultaneously) to **prove the
+   `DriverPose_t` composition**. Closes every remaining unknown before real
+   code is designed around it.
 2. **`src/ipc`**: `ByteChannel`, `MemoryChannel`, `Framer` + `FramerTest` —
    round-trip, messages split across arbitrary read boundaries, several messages
    in one read, garbage / oversized length rejected.
@@ -237,13 +250,15 @@ hysteresis.
    the step-1 log).
 4. **`DriverServer`** + `DriverServerTest` against `MemoryChannel` and a fake
    device source: new client gets `Hello` + full `DeviceList`; an unknown id
-   flags a metadata refresh; pose / button state produces the expected bytes; a
+   flags a metadata refresh; pose state produces the expected bytes; a
    busy channel drops whole poses but never metadata; disconnect / reconnect
    resets cleanly.
 5. **`DriverLink`** + `DriverLinkTest`: bytes -> `devices()` (kind mapping,
-   valid / connected filtering, ordering); trigger edge occurring entirely
-   between two `poll()` calls; version mismatch; disconnect empties devices;
-   reconnect.
+   valid / connected filtering, ordering); version mismatch; disconnect empties
+   devices; reconnect. (Button / trigger edge is no longer part of `DriverLink` —
+   it comes from the separate input client app; a dedicated `InputClient` +
+   `InputClientTest` covers the trigger edge occurring entirely between two
+   samples.)
 6. **Real pipe channels** (`NamedPipeServerChannel` / `NamedPipeClientChannel`,
    overlapped, `\\.\pipe\TrackingCorrectorDriver`) — the only part not covered
    by unit tests, kept as thin as possible.
@@ -252,12 +267,13 @@ hysteresis.
    `ServerTrackedDeviceProvider` (`Init` -> context + hooks + server,
    `RunFrame` -> housekeeping, `Cleanup` -> stop + unhook) and
    `OpenVrGlue` -> `DriverServer`. End-to-end check that the app shows the same
-   devices / poses / trigger gesture as before and that calibration, capture and
-   recording still work.
-8. **`main.cpp` migration**: `OpenVrTracking` -> `DriverLink`, delete `src/vr/`,
-   drop openvr from the exe, UI status "Driver: connected / not connected /
-   version mismatch". Update `AGENTS.md` (new targets and layer rules, driver
-   install and rebuild gotchas) and `doc/plan.md` milestone 4.
+   devices / poses as before and that calibration, capture and recording still
+   work (trigger gesture fed from the input client app).
+8. **`main.cpp` migration**: `OpenVrTracking` -> `DriverLink` (poses) +
+   `InputClient` (buttons), delete `src/vr/`, drop openvr from the exe, UI
+   status "Driver: connected / not connected / version mismatch". Update
+   `AGENTS.md` (new targets and layer rules, driver install and rebuild
+   gotchas) and `doc/plan.md` milestone 4.
 
 ## Risks
 
@@ -267,12 +283,18 @@ hysteresis.
   the interface's concrete class, so other drivers' devices should be visible;
   the `00` prefix plus hooking `GetGenericInterface` (the proven
   SpaceCalibrator path) is the belt and braces. Confirmed in step 1.
-- **`RunFrame` cadence is unmeasured** — only metadata and component resolution
-  depend on it, so even a slow cadence just means a device shows up a few frames
-  late. Measured in step 1.
+- **`RunFrame` cadence is unmeasured** — only metadata resolution depends on it,
+  so even a slow cadence just means a device shows up a few frames late.
+  Measured in step 1.
 - **Mixed-driver setups** (e.g. Oculus HMD + Vive trackers) put devices in
   different raw spaces — the problem OpenVR-SpaceCalibrator exists to solve.
   Out of scope; worth a log warning when device drivers differ.
-- **Legacy input path disappears** — a bonus: hooking `UpdateBooleanComponent`
-  replaces the deprecated `GetControllerState` / `ButtonMaskFromId` code, so the
-  calibration gesture no longer depends on SteamVR's legacy binding.
+- **Input capture stays on the legacy client path** — the separate background
+  input client app reads controller state with `GetDeviceToAbsoluteTrackingPose`
+  / the controller-state API `src/vr/OpenVrTracking` uses today, so the
+  calibration gesture still depends on SteamVR's legacy binding. That is
+  accepted: the live run showed neither `IVRDriverInput` hooks nor
+  `PollNextEvent` delivered buttons driver-side, so moving input into the
+  driver would have bought reliability it could not deliver. The bonus of
+  dropping the deprecated path is deferred until a reliable driver-side input
+  source exists. See `doc/driver-spike-handover.md` §5.1.

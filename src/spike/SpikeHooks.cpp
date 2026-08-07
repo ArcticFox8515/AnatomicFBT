@@ -5,7 +5,7 @@ namespace spike
 const char* initializeHookLibrary(HookApi& api)
 {
     const int status = api.initialize();
-    if (status == kHookOk || api.isAlreadyInitialized(status))
+    if (status == kHookOk || status == api.alreadyInitializedStatus())
         return nullptr;
     return api.statusName(status);
 }

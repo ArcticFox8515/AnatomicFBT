@@ -10,12 +10,11 @@
 //   CAN  — the hook mechanism end to end without SteamVR: the driver DLL loads, its
 //          factory serves both providers, MinHook patches the vtable slots the plan
 //          hardcodes (GetGenericInterface 0, TrackedDeviceAdded 0,
-//          TrackedDevicePoseUpdated 1, Create/UpdateBooleanComponent 0/1,
-//          CreateScalarComponent 2), the detour signatures are ABI-correct, every
+//          TrackedDevicePoseUpdated 1), the detour signatures are ABI-correct, every
 //          hooked call is forwarded unchanged, device metadata is read back through
-//          IVRProperties, boolean components resolve to device ids, trigger edges are
-//          detected, and the pose composition is wired from the right DriverPose_t
-//          fields. Plus the composition math against independent analytic values.
+//          IVRProperties, and the pose composition is wired from the right
+//          DriverPose_t fields. Plus the composition math against independent
+//          analytic values.
 //   CANNOT — anything only SteamVR knows: which composition formula matches the
 //          client-side raw pose, real device classes / cadence / component paths, and
 //          whether other drivers' interfaces route through the same vrserver code.
@@ -260,77 +259,6 @@ public:
     std::vector<ForwardedPose> forwardedPoses;
 };
 
-class FakeDriverInput : public vr::IVRDriverInput
-{
-public:
-    struct BooleanUpdate
-    {
-        vr::VRInputComponentHandle_t handle;
-        bool value;
-    };
-
-    vr::EVRInputError CreateBooleanComponent(vr::PropertyContainerHandle_t container,
-                                             const char* name,
-                                             vr::VRInputComponentHandle_t* handle) override
-    {
-        createdBooleanNames.emplace_back(name ? name : "");
-        createdBooleanContainers.push_back(container);
-        *handle = nextHandle++;
-        return vr::VRInputError_None;
-    }
-
-    vr::EVRInputError UpdateBooleanComponent(vr::VRInputComponentHandle_t handle, bool value,
-                                            double) override
-    {
-        forwardedBooleanUpdates.push_back({handle, value});
-        return vr::VRInputError_None;
-    }
-
-    vr::EVRInputError CreateScalarComponent(vr::PropertyContainerHandle_t, const char* name,
-                                           vr::VRInputComponentHandle_t* handle,
-                                           vr::EVRScalarType, vr::EVRScalarUnits) override
-    {
-        createdScalarNames.emplace_back(name ? name : "");
-        *handle = nextHandle++;
-        return vr::VRInputError_None;
-    }
-
-    vr::EVRInputError UpdateScalarComponent(vr::VRInputComponentHandle_t, float, double) override
-    {
-        return vr::VRInputError_None;
-    }
-
-    vr::EVRInputError CreateHapticComponent(vr::PropertyContainerHandle_t, const char*,
-                                            vr::VRInputComponentHandle_t* handle) override
-    {
-        *handle = nextHandle++;
-        return vr::VRInputError_None;
-    }
-
-    vr::EVRInputError CreateSkeletonComponent(vr::PropertyContainerHandle_t, const char*,
-                                              const char*, const char*,
-                                              vr::EVRSkeletalTrackingLevel,
-                                              const vr::VRBoneTransform_t*, uint32_t,
-                                              vr::VRInputComponentHandle_t* handle) override
-    {
-        *handle = nextHandle++;
-        return vr::VRInputError_None;
-    }
-
-    vr::EVRInputError UpdateSkeletonComponent(vr::VRInputComponentHandle_t,
-                                              vr::EVRSkeletalMotionRange,
-                                              const vr::VRBoneTransform_t*, uint32_t) override
-    {
-        return vr::VRInputError_None;
-    }
-
-    vr::VRInputComponentHandle_t nextHandle = 100;
-    std::vector<std::string> createdBooleanNames;
-    std::vector<vr::PropertyContainerHandle_t> createdBooleanContainers;
-    std::vector<std::string> createdScalarNames;
-    std::vector<BooleanUpdate> forwardedBooleanUpdates;
-};
-
 class FakeDriverContext : public vr::IVRDriverContext
 {
 public:
@@ -363,8 +291,6 @@ public:
             return static_cast<vr::IVRDriverManager*>(&manager);
         if (name == vr::IVRResources_Version)
             return static_cast<vr::IVRResources*>(&resources);
-        if (name == vr::IVRDriverInput_Version)
-            return static_cast<vr::IVRDriverInput*>(&input);
 
         if (error)
             *error = vr::VRInitError_Init_InterfaceNotFound;
@@ -387,7 +313,6 @@ public:
     FakeDriverLog log;
     FakeDriverManager manager;
     FakeResources resources;
-    FakeDriverInput input;
     std::vector<std::string> requested;
     std::map<std::string, void*> extraInterfaces;
 };
@@ -522,26 +447,18 @@ TEST_F(SpikeDriverLifecycle, HooksObserveAndForwardTheWholeDriverSurface)
     EXPECT_TRUE(context.wasRequested(vr::IVRServerDriverHost_Version));
     EXPECT_TRUE(context.wasRequested(vr::IVRProperties_Version));
     EXPECT_TRUE(context.wasRequested(vr::IVRDriverLog_Version));
-    // ...and IVRDriverInput was fetched afterwards, i.e. through the detour, which is
-    // the mechanism that also catches interfaces other drivers ask for.
-    EXPECT_TRUE(context.wasRequested(vr::IVRDriverInput_Version));
 
     // Every hook actually landed on its vtable slot.
     EXPECT_TRUE(context.log.contains("hook IVRDriverContext::GetGenericInterface: installed"));
     EXPECT_TRUE(context.log.contains("hook IVRServerDriverHost::TrackedDeviceAdded: installed"));
     EXPECT_TRUE(
         context.log.contains("hook IVRServerDriverHost::TrackedDevicePoseUpdated: installed"));
-    EXPECT_TRUE(context.log.contains("hook IVRDriverInput::CreateBooleanComponent: installed"));
-    EXPECT_TRUE(context.log.contains("hook IVRDriverInput::UpdateBooleanComponent: installed"));
-    EXPECT_TRUE(context.log.contains("hook IVRDriverInput::CreateScalarComponent: installed"));
-    EXPECT_TRUE(context.log.contains("interface \"IVRDriverInput_003\": hooking"));
 
     // Every call below is made through a pointer the optimizer cannot resolve, so it is
     // a real virtual dispatch into the patched function — the same path vrserver's own
     // callers take. Calling the fakes directly would let a Release build inline them and
     // skip the detour entirely.
     vr::IVRServerDriverHost* const host = throughVtable<vr::IVRServerDriverHost>(&context.host);
-    vr::IVRDriverInput* const input = throughVtable<vr::IVRDriverInput>(&context.input);
     vr::IVRDriverContext* const driverContext =
         throughVtable<vr::IVRDriverContext>(&context);
 
@@ -562,31 +479,11 @@ TEST_F(SpikeDriverLifecycle, HooksObserveAndForwardTheWholeDriverSurface)
     EXPECT_EQ(context.host.forwardedPoses[0].structSize, sizeof(pose));
     EXPECT_TRUE(context.log.contains("first pose update from device 3"));
 
-    // ---- input components ----
-    vr::VRInputComponentHandle_t trigger = vr::k_ulInvalidInputComponentHandle;
-    ASSERT_EQ(input->CreateBooleanComponent(kContainerBase + kTrackerIndex,
-                                            "/input/trigger/click", &trigger),
-              vr::VRInputError_None);
-    EXPECT_NE(trigger, vr::k_ulInvalidInputComponentHandle);
-    EXPECT_TRUE(context.log.contains("name=\"/input/trigger/click\" <-- trigger click"));
-
-    vr::VRInputComponentHandle_t grip = vr::k_ulInvalidInputComponentHandle;
-    input->CreateBooleanComponent(kContainerBase + kTrackerIndex, "/input/grip/click", &grip);
-    EXPECT_FALSE(context.log.contains("name=\"/input/grip/click\" <-- trigger click"));
-
-    vr::VRInputComponentHandle_t triggerValue = vr::k_ulInvalidInputComponentHandle;
-    input->CreateScalarComponent(kContainerBase + kTrackerIndex, "/input/trigger/value",
-                                 &triggerValue, vr::VRScalarType_Absolute,
-                                 vr::VRScalarUnits_NormalizedOneSided);
-    EXPECT_TRUE(context.log.contains("CreateScalarComponent"));
-    EXPECT_TRUE(context.log.contains("/input/trigger/value"));
-
     // ---- the GetGenericInterface detour's branches, driven through the live hook ----
     // Every call below goes through the installed detour, so this exercises the real
     // onInterfaceRequested dispatch, not a copy of it.
     int dummyInterface = 0;
     context.extraInterfaces["IVRServerDriverHost_005"] = &dummyInterface;
-    context.extraInterfaces["IVRDriverInput_002"] = &dummyInterface;
     context.extraInterfaces["IVRCameraComponent_004"] = nullptr;
 
     vr::EVRInitError interfaceError = vr::VRInitError_None;
@@ -596,8 +493,6 @@ TEST_F(SpikeDriverLifecycle, HooksObserveAndForwardTheWholeDriverSurface)
     // it would crash, so surviving this call is itself part of the assertion).
     driverContext->GetGenericInterface("IVRServerDriverHost_005", &interfaceError);
     EXPECT_TRUE(context.log.contains("interface \"IVRServerDriverHost_005\": NOT HOOKED"));
-    driverContext->GetGenericInterface("IVRDriverInput_002", &interfaceError);
-    EXPECT_TRUE(context.log.contains("interface \"IVRDriverInput_002\": NOT HOOKED"));
 
     // An interface we do not need at all.
     driverContext->GetGenericInterface(vr::IVRResources_Version, &interfaceError);
@@ -616,7 +511,7 @@ TEST_F(SpikeDriverLifecycle, HooksObserveAndForwardTheWholeDriverSurface)
     driverContext->GetGenericInterface("IVRCameraComponent_004", &interfaceError);
     EXPECT_EQ(context.log.lines.size(), linesBeforeRepeat);
 
-    // ---- RunFrame: metadata read back driver-side, components resolved, pose sampled ----
+    // ---- RunFrame: metadata read back driver-side, pose sampled ----
     const uint32_t lookupsBefore = context.properties.containerLookups;
     server->RunFrame();
     EXPECT_GT(context.properties.containerLookups, lookupsBefore);
@@ -624,8 +519,6 @@ TEST_F(SpikeDriverLifecycle, HooksObserveAndForwardTheWholeDriverSurface)
     EXPECT_TRUE(context.log.contains(
         "device 3: class=tracker(3) role=invalid serial=\"LHR-TESTTRACKER\" "
         "model=\"Vive Tracker\" trackingSystem=\"lighthouse\""));
-    EXPECT_TRUE(context.log.contains(
-        "component \"/input/trigger/click\" resolved to device 3 (\"LHR-TESTTRACKER\")"));
 
     // The composition is wired from the DriverPose_t fields the plan names, in the
     // stated order: A = WorldFromDriver o local, B = A o DriverFromHead.
@@ -635,23 +528,11 @@ TEST_F(SpikeDriverLifecycle, HooksObserveAndForwardTheWholeDriverSurface)
     EXPECT_TRUE(context.log.contains("B = A o dFh      " + spike::formatPose(b)));
     EXPECT_NE(spike::formatPose(a), spike::formatPose(b)) << "DriverFromHead must matter here";
 
-    // ---- trigger edges ----
-    input->UpdateBooleanComponent(trigger, true, 0.0);
-    ASSERT_EQ(context.input.forwardedBooleanUpdates.size(), 1u);
-    EXPECT_TRUE(context.input.forwardedBooleanUpdates[0].value);
-    EXPECT_TRUE(context.log.contains(
-        "trigger DOWN: device 3 (LHR-TESTTRACKER) component \"/input/trigger/click\""));
-
-    const size_t linesAfterPress = context.log.lines.size();
-    input->UpdateBooleanComponent(trigger, true, 0.0); // repeat, not an edge
-    EXPECT_EQ(context.log.lines.size(), linesAfterPress);
-
-    input->UpdateBooleanComponent(trigger, false, 0.0);
-    EXPECT_TRUE(context.log.contains("trigger up  : device 3"));
-
-    // A handle we never saw created must not crash and must not be attributed.
-    input->UpdateBooleanComponent(987654321, true, 0.0);
-    EXPECT_EQ(context.input.forwardedBooleanUpdates.size(), 4u);
+    // ---- button events: NOT captured by this driver (doc/driver-spike-handover.md
+    // §5.1) — input is captured by a separate background client app. PollNextEvent on
+    // the fake host is a no-op, so RunFrame below must not log any button lines. ----
+    server->RunFrame();
+    EXPECT_FALSE(context.log.contains("button"));
 
     // ---- standby: forwarded to the observer, and never blocking SteamVR ----
     EXPECT_FALSE(server->ShouldBlockStandbyMode());
@@ -665,15 +546,12 @@ TEST_F(SpikeDriverLifecycle, HooksObserveAndForwardTheWholeDriverSurface)
     EXPECT_TRUE(context.log.contains("hook IVRDriverContext::GetGenericInterface: removed"));
     EXPECT_TRUE(
         context.log.contains("hook IVRServerDriverHost::TrackedDevicePoseUpdated: removed"));
-    EXPECT_TRUE(context.log.contains("hook IVRDriverInput::UpdateBooleanComponent: removed"));
     EXPECT_TRUE(context.log.contains("summary: device 3 tracker \"LHR-TESTTRACKER\": 1 pose"));
 
     // Calls still reach the real implementation once the detours are gone.
     const size_t linesAfterCleanup = context.log.lines.size();
     host->TrackedDevicePoseUpdated(kTrackerIndex, pose, sizeof(pose));
-    input->UpdateBooleanComponent(trigger, true, 0.0);
     EXPECT_EQ(context.host.forwardedPoses.size(), 2u);
-    EXPECT_EQ(context.input.forwardedBooleanUpdates.size(), 5u);
     EXPECT_EQ(context.log.lines.size(), linesAfterCleanup) << "driver still observing after Cleanup";
 }
 
@@ -681,37 +559,31 @@ TEST_F(SpikeDriverLifecycle, HooksObserveAndForwardTheWholeDriverSurface)
 // The detour's decision table, tested directly: which version strings we hook, which
 // ones must be reported as unsupported, and which are none of our business.
 
-TEST(SpikeInterfaceClassification, ExactVersionsWeBuildAgainstAreHooked)
+TEST(SpikeInterfaceClassification, ExactVersionWeBuildAgainstIsHooked)
 {
-    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost_006", "IVRServerDriverHost_006",
-                                       "IVRDriverInput_003"),
+    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost_006", "IVRServerDriverHost_006"),
               spike::InterfaceAction::HookServerDriverHost);
-    EXPECT_EQ(spike::classifyInterface("IVRDriverInput_003", "IVRServerDriverHost_006",
-                                       "IVRDriverInput_003"),
-              spike::InterfaceAction::HookDriverInput);
 }
 
-TEST(SpikeInterfaceClassification, OtherVersionsOfTheSameInterfacesAreUnsupportedNotIgnored)
+TEST(SpikeInterfaceClassification, OtherVersionsOfTheSameInterfaceAreUnsupportedNotIgnored)
 {
     // Older and newer alike: the vtable layout is not guaranteed, so we refuse to hook
     // and say so — silence here would mean invisible devices.
-    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost_005", "IVRServerDriverHost_006",
-                                       "IVRDriverInput_003"),
+    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost_005", "IVRServerDriverHost_006"),
               spike::InterfaceAction::UnsupportedVersion);
-    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost_008", "IVRServerDriverHost_006",
-                                       "IVRDriverInput_003"),
-              spike::InterfaceAction::UnsupportedVersion);
-    EXPECT_EQ(spike::classifyInterface("IVRDriverInput_002", "IVRServerDriverHost_006",
-                                       "IVRDriverInput_003"),
+    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost_008", "IVRServerDriverHost_006"),
               spike::InterfaceAction::UnsupportedVersion);
 }
 
 TEST(SpikeInterfaceClassification, UnrelatedInterfacesAreNotNeeded)
 {
+    // IVRDriverInput is not hooked (doc/driver-spike-handover.md §5.1): input capture
+    // moved out of the driver DLL to a separate background client app, so the input
+    // interface is none of our business.
     for (const char* version : {"IVRSettings_003", "IVRProperties_001", "IVRDriverLog_001",
-                                "IVRResources_001", "IVRIOBuffer_002", "(null)", ""})
-        EXPECT_EQ(spike::classifyInterface(version, "IVRServerDriverHost_006",
-                                           "IVRDriverInput_003"),
+                                "IVRResources_001", "IVRDriverInput_003", "IVRIOBuffer_002",
+                                "(null)", ""})
+        EXPECT_EQ(spike::classifyInterface(version, "IVRServerDriverHost_006"),
                   spike::InterfaceAction::NotNeeded)
             << version;
 }
@@ -720,28 +592,25 @@ TEST(SpikeInterfaceClassification, FamilyMatchingIsExactNotAPrefixMatch)
 {
     // Names that merely start like ours must not be mistaken for our interfaces.
     EXPECT_EQ(spike::classifyInterface("IVRServerDriverHostExtras_001",
-                                       "IVRServerDriverHost_006", "IVRDriverInput_003"),
+                                       "IVRServerDriverHost_006"),
               spike::InterfaceAction::NotNeeded);
-    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost", "IVRServerDriverHost_006",
-                                       "IVRDriverInput_003"),
+    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost", "IVRServerDriverHost_006"),
               spike::InterfaceAction::NotNeeded);
 }
 
-TEST(SpikeInterfaceClassification, ClassificationFollowsTheVersionsWeAreBuiltAgainst)
+TEST(SpikeInterfaceClassification, ClassificationFollowsTheVersionWeAreBuiltAgainst)
 {
-    // Same input, different build-time versions: what counts as hookable moves with us.
-    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost_008", "IVRServerDriverHost_008",
-                                       "IVRDriverInput_003"),
+    // Same input, different build-time version: what counts as hookable moves with us.
+    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost_008", "IVRServerDriverHost_008"),
               spike::InterfaceAction::HookServerDriverHost);
-    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost_006", "IVRServerDriverHost_008",
-                                       "IVRDriverInput_003"),
+    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost_006", "IVRServerDriverHost_008"),
               spike::InterfaceAction::UnsupportedVersion);
 }
 
 TEST(SpikeInterfaceClassification, FamilyIsTheNameUpToTheLastUnderscore)
 {
-    EXPECT_EQ(spike::interfaceFamily("IVRDriverInput_003"), "IVRDriverInput_");
     EXPECT_EQ(spike::interfaceFamily("IVRServerDriverHost_006"), "IVRServerDriverHost_");
+    EXPECT_EQ(spike::interfaceFamily("IVRDriverInput_003"), "IVRDriverInput_");
     EXPECT_EQ(spike::interfaceFamily("NoUnderscore"), "NoUnderscore");
     EXPECT_EQ(spike::interfaceFamily(""), "");
 }

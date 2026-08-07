@@ -31,7 +31,7 @@ void runClientSampling(ClientPoseSource& source, Logger& logger,
     {
         for (const ClientDeviceSample& device : source.sample())
             for (const std::string& line : formatClientDeviceLines(device))
-                logger.write(line);
+                logger.write(line.c_str());
         waitBetweenSamples();
     }
 }

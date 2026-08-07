@@ -53,7 +53,9 @@ public:
 
     int initialize() override { return spike::kHookOk; }
     void shutdown() override {}
-    bool isAlreadyInitialized(int) override { return false; }
+    // Unused here (this suite never calls initializeHookLibrary); any value that is not
+    // kHookOk will do.
+    int alreadyInitializedStatus() override { return -1; }
 
     int create(void* target, void* detour, void** original) override
     {
@@ -127,17 +129,6 @@ struct StubRecord
     double posePositionX = 0.0;
     uint32_t poseStructSize = 0;
     const vr::DriverPose_t* poseAddress = nullptr;
-
-    // components
-    vr::IVRDriverInput* input = nullptr;
-    vr::PropertyContainerHandle_t container = vr::k_ulInvalidPropertyContainer;
-    std::string name;
-    vr::VRInputComponentHandle_t* handleOut = nullptr;
-    vr::VRInputComponentHandle_t updatedHandle = vr::k_ulInvalidInputComponentHandle;
-    bool updatedValue = false;
-    double timeOffset = 0.0;
-    vr::EVRScalarType scalarType = vr::VRScalarType_Absolute;
-    vr::EVRScalarUnits scalarUnits = vr::VRScalarUnits_NormalizedOneSided;
 };
 
 StubRecord g_stub;
@@ -146,8 +137,6 @@ std::ostringstream* g_logStream = nullptr;
 // What the stubs return, so "returns vrserver's answer unchanged" is checkable.
 void* g_returnedInterface = nullptr;
 bool g_returnedAdded = false;
-vr::EVRInputError g_returnedInputError = vr::VRInputError_None;
-vr::VRInputComponentHandle_t g_createdHandle = 0;
 
 void snapshotLog()
 {
@@ -190,61 +179,10 @@ void stubTrackedDevicePoseUpdated(vr::IVRServerDriverHost* self, uint32_t index,
     g_stub.poseAddress = &pose;
 }
 
-vr::EVRInputError stubCreateBooleanComponent(vr::IVRDriverInput* self,
-                                             vr::PropertyContainerHandle_t container,
-                                             const char* name,
-                                             vr::VRInputComponentHandle_t* handle)
-{
-    ++g_stub.calls;
-    snapshotLog();
-    g_stub.input = self;
-    g_stub.container = container;
-    g_stub.name = name ? name : "(null)";
-    g_stub.handleOut = handle;
-    if (handle)
-        *handle = g_createdHandle;
-    return g_returnedInputError;
-}
-
-vr::EVRInputError stubUpdateBooleanComponent(vr::IVRDriverInput* self,
-                                             vr::VRInputComponentHandle_t handle, bool value,
-                                             double timeOffset)
-{
-    ++g_stub.calls;
-    snapshotLog();
-    g_stub.input = self;
-    g_stub.updatedHandle = handle;
-    g_stub.updatedValue = value;
-    g_stub.timeOffset = timeOffset;
-    return g_returnedInputError;
-}
-
-vr::EVRInputError stubCreateScalarComponent(vr::IVRDriverInput* self,
-                                            vr::PropertyContainerHandle_t container,
-                                            const char* name,
-                                            vr::VRInputComponentHandle_t* handle,
-                                            vr::EVRScalarType type, vr::EVRScalarUnits units)
-{
-    ++g_stub.calls;
-    snapshotLog();
-    g_stub.input = self;
-    g_stub.container = container;
-    g_stub.name = name ? name : "(null)";
-    g_stub.handleOut = handle;
-    g_stub.scalarType = type;
-    g_stub.scalarUnits = units;
-    if (handle)
-        *handle = g_createdHandle;
-    return g_returnedInputError;
-}
-
 // The addresses the DLL would pass; only their identity matters here.
 void detourA() {}
 void detourB() {}
 void detourC() {}
-void detourD() {}
-void detourE() {}
-void detourF() {}
 
 class SpikeDriverHooksTest : public ::testing::Test
 {
@@ -255,11 +193,11 @@ protected:
         g_logStream = stream_.get();
         g_returnedInterface = nullptr;
         g_returnedAdded = false;
-        g_returnedInputError = vr::VRInputError_None;
-        g_createdHandle = 0;
 
-        logger_.setTimestampSource([] { return std::string("00:00:00.000"); });
-        logger_.setStream(stream_);
+        logger_.setSink([this](const char* message) {
+            if (g_logStream)
+                *g_logStream << message << '\n';
+        });
     }
 
     void TearDown() override { g_logStream = nullptr; }
@@ -292,10 +230,7 @@ protected:
 
     spike::DriverDetours detours_{reinterpret_cast<void*>(&detourA),
                                   reinterpret_cast<void*>(&detourB),
-                                  reinterpret_cast<void*>(&detourC),
-                                  reinterpret_cast<void*>(&detourD),
-                                  reinterpret_cast<void*>(&detourE),
-                                  reinterpret_cast<void*>(&detourF)};
+                                  reinterpret_cast<void*>(&detourC)};
     spike::DriverHookSet hooks_{api_, logger_, detours_};
 
     spike::SpikeObserver observer_{logger_, hooks_, [] { return 0.0; }};
@@ -311,9 +246,6 @@ TEST_F(SpikeDriverHooksTest, VtableIndicesAreThePlansTable)
     EXPECT_EQ(spike::kDriverContextGetGenericInterfaceIndex, 0);
     EXPECT_EQ(spike::kServerDriverHostTrackedDeviceAddedIndex, 0);
     EXPECT_EQ(spike::kServerDriverHostTrackedDevicePoseUpdatedIndex, 1);
-    EXPECT_EQ(spike::kDriverInputCreateBooleanComponentIndex, 0);
-    EXPECT_EQ(spike::kDriverInputUpdateBooleanComponentIndex, 1);
-    EXPECT_EQ(spike::kDriverInputCreateScalarComponentIndex, 2);
 }
 
 TEST_F(SpikeDriverHooksTest, DriverContextHookGoesIntoSlotZeroWithTheContextDetour)
@@ -341,27 +273,12 @@ TEST_F(SpikeDriverHooksTest, ServerDriverHostHookGoesIntoTheTwoPlannedSlots)
     EXPECT_TRUE(logged(std::string("hook ") + spike::kPoseUpdatedHookName + ": installed"));
 }
 
-TEST_F(SpikeDriverHooksTest, DriverInputHookGoesIntoTheThreePlannedSlots)
-{
-    hooks_.hookDriverInput(&object_);
-
-    const std::vector<FakeHookApi::Call> created = api_.createdTargets();
-    ASSERT_EQ(created.size(), 3u);
-    EXPECT_EQ(created[0].target, slot(0));
-    EXPECT_EQ(created[0].detour, detours_.createBoolean);
-    EXPECT_EQ(created[1].target, slot(1));
-    EXPECT_EQ(created[1].detour, detours_.updateBoolean);
-    EXPECT_EQ(created[2].target, slot(2));
-    EXPECT_EQ(created[2].detour, detours_.createScalar);
-}
-
 TEST_F(SpikeDriverHooksTest, RemoveAllUnhooksInReverseInstallOrder)
 {
     // The context hook is what discovers the interfaces, so it must be the last one
     // removed: a GetGenericInterface call in flight may still install an interface hook.
     hooks_.hookDriverContext(reinterpret_cast<vr::IVRDriverContext*>(&object_));
     hooks_.hookServerDriverHost(&object_);
-    hooks_.hookDriverInput(&object_);
     api_.calls.clear();
 
     hooks_.removeAll();
@@ -369,32 +286,15 @@ TEST_F(SpikeDriverHooksTest, RemoveAllUnhooksInReverseInstallOrder)
     // Slot identity is all the fake object can distinguish, so the order is checked
     // through the log labels, which name the hook.
     const std::string text = logText();
-    const size_t scalar = text.find(std::string(spike::kCreateScalarHookName) + ": removed");
-    const size_t update = text.find(std::string(spike::kUpdateBooleanHookName) + ": removed");
-    const size_t create = text.find(std::string(spike::kCreateBooleanHookName) + ": removed");
     const size_t pose = text.find(std::string(spike::kPoseUpdatedHookName) + ": removed");
     const size_t added = text.find(std::string(spike::kTrackedDeviceAddedHookName) + ": removed");
     const size_t context =
         text.find(std::string(spike::kGetGenericInterfaceHookName) + ": removed");
 
     ASSERT_NE(context, std::string::npos);
-    EXPECT_LT(scalar, update);
-    EXPECT_LT(update, create);
-    EXPECT_LT(create, pose);
     EXPECT_LT(pose, added);
     EXPECT_LT(added, context);
-    EXPECT_EQ(api_.removedTargets().size(), 6u);
-}
-
-TEST_F(SpikeDriverHooksTest, InstallingAnInterfaceTwiceDoesNotHookItTwice)
-{
-    // vrserver hands the same IVRDriverInput to every driver, and the spike installs
-    // both eagerly (from Init) and lazily (from the context detour).
-    hooks_.hookDriverInput(&object_);
-    api_.calls.clear();
-
-    hooks_.hookDriverInput(&object_);
-    EXPECT_TRUE(api_.calls.empty());
+    EXPECT_EQ(api_.removedTargets().size(), 3u);
 }
 
 // ------------------------------------------------------- the detour bodies ----
@@ -480,119 +380,5 @@ TEST_F(SpikeDriverHooksTest, PoseUpdateIsForwardedByReferenceAndUnmodified)
     EXPECT_DOUBLE_EQ(g_stub.posePositionX, 1.25);
     EXPECT_DOUBLE_EQ(pose.vecPosition[0], 1.25);
     EXPECT_NE(g_stub.logAtCallTime.find("first pose update from device 7"), std::string::npos);
-}
-
-TEST_F(SpikeDriverHooksTest, BooleanComponentCreationIsForwardedAndRecordedAfterwards)
-{
-    installWith(hooks_.createBoolean, reinterpret_cast<void*>(&stubCreateBooleanComponent), 0);
-    g_createdHandle = 4242;
-
-    vr::VRInputComponentHandle_t handle = 0;
-    vr::IVRDriverInput* const input = reinterpret_cast<vr::IVRDriverInput*>(&object_);
-    EXPECT_EQ(spike::observeCreateBooleanComponent(hooks_, observer_, input, 500,
-                                                   "/input/trigger/click", &handle),
-              vr::VRInputError_None);
-
-    EXPECT_EQ(g_stub.calls, 1);
-    EXPECT_EQ(g_stub.input, input);
-    EXPECT_EQ(g_stub.container, 500u);
-    EXPECT_EQ(g_stub.name, "/input/trigger/click");
-    EXPECT_EQ(g_stub.handleOut, &handle);
-    EXPECT_EQ(handle, 4242u);
-
-    // Observed after the call — the handle only exists once vrserver has written it.
-    EXPECT_EQ(g_stub.logAtCallTime.find("CreateBooleanComponent"), std::string::npos);
-    EXPECT_TRUE(logged("CreateBooleanComponent: container=500 handle=4242 "
-                       "name=\"/input/trigger/click\" <-- trigger click"));
-}
-
-TEST_F(SpikeDriverHooksTest, FailedBooleanComponentCreationIsForwardedButNotRecorded)
-{
-    // There is no handle to attribute later updates to, and *handle would be
-    // uninitialized memory.
-    installWith(hooks_.createBoolean, reinterpret_cast<void*>(&stubCreateBooleanComponent), 0);
-    g_returnedInputError = vr::VRInputError_InvalidHandle;
-
-    vr::VRInputComponentHandle_t handle = 0;
-    EXPECT_EQ(spike::observeCreateBooleanComponent(
-                  hooks_, observer_, reinterpret_cast<vr::IVRDriverInput*>(&object_), 500,
-                  "/input/trigger/click", &handle),
-              vr::VRInputError_InvalidHandle);
-
-    EXPECT_EQ(g_stub.calls, 1);
-    EXPECT_FALSE(logged("CreateBooleanComponent"));
-}
-
-TEST_F(SpikeDriverHooksTest, BooleanComponentCreationWithoutAHandlePointerIsNotRecorded)
-{
-    installWith(hooks_.createBoolean, reinterpret_cast<void*>(&stubCreateBooleanComponent), 0);
-
-    EXPECT_EQ(spike::observeCreateBooleanComponent(
-                  hooks_, observer_, reinterpret_cast<vr::IVRDriverInput*>(&object_), 500,
-                  "/input/trigger/click", nullptr),
-              vr::VRInputError_None);
-
-    EXPECT_EQ(g_stub.calls, 1);
-    EXPECT_FALSE(logged("CreateBooleanComponent"));
-}
-
-TEST_F(SpikeDriverHooksTest, BooleanUpdateIsObservedBeforeForwardingAndReachesTheComponent)
-{
-    // The two hooks together are what produces a trigger edge: creation registers the
-    // handle, the update resolves against it.
-    installWith(hooks_.createBoolean, reinterpret_cast<void*>(&stubCreateBooleanComponent), 0);
-    g_createdHandle = 77;
-    vr::VRInputComponentHandle_t handle = 0;
-    ASSERT_EQ(spike::observeCreateBooleanComponent(
-                  hooks_, observer_, reinterpret_cast<vr::IVRDriverInput*>(&object_), 500,
-                  "/input/trigger/click", &handle),
-              vr::VRInputError_None);
-
-    installWith(hooks_.updateBoolean, reinterpret_cast<void*>(&stubUpdateBooleanComponent), 1);
-    vr::IVRDriverInput* const input = reinterpret_cast<vr::IVRDriverInput*>(&object_);
-    EXPECT_EQ(spike::observeUpdateBooleanComponent(hooks_, observer_, input, 77, true, 0.5),
-              vr::VRInputError_None);
-
-    EXPECT_EQ(g_stub.input, input);
-    EXPECT_EQ(g_stub.updatedHandle, 77u);
-    EXPECT_TRUE(g_stub.updatedValue);
-    EXPECT_DOUBLE_EQ(g_stub.timeOffset, 0.5);
-    EXPECT_NE(g_stub.logAtCallTime.find("trigger DOWN"), std::string::npos);
-}
-
-TEST_F(SpikeDriverHooksTest, ScalarComponentCreationForwardsTypeAndUnitsUnchanged)
-{
-    installWith(hooks_.createScalar, reinterpret_cast<void*>(&stubCreateScalarComponent), 2);
-    g_createdHandle = 9;
-
-    vr::VRInputComponentHandle_t handle = 0;
-    EXPECT_EQ(spike::observeCreateScalarComponent(
-                  hooks_, observer_, reinterpret_cast<vr::IVRDriverInput*>(&object_), 600,
-                  "/input/trigger/value", &handle, vr::VRScalarType_Absolute,
-                  vr::VRScalarUnits_NormalizedOneSided),
-              vr::VRInputError_None);
-
-    EXPECT_EQ(g_stub.calls, 1);
-    EXPECT_EQ(g_stub.container, 600u);
-    EXPECT_EQ(g_stub.name, "/input/trigger/value");
-    EXPECT_EQ(g_stub.scalarType, vr::VRScalarType_Absolute);
-    EXPECT_EQ(g_stub.scalarUnits, vr::VRScalarUnits_NormalizedOneSided);
-    EXPECT_TRUE(logged("CreateScalarComponent: container=600 handle=9 "
-                       "name=\"/input/trigger/value\""));
-}
-
-TEST_F(SpikeDriverHooksTest, FailedScalarComponentCreationIsNotRecorded)
-{
-    installWith(hooks_.createScalar, reinterpret_cast<void*>(&stubCreateScalarComponent), 2);
-    g_returnedInputError = vr::VRInputError_InvalidHandle;
-
-    vr::VRInputComponentHandle_t handle = 0;
-    EXPECT_EQ(spike::observeCreateScalarComponent(
-                  hooks_, observer_, reinterpret_cast<vr::IVRDriverInput*>(&object_), 600,
-                  "/input/trigger/value", &handle, vr::VRScalarType_Absolute,
-                  vr::VRScalarUnits_NormalizedOneSided),
-              vr::VRInputError_InvalidHandle);
-
-    EXPECT_FALSE(logged("CreateScalarComponent"));
 }
 } // namespace

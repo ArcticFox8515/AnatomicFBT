@@ -5,8 +5,11 @@
 // dependencies (logger, hook installer, property reader, clock) are fakes, so every
 // branch — including the ones a live SteamVR session would only show us by accident
 // (a truncated pose struct, a device whose serial changed, an unhookable interface
-// version, an update for a component we never saw created) — is reachable and
-// deterministic.
+// version) — is reachable and deterministic.
+//
+// Button/input capture is NOT part of the driver DLL (doc/driver-spike-handover.md
+// §5.1): a separate background client app handles input, so this observer never polls
+// VR events and there is no EventPoller seam to fake here.
 
 #include "spike/SpikeGuard.h"
 #include "spike/SpikeLog.h"
@@ -26,16 +29,13 @@ namespace
 {
 constexpr vr::PropertyContainerHandle_t kContainerBase = 5000;
 constexpr uint32_t kTracker = 3;
-constexpr vr::VRInputComponentHandle_t kTriggerHandle = 100;
 
 class FakeInterfaceHooks : public spike::InterfaceHooks
 {
 public:
     void hookServerDriverHost(void* host) override { hostHooks.push_back(host); }
-    void hookDriverInput(void* input) override { inputHooks.push_back(input); }
 
     std::vector<void*> hostHooks;
-    std::vector<void*> inputHooks;
 };
 
 class FakeProperties : public spike::DeviceProperties
@@ -124,7 +124,6 @@ class SpikeObserverTest : public ::testing::Test
 protected:
     SpikeObserverTest() : observer_(logger_, hooks_, [this] { return now_; })
     {
-        logger_.setTimestampSource([] { return std::string("00:00:00.000"); });
         logger_.setSink([this](const char* message) { lines_.emplace_back(message); });
     }
 
@@ -153,8 +152,6 @@ protected:
                                    vr::TrackedDeviceClass_GenericTracker,
                                    vr::TrackedControllerRole_Invalid});
         observer_.setProperties(&properties_);
-        observer_.onBooleanComponentCreated(kContainerBase + kTracker, "/input/trigger/click",
-                                           kTriggerHandle);
         observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t));
         observer_.onInit();
         observer_.onRunFrame();
@@ -173,15 +170,11 @@ protected:
 TEST_F(SpikeObserverTest, TheInterfacesWeBuildAgainstAreHooked)
 {
     int host = 0;
-    int input = 0;
     observer_.onInterfaceRequested(vr::IVRServerDriverHost_Version, &host);
-    observer_.onInterfaceRequested(vr::IVRDriverInput_Version, &input);
 
     EXPECT_EQ(hooks_.hostHooks, std::vector<void*>{&host});
-    EXPECT_EQ(hooks_.inputHooks, std::vector<void*>{&input});
     EXPECT_TRUE(logged(std::string("interface \"") + vr::IVRServerDriverHost_Version
                        + "\": hooking"));
-    EXPECT_TRUE(logged(std::string("interface \"") + vr::IVRDriverInput_Version + "\": hooking"));
 }
 
 TEST_F(SpikeObserverTest, AnUnhookableVersionOfAnInterfaceWeNeedIsReportedLoudlyAndNotHooked)
@@ -191,22 +184,25 @@ TEST_F(SpikeObserverTest, AnUnhookableVersionOfAnInterfaceWeNeedIsReportedLoudly
     // exactly what we do not know).
     int dummy = 0;
     observer_.onInterfaceRequested("IVRServerDriverHost_005", &dummy);
-    observer_.onInterfaceRequested("IVRDriverInput_002", &dummy);
 
     EXPECT_TRUE(hooks_.hostHooks.empty());
-    EXPECT_TRUE(hooks_.inputHooks.empty());
     EXPECT_TRUE(logged("interface \"IVRServerDriverHost_005\": NOT HOOKED"));
-    EXPECT_TRUE(logged("interface \"IVRDriverInput_002\": NOT HOOKED"));
 }
 
 TEST_F(SpikeObserverTest, InterfacesWeDoNotNeedAndNullResultsAreJustRecorded)
 {
     int dummy = 0;
     observer_.onInterfaceRequested(vr::IVRResources_Version, &dummy);
+    // IVRDriverInput is not hooked (doc/driver-spike-handover.md §5.1): input capture
+    // moved out of the driver DLL to a separate background client app, so the input
+    // interface is "not needed" like IVRResources.
+    observer_.onInterfaceRequested(vr::IVRDriverInput_Version, &dummy);
     observer_.onInterfaceRequested("IVRCameraComponent_004", nullptr);
     observer_.onInterfaceRequested(nullptr, nullptr);
 
     EXPECT_TRUE(logged("interface \"IVRResources_001\": seen, not hooked (not needed)"));
+    EXPECT_TRUE(logged(std::string("interface \"") + vr::IVRDriverInput_Version
+                       + "\": seen, not hooked (not needed)"));
     EXPECT_TRUE(logged("interface \"IVRCameraComponent_004\": requested, vrserver returned NULL"));
     EXPECT_TRUE(logged("interface \"(null)\": requested, vrserver returned NULL"));
     EXPECT_TRUE(hooks_.hostHooks.empty());
@@ -268,85 +264,6 @@ TEST_F(SpikeObserverTest, ATruncatedPoseStructIsWarnedAboutOnceAndNeverRead)
     observer_.onInit();
     observer_.onRunFrame();
     EXPECT_FALSE(logged("A = wFd o local"));
-}
-
-// --------------------------------------------------------- input components ----
-
-TEST_F(SpikeObserverTest, BooleanComponentsAreRecordedAndTriggersMarked)
-{
-    observer_.onBooleanComponentCreated(kContainerBase, "/input/trigger/click", 100);
-    observer_.onBooleanComponentCreated(kContainerBase, "/input/grip/click", 101);
-    observer_.onBooleanComponentCreated(kContainerBase, nullptr, 102);
-
-    EXPECT_TRUE(logged("CreateBooleanComponent: container=5000 handle=100 "
-                       "name=\"/input/trigger/click\" <-- trigger click"));
-    EXPECT_TRUE(logged("name=\"/input/grip/click\""));
-    EXPECT_FALSE(logged("name=\"/input/grip/click\" <-- trigger click"));
-    EXPECT_TRUE(logged("handle=102 name=\"(null)\""));
-}
-
-TEST_F(SpikeObserverTest, ScalarComponentsAreOnlyReported)
-{
-    // Never hooked for updates — logged to find out whether a controller exposes a
-    // scalar-only trigger (the documented fallback in doc/driver-plan.md).
-    observer_.onScalarComponentCreated(kContainerBase, "/input/trigger/value", 200);
-    observer_.onScalarComponentCreated(kContainerBase, nullptr, 201);
-    EXPECT_TRUE(logged("CreateScalarComponent: container=5000 handle=200 "
-                       "name=\"/input/trigger/value\""));
-    EXPECT_TRUE(logged("handle=201 name=\"(null)\""));
-}
-
-TEST_F(SpikeObserverTest, OnlyTriggerEdgesAreLogged)
-{
-    bringUpTracker();
-    lines_.clear();
-
-    observer_.onBooleanComponentUpdated(kTriggerHandle, true);
-    observer_.onBooleanComponentUpdated(kTriggerHandle, true); // repeat, not an edge
-    observer_.onBooleanComponentUpdated(kTriggerHandle, false);
-    observer_.onBooleanComponentUpdated(kTriggerHandle, false);
-
-    EXPECT_EQ(lines_.size(), 2u);
-    EXPECT_TRUE(logged("trigger DOWN: device 3 (LHR-TESTTRACKER) component "
-                       "\"/input/trigger/click\""));
-    EXPECT_TRUE(logged("trigger up  : device 3 (LHR-TESTTRACKER)"));
-}
-
-TEST_F(SpikeObserverTest, NonTriggerComponentsAndUnresolvedDevicesStayQuiet)
-{
-    observer_.onBooleanComponentCreated(kContainerBase, "/input/grip/click", 101);
-    observer_.onBooleanComponentCreated(kContainerBase, "/input/trigger/click", kTriggerHandle);
-    lines_.clear();
-
-    observer_.onBooleanComponentUpdated(101, true);
-    EXPECT_TRUE(lines_.empty());
-
-    // A trigger whose container never matched a device: still logged, with "?" instead
-    // of a serial, because losing the edge would hide the calibration gesture.
-    observer_.onBooleanComponentUpdated(kTriggerHandle, true);
-    EXPECT_TRUE(logged("trigger DOWN: device -1 (?) component \"/input/trigger/click\""));
-}
-
-TEST_F(SpikeObserverTest, UpdatesForUnknownHandlesAreCountedNotDropped)
-{
-    // Components created before our hook went in: a coverage gap we have to be able to
-    // see, since it is the one thing that would silently cost us a trigger.
-    bringUpTracker();
-    now_ += spike::kStatsSeconds;
-
-    observer_.onBooleanComponentUpdated(987654321, true);
-    observer_.onBooleanComponentUpdated(987654321, false);
-    lines_.clear();
-    observer_.onRunFrame();
-
-    EXPECT_TRUE(logged("UpdateBooleanComponent: 2 updates for components created before our "
-                       "hook was installed"));
-
-    // Reported as a delta, so an idle interval says nothing.
-    lines_.clear();
-    now_ += spike::kStatsSeconds;
-    observer_.onRunFrame();
-    EXPECT_FALSE(logged("created before our"));
 }
 
 // ---------------------------------------------------- RunFrame housekeeping ----
@@ -419,33 +336,6 @@ TEST_F(SpikeObserverTest, MetadataIsReReadOnlyWhenTheSerialChanges)
     now_ += spike::kHousekeepingSeconds;
     observer_.onRunFrame();
     EXPECT_TRUE(logged("device 3: class=controller(2) role=left_hand serial=\"LHR-OTHER\""));
-}
-
-TEST_F(SpikeObserverTest, ComponentsResolveToTheDeviceSharingTheirContainer)
-{
-    // The mapping the real driver needs to attribute a trigger to a device.
-    bringUpTracker();
-    EXPECT_TRUE(logged("component \"/input/trigger/click\" resolved to device 3 "
-                       "(\"LHR-TESTTRACKER\")"));
-
-    lines_.clear();
-    now_ += spike::kHousekeepingSeconds;
-    observer_.onRunFrame();
-    EXPECT_FALSE(logged("resolved to device"));
-}
-
-TEST_F(SpikeObserverTest, AComponentWithNoMatchingDeviceStaysUnresolved)
-{
-    observer_.onBooleanComponentCreated(999999, "/input/trigger/click", kTriggerHandle);
-    properties_.add(kTracker, {"LHR-TESTTRACKER", "", "", vr::TrackedDeviceClass_GenericTracker,
-                               vr::TrackedControllerRole_Invalid});
-    observer_.setProperties(&properties_);
-    observer_.onInit();
-    observer_.onRunFrame();
-
-    EXPECT_FALSE(logged("resolved to device"));
-    observer_.onCleanup();
-    EXPECT_TRUE(logged("summary: component \"/input/trigger/click\" device=-1 updates=0"));
 }
 
 TEST_F(SpikeObserverTest, BothCandidateCompositionsAreLoggedForEveryPosedDevice)
@@ -541,14 +431,12 @@ TEST_F(SpikeObserverTest, RatesAreReportedEveryFiveSecondsAsDeltas)
 TEST_F(SpikeObserverTest, CleanupSummarizesWhatWasSeenAndNothingElse)
 {
     bringUpTracker();
-    observer_.onBooleanComponentUpdated(kTriggerHandle, true);
     now_ += 12.5;
     lines_.clear();
 
     observer_.onCleanup();
     EXPECT_TRUE(logged("summary: 1 RunFrame calls in 12.5 s"));
     EXPECT_TRUE(logged("summary: device 3 tracker \"LHR-TESTTRACKER\": 1 pose updates"));
-    EXPECT_TRUE(logged("summary: component \"/input/trigger/click\" device=3 updates=1"));
     // 22 of the 64 device slots would otherwise be logged as empty rows.
     EXPECT_EQ(countLogged("summary: device"), 1u);
 }
@@ -589,23 +477,6 @@ TEST(SpikeNames, EveryControllerRoleHasALabel)
     EXPECT_STREQ(spike::roleHintName(vr::TrackedControllerRole_Treadmill), "treadmill");
     EXPECT_STREQ(spike::roleHintName(vr::TrackedControllerRole_Stylus), "stylus");
     EXPECT_STREQ(spike::roleHintName(9999), "unknown");
-}
-
-TEST(SpikeNames, TriggerClickIsRecognizedBySuffixOnly)
-{
-    EXPECT_TRUE(spike::isTriggerClick("/input/trigger/click"));
-    EXPECT_TRUE(spike::isTriggerClick("/user/hand/left/input/trigger/click"));
-    EXPECT_FALSE(spike::isTriggerClick("/input/trigger/value"));
-    EXPECT_FALSE(spike::isTriggerClick("/input/trigger/click/extra"));
-    EXPECT_FALSE(spike::isTriggerClick("click"));
-    EXPECT_FALSE(spike::isTriggerClick(""));
-}
-
-TEST(SpikeNames, EndsWithHandlesShortAndEqualStrings)
-{
-    EXPECT_TRUE(spike::endsWith("abc", "abc"));
-    EXPECT_TRUE(spike::endsWith("abc", ""));
-    EXPECT_FALSE(spike::endsWith("ab", "abc"));
 }
 
 TEST(SpikeGuard, ExceptionsNeverLeaveAHookBoundary)

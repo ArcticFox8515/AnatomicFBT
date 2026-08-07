@@ -6,7 +6,6 @@
 //   * which interface version strings pass through GetGenericInterface (an
 //     unrecognized version is a silent no-op, so it is logged loudly),
 //   * device ids / classes / serials / role hints read driver-side via IVRProperties,
-//   * boolean (and scalar) input component paths per device, and trigger transitions,
 //   * pose update rate per device and RunFrame cadence,
 //   * the DriverPose_t -> world composition: both candidate formulas are logged so
 //     they can be compared against the client-side TrackingUniverseRaw pose that
@@ -18,36 +17,52 @@
 // executable, so nothing in it can run in a unit test — SpikeDriverTest reaches it
 // through LoadLibrary, which is an integration test and proves nothing under the bar
 // in doc/driver-spike-handover.md §2.1. Therefore every function here is one
-// instruction: a call into SpikeLib, or a Win32/openvr/MinHook call whose arguments it
-// merely marshals. The two-line functions are exactly the leaked-singleton accessors
-// (create the object, return it) and the provider Init entry points (open the log,
-// then forward). There is no branch, no loop, no comparison and no arithmetic in this
-// file: if you find yourself adding one, it belongs in SpikeLib with a test.
+// instruction: a call into SpikeLib, or a Win32/openvr/MinHook/spdlog call whose
+// arguments it merely marshals. The two-line functions are exactly the ones that create
+// an implementation object and then call a method on it: the leaked-singleton
+// accessors, the spdlog logger factory, and the provider Init entry points. There is no
+// branch, no loop, no comparison and no arithmetic in this file: if you find yourself
+// adding one, it belongs in SpikeLib with a test.
 //
 // Hard rule: no exception may leave a hook or a provider entry point — an exception
 // escaping into vrserver.exe kills SteamVR. runGuarded() sits inside the SpikeLib
 // forwarders (SpikeDriverHooks.cpp) and inside SpikeServer, i.e. on the other side of
 // every call below.
+//
+// Buttons / input are NOT captured by this driver: the live run showed zero calls on
+// the hooked IVRDriverInput_003 (every controller asked for _004), and PollNextEvent
+// proved unreliable as a substitute. Input is captured by a separate background
+// client app instead (doc/driver-plan.md "Buttons").
 
 #include "SpikeDriverEnvironment.h"
 #include "SpikeDriverHooks.h"
 #include "SpikeHooks.h"
 #include "SpikeLog.h"
+#include "SpikeLogFile.h"
 #include "SpikeObserver.h"
 #include "SpikeServer.h"
 
 #include <openvr_driver.h>
+
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/basic_file_sink.h>
 
 #include <windows.h>
 
 #include <MinHook.h>
 
 #include <chrono>
+#include <memory>
 #include <string>
 
 namespace
 {
 using spike::log;
+
+// Forward declaration: OpenVrServerEnvironment::routeLogToDriverLog composes the
+// spdlog file sink with the IVRDriverLog sink, and needs it before the logger it is
+// built from (created further down, next to the providers) is defined.
+spike::LogSink spikeFileSink();
 
 // --------------------------------------------------------------- MinHook glue ----
 
@@ -58,10 +73,7 @@ public:
 
     void shutdown() override { MH_Uninitialize(); }
 
-    bool isAlreadyInitialized(int status) override
-    {
-        return status == MH_ERROR_ALREADY_INITIALIZED;
-    }
+    int alreadyInitializedStatus() override { return MH_ERROR_ALREADY_INITIALIZED; }
 
     int create(void* target, void* detour, void** original) override
     {
@@ -109,6 +121,27 @@ Win32ModuleApi& moduleApi()
     return *instance;
 }
 
+class Win32ProcessApi final : public spike::ProcessApi
+{
+public:
+    unsigned long environmentVariable(const char* name, char* buffer,
+                                      unsigned long size) override
+    {
+        return GetEnvironmentVariableA(name, buffer, size);
+    }
+
+    unsigned long executablePath(char* buffer, unsigned long size) override
+    {
+        return GetModuleFileNameA(nullptr, buffer, size);
+    }
+};
+
+Win32ProcessApi& processApi()
+{
+    static Win32ProcessApi* instance = new Win32ProcessApi();
+    return *instance;
+}
+
 double nowSeconds()
 {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch())
@@ -128,18 +161,6 @@ bool detourTrackedDeviceAdded(vr::IVRServerDriverHost* self, const char* serial,
                               vr::ITrackedDeviceServerDriver* driver);
 void detourTrackedDevicePoseUpdated(vr::IVRServerDriverHost* self, uint32_t index,
                                     const vr::DriverPose_t& pose, uint32_t poseStructSize);
-vr::EVRInputError detourCreateBooleanComponent(vr::IVRDriverInput* self,
-                                               vr::PropertyContainerHandle_t container,
-                                               const char* name,
-                                               vr::VRInputComponentHandle_t* handle);
-vr::EVRInputError detourUpdateBooleanComponent(vr::IVRDriverInput* self,
-                                               vr::VRInputComponentHandle_t handle, bool value,
-                                               double timeOffset);
-vr::EVRInputError detourCreateScalarComponent(vr::IVRDriverInput* self,
-                                              vr::PropertyContainerHandle_t container,
-                                              const char* name,
-                                              vr::VRInputComponentHandle_t* handle,
-                                              vr::EVRScalarType type, vr::EVRScalarUnits units);
 
 // The hook set and the observer are process-wide and deliberately leaked, like the
 // rest of the state here: a hook thread may still be inside a detour when the DLL's
@@ -151,10 +172,7 @@ spike::DriverHookSet& hooks()
         hookApi(), log(),
         spike::DriverDetours{reinterpret_cast<void*>(&detourGetGenericInterface),
                              reinterpret_cast<void*>(&detourTrackedDeviceAdded),
-                             reinterpret_cast<void*>(&detourTrackedDevicePoseUpdated),
-                             reinterpret_cast<void*>(&detourCreateBooleanComponent),
-                             reinterpret_cast<void*>(&detourUpdateBooleanComponent),
-                             reinterpret_cast<void*>(&detourCreateScalarComponent)});
+                             reinterpret_cast<void*>(&detourTrackedDevicePoseUpdated)});
     return *instance;
 }
 
@@ -186,33 +204,6 @@ void detourTrackedDevicePoseUpdated(vr::IVRServerDriverHost* self, uint32_t inde
                                            poseStructSize);
 }
 
-vr::EVRInputError detourCreateBooleanComponent(vr::IVRDriverInput* self,
-                                               vr::PropertyContainerHandle_t container,
-                                               const char* name,
-                                               vr::VRInputComponentHandle_t* handle)
-{
-    return spike::observeCreateBooleanComponent(hooks(), observer(), self, container, name,
-                                                handle);
-}
-
-vr::EVRInputError detourUpdateBooleanComponent(vr::IVRDriverInput* self,
-                                               vr::VRInputComponentHandle_t handle, bool value,
-                                               double timeOffset)
-{
-    return spike::observeUpdateBooleanComponent(hooks(), observer(), self, handle, value,
-                                                timeOffset);
-}
-
-vr::EVRInputError detourCreateScalarComponent(vr::IVRDriverInput* self,
-                                              vr::PropertyContainerHandle_t container,
-                                              const char* name,
-                                              vr::VRInputComponentHandle_t* handle,
-                                              vr::EVRScalarType type, vr::EVRScalarUnits units)
-{
-    return spike::observeCreateScalarComponent(hooks(), observer(), self, container, name, handle,
-                                               type, units);
-}
-
 // ------------------------------------------------- vrserver environment glue ----
 
 class OpenVrServerEnvironment final : public spike::ServerEnvironment
@@ -225,7 +216,11 @@ public:
 
     void cleanupContext() override { vr::CleanupDriverContext(); }
 
-    void routeLogToDriverLog() override { log().setSink(spike::driverLogSink(&vr::VRDriverLog)); }
+    void routeLogToDriverLog() override
+    {
+        spike::log().setSink(
+            spike::compositeSink(spikeFileSink(), spike::driverLogSink(&vr::VRDriverLog)));
+    }
 
     const char* initHookLibrary() override { return spike::initializeHookLibrary(hookApi()); }
 
@@ -248,8 +243,6 @@ public:
 
     void hookServerDriverHost() override { hooks().hookServerDriverHost(vr::VRServerDriverHost()); }
 
-    void hookDriverInput() override { hooks().hookDriverInput(vr::VRDriverInput()); }
-
     void removeHooks() override { hooks().removeAll(); }
 
 private:
@@ -269,11 +262,35 @@ public:
 
 // ---------------------------------------------------------------- providers ----
 
-// Every entry point offers the log a stream; Logger keeps the first usable one.
+// The spdlog logger owns the file, timestamps, buffering and flushing — including
+// creating the directory the path names. Created once, before any hook is installed
+// (doc/driver-spike-handover.md §5.3). The spike Logger's sink is initially
+// spdlog-only (so lines logged before InitServerDriverContext — when vr::VRDriverLog()
+// is still null — reach the file); routeLogToDriverLog replaces it with a composite
+// that also fans out to IVRDriverLog once the context is up.
+std::shared_ptr<spdlog::logger> makeFileLogger(const char* name, const std::string& path)
+{
+    auto logger = spdlog::basic_logger_mt(name, path);
+    logger->set_pattern("%v");
+    return logger;
+}
+
+std::shared_ptr<spdlog::logger> spikeDriverLogger()
+{
+    static std::shared_ptr<spdlog::logger> logger = makeFileLogger(
+        "spike-driver", spike::processLogPath(processApi(), spike::kDriverLogPrefix));
+    return logger;
+}
+
+spike::LogSink spikeFileSink()
+{
+    return [logger = spikeDriverLogger()](const char* message) { logger->info(message); };
+}
+
 spike::Logger& openedLog()
 {
-    spike::openProcessLog(log(), "driver-spike");
-    return log();
+    static spike::Logger& instance = spike::loggingTo(log(), spikeFileSink());
+    return instance;
 }
 
 class SpikeServerProvider final : public vr::IServerTrackedDeviceProvider

@@ -4,17 +4,19 @@
 //
 // This is the whole decision/bookkeeping surface of the spike, and it is a plain
 // class in a static library rather than a global inside the DLL, so a test can
-// construct it and drive every branch directly. Its three dependencies on the
-// outside world are injected:
+// construct it and drive every branch directly. Its dependencies on the outside
+// world are injected:
 //
-//   * Logger        — where the lines go,
+//   * Logger          — where the lines go,
 //   * DeviceProperties — the vr::VRProperties() metadata reads (may be absent),
 //   * InterfaceHooks   — the MinHook installs the interface dispatch triggers,
-//   * a clock function — so the 1 s housekeeping and 5 s statistics branches are
+//   * a clock function  — so the 1 s housekeeping and 5 s statistics branches are
 //     testable without sleeping.
 //
 // openvr_driver.h is included for its *types* only (DriverPose_t, handles, enums);
-// nothing here calls into vrserver.
+// nothing here calls into vrserver. Button/input capture is NOT part of the driver
+// DLL's job: it is handled by a separate background client app, so this observer
+// never polls VR events.
 
 #include "SpikeLog.h"
 
@@ -26,8 +28,6 @@
 #include <mutex>
 #include <set>
 #include <string>
-#include <unordered_map>
-#include <vector>
 
 namespace spike
 {
@@ -53,7 +53,6 @@ public:
     virtual ~InterfaceHooks() = default;
 
     virtual void hookServerDriverHost(void* host) = 0;
-    virtual void hookDriverInput(void* input) = 0;
 };
 
 // Monotonic seconds; any origin.
@@ -76,11 +75,6 @@ public:
     void onInterfaceRequested(const char* version, void* interfacePtr);
     void onDeviceAdded(const char* serial, int deviceClass);
     void onPose(uint32_t index, const vr::DriverPose_t& pose, uint32_t poseStructSize);
-    void onBooleanComponentCreated(vr::PropertyContainerHandle_t container, const char* name,
-                                   vr::VRInputComponentHandle_t handle);
-    void onScalarComponentCreated(vr::PropertyContainerHandle_t container, const char* name,
-                                  vr::VRInputComponentHandle_t handle);
-    void onBooleanComponentUpdated(vr::VRInputComponentHandle_t handle, bool value);
 
     // ---- main thread (Init / RunFrame / Cleanup) ----
 
@@ -106,20 +100,7 @@ private:
         std::string trackingSystem;
     };
 
-    struct ComponentRecord
-    {
-        vr::VRInputComponentHandle_t handle = vr::k_ulInvalidInputComponentHandle;
-        vr::PropertyContainerHandle_t container = vr::k_ulInvalidPropertyContainer;
-        std::string name;
-        bool trigger = false;
-        int deviceIndex = -1;
-        bool valueKnown = false;
-        bool value = false;
-        uint64_t updates = 0;
-    };
-
     void refreshDeviceMetadata();
-    void resolveComponents();
     void logPoseSamples();
     void logRates(double elapsed);
 
@@ -130,12 +111,8 @@ private:
     std::mutex mutex_;
     DeviceProperties* properties_ = nullptr;
     std::array<DeviceRecord, vr::k_unMaxTrackedDeviceCount> devices_{};
-    std::vector<ComponentRecord> components_;
-    std::unordered_map<uint64_t, size_t> componentByHandle_;
     std::set<std::string> interfaces_;
     bool poseSizeWarned_ = false;
-    uint64_t unknownBooleanUpdates_ = 0;
-    uint64_t unknownBooleanUpdatesAtStats_ = 0;
 
     // Main thread only (onInit / onRunFrame / onCleanup), hence unlocked.
     uint64_t runFrameCount_ = 0;

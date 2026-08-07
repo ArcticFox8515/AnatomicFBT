@@ -7,15 +7,27 @@ exploration.
 
 Read `doc/driver-plan.md` first, then this file, then `AGENTS.md`.
 
-**The test suite is deliberately red.** Three tests assert contracts the spike violates.
-They are the reproductions of §5.2 and §5.4 and must stay failing until those fixes
-land:
+**The test suite is green as of session 7.** The three deliberate failures below
+were fixed in session 5 (§5.2 install race + §5.4 invalid-pose gate); §5.1 (input
+hooks → `PollNextEvent`) and §5.3 (logger rewrite) landed in session 5, then §5.1
+was reversed in session 6 (input capture removed from the driver DLL entirely —
+see §5.1). Kept here for the history of what the spike once violated:
 
 - `SpikeHooksTest.AnInstallReenteredDuringCreateKeepsAnOriginalToCallThrough`
 - `SpikeHooksTest.AnInstallReenteredDuringCreateHooksTheFunctionOnlyOnce`
 - `SpikeObserverTest.APoseSteamVRReportsAsInvalidIsNotComposed`
 
-Debug: 268 passed, 3 failed, 271 total. Release was **not** rebuilt or run in session 4.
+Debug: 266 passed, 0 failed, 266 total. Release: 266 passed, 0 failed.
+
+Session 7 closed the last §2.1a violations the §5.3 logger rewrite had left in the
+adapters: the log-file path (basename scan, extension strip, unknown-process and
+`%LOCALAPPDATA%`-unset fallbacks — duplicated in `SpikeClient.cpp`), the two-sink
+composition, and the install-the-sink-once decision are now `SpikeLogFile.*` /
+`compositeSink` / `loggingTo` in `SpikeLib`, with unit tests over a `ProcessApi` fake.
+`HookApi::isAlreadyInitialized` became `alreadyInitializedStatus()` for the same
+reason: the comparison it hid was the adapter's only one. `std::filesystem::
+create_directories` is gone from both adapters — spdlog's file sink creates the
+directory when it opens the file.
 
 ---
 
@@ -140,7 +152,8 @@ Session 4, ~86 s session, one Meta Quest 3 (`oculus` driver) plus 7 lighthouse d
   before anything reaches the solver.
 - **Interface versions in the wild are not the ones we build against.** vrserver handed
   out `IVRServerDriverHost_005` and `IVRDriverInput_004` alongside the `_006` / `_003` we
-  hook. No device was lost to `_005`. `_004` is why §5.1 exists.
+  hook. No device was lost to `_005`. `_004` (no calls on the hooked `_003`) is what
+  first drove §5.1; the §5.1 reversal removed input capture from the driver entirely.
 - **`raw` ≈ `standing` on this machine** (differences ~1e-4), so the run did *not*
   discriminate the two universes. Do not read it as confirmation of the coordinate-space
   assumption in `doc/driver-plan.md`; that assumption is still an assumption.
@@ -169,34 +182,44 @@ Recorded so they are not raised again:
 
 In this order.
 
-### 5.1 Remove the input hooks; get input from `PollNextEvent` instead
+### 5.1 Remove the input hooks; then remove input capture from the driver entirely — DONE (session 5), reversed (session 6)
 
-**Why:** they observed nothing. `IVRDriverInput_003` was hooked from our own eager fetch
-at 18:25:43.877; the drivers that matter asked for `IVRDriverInput_004`
-(18:25:44.182, logged `NOT HOOKED`). In 86 s with two Index controllers: zero
-`CreateBooleanComponent`, zero `CreateScalarComponent`, zero trigger lines, and zero
-"components created before our hook" counts — so nothing at all used the version we
-hooked. Chasing `_004` would mean a newer `openvr_driver.h` than conan's 1.16.8 and three
-more detours inside vrserver for data that is available without any hook: **VR events
-(`PollNextEvent`)**.
+**Session 5 — `PollNextEvent` substitute:** the `IVRDriverInput_003` hooks observed
+nothing. `IVRDriverInput_003` was hooked from our own eager fetch at 18:25:43.877;
+the drivers that matter asked for `IVRDriverInput_004` (18:25:44.182, logged
+`NOT HOOKED`). In 86 s with two Index controllers: zero `CreateBooleanComponent`,
+zero `CreateScalarComponent`, zero trigger lines, and zero "components created
+before our hook" counts — so nothing at all used the version we hooked. Chasing
+`_004` would mean a newer `openvr_driver.h` than conan's 1.16.8 and three more
+detours inside vrserver for data that is available without any hook: **VR events
+(`PollNextEvent`)**. Session 5 removed the three `IVRDriverInput` detours and their
+entry points and added an `EventPoller` seam on `SpikeObserver`, polled each
+`RunFrame` (no detour), wired in the adapter to
+`vr::VRServerDriverHost()->PollNextEvent`.
 
-**Remove:** the three `IVRDriverInput` detours and their entry points; `hookDriverInput`
-on both `DriverHookSet` and the `InterfaceHooks` seam; `ServerEnvironment::hookDriverInput`;
-`InterfaceAction::HookDriverInput` and the `driverInputVersion` parameter of
-`classifyInterface`; the component table, `componentByHandle_`, `unknownBooleanUpdates_`,
-`resolveComponents()`, the trigger-edge logging and the component summary in
-`SpikeObserver`; `componentWasCreated()`; `isTriggerClick()`; and every test that exists
-only for the above (`SpikeObserverTest` component/trigger cases, the
-`SpikeDriverHooksTest` component detour cases, the `SpikeDriverTest` component and
-trigger assertions, plus the fake `IVRDriverInput` in that harness).
+**Session 6 — reversal, input capture leaves the driver DLL:** after a live run,
+`PollNextEvent` proved no more reliable than the input hooks — neither path
+delivered button events to the driver. The decision is to stop trying: input
+capture is removed from the driver DLL **completely**. The `EventPoller` seam,
+`SpikeObserver::setEventPoller` / `pollButtonEvents` / the `buttonEvents_`
+counters and the button log lines (per-press, rate, summary) are gone;
+`ServerEnvironment::eventPoller` and the adapter's `OpenVrEventPoller` are gone;
+the `FakeServerDriverHost::PollNextEvent` override in `SpikeDriverTest` is a
+no-op stub (the pure virtual still has to be implemented) and the five
+`SpikeObserverTest` button cases are deleted. A separate **background client
+app** will capture buttons going forward (it links `openvr_api` as a client and
+reads controller state the way `src/vr/OpenVrTracking` does today). The driver
+DLL's job is poses + metadata only.
 
-**Then update `doc/driver-plan.md`**, which currently specifies the button path as
-`CreateBooleanComponent` + `UpdateBooleanComponent` hooks with a scalar fallback
-(§"Buttons", and the `DeviceButtons` message). The replacement is an event source. Note
-while doing it: the plan's reason for driver-side input was that phase A deletes the
-app's OpenVR client session — that reason survives, only the mechanism changes.
+**What stays:** the reason driver-side input was wanted (phase A deletes the
+app's OpenVR client session, so the app can no longer read buttons itself) is
+now served by a *second* client app dedicated to input, leaving the main app
+OpenVR-free. `doc/driver-plan.md` "Buttons" / `DeviceButtons` / threading
+contract / verified-groundwork vtable index list / risks are updated to the
+client-app path. `IVRDriverInput` remains unhooked and `NotNeeded` in the
+`classifyInterface` table — that classification is unchanged by the reversal.
 
-### 5.2 Fix the hook-install race (reproduced, two failing tests)
+### 5.2 Fix the hook-install race (reproduced, two failing tests) — DONE (session 5)
 
 **Evidence it is live, not theoretical:** `hook IVRServerDriverHost::TrackedDeviceAdded:
 installed` at 18:25:43.854 (the eager install in `SpikeServer::init`) and `interface
@@ -224,7 +247,7 @@ than by version string, and stop clearing `original_` on a failure path that can
 after another caller has published the hook. The `HookApi` seam means the fix is
 unit-testable. Do not add threads to the tests.
 
-### 5.3 Rework `Logger`: formatting and dispatch to a sink, nothing else. The sink is spdlog
+### 5.3 Rework `Logger`: formatting and dispatch to a sink, nothing else. The sink is spdlog — DONE (session 5)
 
 `Logger` currently carries a second, unplanned output mechanism next to the `LogSink` the
 plan specifies (`doc/driver-plan.md` §"Logging"): a `shared_ptr<ostream>`, a path, an
@@ -254,11 +277,21 @@ spdlog-free so the test binary does not link it; the spdlog logger is created in
 adapter side (`SpikeDriver.cpp` / `SpikeClient.cpp`), which needs `spdlog::spdlog` added
 to `driver_00trackingcorrector` and `spike_client` in `CMakeLists.txt`.
 
+**Session 7 follow-up.** The rewrite moved the *path* logic into the adapters, where no
+test can reach it — a §2.1a violation the session-5 review missed. `logDirectory` and a
+`processNameFromPath` successor to `processBaseName` are therefore back in `SpikeLib`, as
+`SpikeLogFile.*`: pure path computation over a `ProcessApi` seam (environment block +
+running executable), no filesystem, no `Logger` coupling, no spdlog. The other two
+adapter decisions moved with them: `compositeSink` (file sink + `IVRDriverLog` fan-out,
+skipping an empty sink instead of throwing `bad_function_call` inside a detour) and
+`loggingTo` (install the sink only if none is installed, so a later provider `Init` cannot
+replace the composite with the plain file sink).
+
 **Open, for the owner:** whether the spdlog logger keeps a sink that copies lines to
 `IVRDriverLog` (SteamVR's `vrserver.txt`). If not, `driverLogSink()`,
 `ServerEnvironment::routeLogToDriverLog()` and their three tests go as well.
 
-### 5.4 `logPoseSamples` must not compose a pose SteamVR calls invalid (reproduced)
+### 5.4 `logPoseSamples` must not compose a pose SteamVR calls invalid (reproduced) — DONE (session 5)
 
 `logPoseSamples` gates on `lastPoseValid` (`SpikeObserver.cpp:284`), which means "a pose
 struct was stored", not `pose.poseIsValid` — the field name is itself the bug. So it
@@ -312,8 +345,8 @@ thread calls `HmdDriverFactory`.
 5. **Main-thread-only invariant — partly addressed.** Commented in `SpikeObserver.h`, not
    enforced. A debug thread-id assert is the remaining work.
 6. **Blocking under the lock — open, and now measured.** `logPoseSamples` (`:280`),
-   `logRates` (`:327`), `resolveComponents` (`:259`) and `onCleanup` (`:195`) log while
-   holding `SpikeObserver::mutex_`, and pose threads take that same lock 1.6 k times a
+   `logRates` (`:327`) and `onCleanup` (`:195`) log while holding
+   `SpikeObserver::mutex_`, and pose threads take that same lock 1.6 k times a
    second. §5.3 makes each line cheap; it does not fix the lock discipline. The
    structural fix is snapshot under lock, release, then log.
 
@@ -401,6 +434,6 @@ until **Steam itself** exits.
 3. **`IVRDriverLog` output** in §5.3: does the spdlog logger still copy lines into
    SteamVR's `vrserver.txt`?
 4. **`%TEMP%\SpikeInterfaces.bak`** — still there, still needs an OK to delete.
-5. Whether `TrackedDeviceAdded` and `CreateScalarComponent` — hooks added beyond the
-   plan's step-1 list — stay. `CreateScalarComponent` goes with §5.1 regardless;
-   `TrackedDeviceAdded` earned its place (it is how device arrival was observed at all).
+5. Whether `TrackedDeviceAdded` — a hook added beyond the plan's step-1 list —
+   stays. It earned its place (it is how device arrival was observed at all).
+   (`CreateScalarComponent` was an `IVRDriverInput` detour removed with §5.1.)

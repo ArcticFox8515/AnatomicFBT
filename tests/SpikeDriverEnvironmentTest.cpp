@@ -113,6 +113,14 @@ class FakeDriverLog : public vr::IVRDriverLog
 public:
     void Log(const char* message) override { lines.emplace_back(message ? message : ""); }
 
+    bool contains(const std::string& needle) const
+    {
+        for (const std::string& line : lines)
+            if (line.find(needle) != std::string::npos)
+                return true;
+        return false;
+    }
+
     std::vector<std::string> lines;
 };
 

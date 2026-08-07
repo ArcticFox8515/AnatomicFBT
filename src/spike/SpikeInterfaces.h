@@ -4,7 +4,7 @@
 // GetGenericInterface detour, as a pure function so it is directly unit-testable
 // (tests/SpikeDriverTest.cpp) instead of only reachable through a loaded DLL.
 //
-// The versions we build against are parameters rather than hardcoded literals: the
+// The version we build against is a parameter rather than a hardcoded literal: the
 // interesting case is precisely "vrserver offers a version other than ours", and a
 // test must be able to state both sides.
 
@@ -15,14 +15,13 @@ namespace spike
 enum class InterfaceAction
 {
     HookServerDriverHost,
-    HookDriverInput,
     // Same interface family, a version we cannot hook. Must be reported loudly: an
     // unhooked version is otherwise a silent no-op — devices behind it are invisible.
     UnsupportedVersion,
     NotNeeded,
 };
 
-// "IVRDriverInput_003" -> "IVRDriverInput_"; a string without '_' is its own family.
+// "IVRServerDriverHost_006" -> "IVRServerDriverHost_"; a string without '_' is its own family.
 inline std::string interfaceFamily(const std::string& version)
 {
     const size_t underscore = version.rfind('_');
@@ -30,17 +29,12 @@ inline std::string interfaceFamily(const std::string& version)
 }
 
 inline InterfaceAction classifyInterface(const std::string& version,
-                                        const std::string& serverDriverHostVersion,
-                                        const std::string& driverInputVersion)
+                                         const std::string& serverDriverHostVersion)
 {
     if (version == serverDriverHostVersion)
         return InterfaceAction::HookServerDriverHost;
-    if (version == driverInputVersion)
-        return InterfaceAction::HookDriverInput;
 
-    const std::string family = interfaceFamily(version);
-    if (family == interfaceFamily(serverDriverHostVersion)
-        || family == interfaceFamily(driverInputVersion))
+    if (interfaceFamily(version) == interfaceFamily(serverDriverHostVersion))
         return InterfaceAction::UnsupportedVersion;
 
     return InterfaceAction::NotNeeded;

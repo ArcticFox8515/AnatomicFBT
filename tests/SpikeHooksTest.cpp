@@ -32,7 +32,7 @@ void slotTwo() {}
 void detour() {}
 
 // MinHook's MH_ERROR_ALREADY_INITIALIZED. The value is the real DLL's business; the
-// fake only has to answer the same question the adapter answers with one comparison.
+// fake only has to report *a* status the way the adapter reports MinHook's.
 constexpr int kFakeAlreadyInitialized = 1;
 
 // MinHook's MH_ERROR_ALREADY_CREATED: what the *second* MH_CreateHook on one function
@@ -56,7 +56,7 @@ public:
 
     void shutdown() override { ++shutdownCalls; }
 
-    bool isAlreadyInitialized(int status) override { return status == kFakeAlreadyInitialized; }
+    int alreadyInitializedStatus() override { return kFakeAlreadyInitialized; }
 
     int create(void* target, void* detourFunction, void** original) override
     {
@@ -129,13 +129,15 @@ class SpikeHooksTest : public ::testing::Test
 protected:
     void SetUp() override
     {
-        logger_.setTimestampSource([] { return std::string("00:00:00.000"); });
-        logger_.setStream(stream_);
+        logger_.setSink([this](const char* message) { lines_.emplace_back(message); });
     }
 
     bool logged(const std::string& needle) const
     {
-        return stream_->str().find(needle) != std::string::npos;
+        for (const std::string& line : lines_)
+            if (line.find(needle) != std::string::npos)
+                return true;
+        return false;
     }
 
     void* slot(int index) const { return vtable_[index]; }
@@ -144,7 +146,7 @@ protected:
                         reinterpret_cast<void*>(&slotTwo)};
     FakeInterface object_{vtable_};
 
-    std::shared_ptr<std::ostringstream> stream_ = std::make_shared<std::ostringstream>();
+    std::vector<std::string> lines_;
     spike::Logger logger_;
     FakeHookApi api_;
 };

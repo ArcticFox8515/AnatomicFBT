@@ -19,14 +19,17 @@ class HookApi
 public:
     virtual ~HookApi() = default;
 
-    // MH_Initialize / MH_Uninitialize. Split from the classification below so the
-    // adapter has no branch: "is this status still a success" is a decision, and
+    // MH_Initialize / MH_Uninitialize. The status classification below is kept out of
+    // the adapter on purpose: "is this status still a success" is a decision, and
     // decisions live in initializeHookLibrary().
     virtual int initialize() = 0;
     virtual void shutdown() = 0;
     // MH_ERROR_ALREADY_INITIALIZED, which happens whenever a second driver in the
-    // same vrserver got there first and is not an error for us.
-    virtual bool isAlreadyInitialized(int status) = 0;
+    // same vrserver got there first and is not an error for us. The seam reports the
+    // *value* rather than answering a question, so the DLL's implementation is a bare
+    // `return MH_ERROR_ALREADY_INITIALIZED;` with no comparison in it
+    // (doc/driver-spike-handover.md §2.1a).
+    virtual int alreadyInitializedStatus() = 0;
 
     virtual int create(void* target, void* detour, void** original) = 0;
     virtual int enable(void* target) = 0;
