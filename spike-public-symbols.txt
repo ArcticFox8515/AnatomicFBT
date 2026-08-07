@@ -1,0 +1,150 @@
+# Dataset: every public function/method declared by src/spike, one per line.
+# Consumed by audit-spike-symbols.ps1. Maintained BY HAND — update when the headers change.
+#
+# Format:  <declaring file>|<symbol>
+#
+# The symbol is the ONLY thing recorded. The search pattern is derived from it by the
+# script, so a row can never be matched by text that is not a call to that symbol.
+# (An earlier version of this file carried a hand-written search token per row; a
+# destructor row then matched `class FakeX : public spike::X`, which is not a call to
+# anything. Do not reintroduce a token column.)
+#
+# Scope: public only. Excluded are anonymous-namespace helpers in SpikeDriver.cpp /
+# SpikeClient.cpp (internal linkage), SpikeObserver's four private methods
+# (refreshDeviceMetadata, resolveComponents, logPoseSamples, logRates) and the
+# protected VTableHookBase::originalFunction.
+
+SpikeClientReport.h|ClientPoseSource::~ClientPoseSource
+#SpikeClientReport.h|ClientPoseSource::sample
+SpikeClientReport.h|formatClientDeviceLines
+SpikeClientReport.h|clientShouldContinue
+SpikeClientReport.h|runClientSampling
+
+SpikeGuard.h|runGuarded
+
+#SpikeHooks.h|HookApi::~HookApi
+#SpikeHooks.h|HookApi::initialize
+#SpikeHooks.h|HookApi::shutdown
+#SpikeHooks.h|HookApi::isAlreadyInitialized
+#SpikeHooks.h|HookApi::create
+#SpikeHooks.h|HookApi::enable
+#SpikeHooks.h|HookApi::remove
+#SpikeHooks.h|HookApi::statusName
+SpikeHooks.h|initializeHookLibrary
+#SpikeHooks.h|VTableHookBase::VTableHookBase
+SpikeHooks.h|VTableHookBase::install
+SpikeHooks.h|VTableHookBase::remove
+SpikeHooks.h|VTableHookBase::installed
+SpikeHooks.h|VTableHook::original
+
+# Moved out of SpikeDriver.cpp in session 3: no test target compiles that file, so
+# nothing that decides anything may stay in it (doc/driver-spike-handover.md §2.1b).
+#SpikeDriverHooks.h|DriverHookSet::DriverHookSet
+SpikeDriverHooks.h|DriverHookSet::hookDriverContext
+SpikeDriverHooks.h|DriverHookSet::hookServerDriverHost
+SpikeDriverHooks.h|DriverHookSet::hookDriverInput
+SpikeDriverHooks.h|DriverHookSet::removeAll
+SpikeDriverHooks.h|observeGetGenericInterface
+SpikeDriverHooks.h|observeTrackedDeviceAdded
+SpikeDriverHooks.h|observeTrackedDevicePoseUpdated
+SpikeDriverHooks.h|observeCreateBooleanComponent
+SpikeDriverHooks.h|observeUpdateBooleanComponent
+SpikeDriverHooks.h|observeCreateScalarComponent
+
+#SpikeDriverEnvironment.h|OpenVrProperties::OpenVrProperties
+SpikeDriverEnvironment.h|OpenVrProperties::orNullIfUnavailable
+SpikeDriverEnvironment.h|OpenVrProperties::container
+SpikeDriverEnvironment.h|OpenVrProperties::stringProperty
+SpikeDriverEnvironment.h|OpenVrProperties::int32Property
+SpikeDriverEnvironment.h|driverLogSink
+#SpikeDriverEnvironment.h|ModuleApi::~ModuleApi
+#SpikeDriverEnvironment.h|ModuleApi::moduleFromAddress
+#SpikeDriverEnvironment.h|ModuleApi::moduleFileName
+SpikeDriverEnvironment.h|modulePathOfAddress
+
+SpikeInterfaces.h|interfaceFamily
+SpikeInterfaces.h|classifyInterface
+
+SpikeLog.h|processBaseName
+SpikeLog.h|logDirectory
+SpikeLog.h|logPath
+SpikeLog.h|formatTimestamp
+SpikeLog.h|formatLogLine
+#SpikeLog.h|Logger::Logger
+SpikeLog.h|Logger::setStream
+SpikeLog.h|Logger::setSink
+SpikeLog.h|Logger::setTimestampSource
+SpikeLog.h|Logger::isOpen
+SpikeLog.h|Logger::filePath
+SpikeLog.h|Logger::logf
+SpikeLog.h|Logger::write
+SpikeLog.h|Logger::close
+SpikeLog.h|log
+SpikeLog.h|currentLogEnvironment
+SpikeLog.h|localTimestamp
+SpikeLog.h|openProcessLog
+
+SpikeNames.h|deviceClassName
+SpikeNames.h|roleHintName
+SpikeNames.h|endsWith
+SpikeNames.h|isTriggerClick
+
+#SpikeObserver.h|DeviceProperties::~DeviceProperties
+#SpikeObserver.h|DeviceProperties::container
+#SpikeObserver.h|DeviceProperties::stringProperty
+#SpikeObserver.h|DeviceProperties::int32Property
+#SpikeObserver.h|InterfaceHooks::~InterfaceHooks
+#SpikeObserver.h|InterfaceHooks::hookServerDriverHost
+#SpikeObserver.h|InterfaceHooks::hookDriverInput
+#SpikeObserver.h|SpikeObserver::SpikeObserver
+SpikeObserver.h|SpikeObserver::setProperties
+SpikeObserver.h|SpikeObserver::onInterfaceRequested
+SpikeObserver.h|SpikeObserver::onDeviceAdded
+SpikeObserver.h|SpikeObserver::onPose
+SpikeObserver.h|SpikeObserver::onBooleanComponentCreated
+SpikeObserver.h|SpikeObserver::onScalarComponentCreated
+SpikeObserver.h|SpikeObserver::onBooleanComponentUpdated
+SpikeObserver.h|SpikeObserver::onInit
+SpikeObserver.h|SpikeObserver::onRunFrame
+SpikeObserver.h|SpikeObserver::onCleanup
+
+SpikePoseMath.h|cross
+SpikePoseMath.h|add
+SpikePoseMath.h|mul
+SpikePoseMath.h|rotate
+SpikePoseMath.h|compose
+SpikePoseMath.h|poseFromRowMajor34
+SpikePoseMath.h|formatPose
+
+SpikeServer.h|classifyFactoryRequest
+SpikeServer.h|serveFactoryRequest
+SpikeServer.h|componentWasCreated
+#SpikeServer.h|ServerEnvironment::~ServerEnvironment
+#SpikeServer.h|ServerEnvironment::initContext
+#SpikeServer.h|ServerEnvironment::cleanupContext
+#SpikeServer.h|ServerEnvironment::routeLogToDriverLog
+#SpikeServer.h|ServerEnvironment::initHookLibrary
+#SpikeServer.h|ServerEnvironment::shutdownHookLibrary
+#SpikeServer.h|ServerEnvironment::modulePath
+#SpikeServer.h|ServerEnvironment::processId
+#SpikeServer.h|ServerEnvironment::properties
+#SpikeServer.h|ServerEnvironment::hookDriverContext
+#SpikeServer.h|ServerEnvironment::hookServerDriverHost
+#SpikeServer.h|ServerEnvironment::hookDriverInput
+#SpikeServer.h|ServerEnvironment::removeHooks
+#SpikeServer.h|SpikeServer::SpikeServer
+SpikeServer.h|SpikeServer::init
+SpikeServer.h|SpikeServer::cleanup
+SpikeServer.h|SpikeServer::runFrame
+SpikeServer.h|SpikeServer::enterStandby
+SpikeServer.h|SpikeServer::leaveStandby
+SpikeServer.h|SpikeServer::shouldBlockStandbyMode
+#SpikeServer.h|WatchdogEnvironment::~WatchdogEnvironment
+#SpikeServer.h|WatchdogEnvironment::initContext
+#SpikeServer.h|WatchdogEnvironment::cleanupContext
+#SpikeServer.h|SpikeWatchdog::SpikeWatchdog
+SpikeServer.h|SpikeWatchdog::init
+SpikeServer.h|SpikeWatchdog::cleanup
+
+SpikeDriver.cpp|HmdDriverFactory
+SpikeClient.cpp|main

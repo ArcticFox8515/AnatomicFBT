@@ -25,13 +25,66 @@ Requires Conan 2 and Visual Studio 2022. Windows-only (`WIN32` exe, `WinMain` en
   recorded to `recording.tcrec` in the working directory (overwritten per session —
   copy/rename to keep).
 
+### SteamVR driver (spike, see `doc/driver-plan.md` step 1)
+
+- `build-driver.bat` — builds `driver_00trackingcorrector` + `spike_client`, **Release**
+  (the hot pose path is in it, and Release keeps the DLL dependency-free: only
+  `KERNEL32.dll`, since the Conan toolchain links the CRT statically).
+- Only the **Release** DLL is staged to
+  `build/driver/00trackingcorrector/bin/win64/` (the path SteamVR loads); other
+  configs keep the default output dir, so a Debug build of the whole solution cannot
+  silently replace the driver SteamVR is using. `SpikeDriverTest` loads the DLL of
+  its own config (`$<TARGET_FILE:driver_00trackingcorrector>`).
+- `install-driver.bat` / `uninstall-driver.bat` — `vrpathreg adddriver|removedriver` on
+  `build/driver/00trackingcorrector`, with SteamVR located via
+  `%LOCALAPPDATA%\openvr\openvrpaths.vrpath`. Nothing is copied: SteamVR loads the
+  driver straight out of the build tree. Restart SteamVR after (un)installing.
+- **`vrserver.exe` holds the DLL open — close SteamVR before rebuilding the driver.**
+- Spike logs: `%LOCALAPPDATA%\TrackingCorrector\driver-spike-<process>.log`
+  (one file per loading process: `vrserver`, `vrwatchdog`, and
+  `TrackingCorrectorTests` when the tests run it) and, for the driver
+  process, the same lines in SteamVR's `vrserver.txt` via `IVRDriverLog`.
+  `spike_client [seconds]` writes `client-spike-spike_client.log` next to it and to
+  stdout.
+- **Testing bar for driver code** (`doc/driver-spike-handover.md` §2, non-negotiable):
+  every function under `src/spike` either runs in a **unit** test or is a pure
+  forwarder. `SpikeDriverTest` does not count — it `LoadLibrary`s the DLL, which makes
+  it an integration test. The only forwarder files are `SpikeDriver.cpp` and
+  `SpikeClient.cpp`; everything else lives in `SpikeLib` with its
+  openvr/MinHook/Win32/clock dependencies injected as seams. Spike unit tests must not
+  touch the filesystem, the wall clock or the environment — a test whose result depends
+  on the machine proves nothing about code that runs inside `vrserver.exe`.
+- **`SpikeDriver.cpp` is compiled into the DLL only, never into a test target**, so no
+  unit test and no coverage run can reach a single line of it. Therefore every function
+  in it is **one instruction**; two only when the first creates the implementation
+  object and the second calls a method on it (the leaked-singleton accessors, the
+  provider `Init`s). No branch, no loop, no comparison, no arithmetic — those belong in
+  `SpikeLib` with a test (`doc/driver-spike-handover.md` §2.1b).
+- After touching the hooks, run `ctest -C Release` as well as `run-tests.bat` (Debug):
+  `SpikeDriverTest` drives the DLL of its own config, and only the Release build
+  devirtualizes the fake vrserver's calls — the reason its call sites go through
+  `throughVtable()` (`doc/driver-spike-handover.md` §10).
+
 ## Directory / file map
 
 ```
-CMakeLists.txt        3 targets: TrackingCorrectorLib (static), TrackingCorrector (exe),
-                      TrackingCorrectorTests (gtest). C++20.
+CMakeLists.txt        6 targets: TrackingCorrectorLib (static), TrackingCorrector (exe),
+                      TrackingCorrectorTests (gtest), SpikeLib (static, all spike
+                      logic), driver_00trackingcorrector (spike driver DLL),
+                      spike_client (console tool). C++20.
 conanfile.py          Dependencies + copies ImGui backends into src/bindings on generate.
 doc/plan.md           4-milestone design doc. Read before architectural changes.
+doc/driver-plan.md    Phase A design doc for the SteamVR driver (milestone 4): wire
+                      protocol, threading contract, 8 implementation steps. Read before
+                      touching anything driver-related.
+doc/driver-spike-handover.md
+                      State of the step-1 spike: the testing/concurrency bar for driver
+                      code, what is and is not established, the line-coverage backlog,
+                      the started (incomplete) race analysis, and the pending live-run
+                      procedure. Read before continuing the spike.
+doc/spacecalibrator-notes.md
+                      Findings from OpenVR-SpaceCalibrator's driver (hooking, context
+                      setup, pose composition) — the reference the plan is built on.
 src/main.cpp          Entry point: GLFW/GL/ImGui init, config load-or-create, OpenVR init
                       (falls back to manual mode), main loop, split-screen rendering
                       (IK skeleton left, retargeted avatar right), ImGuizmo
@@ -44,10 +97,68 @@ src/model/            Pure data + math + JSON serialization. NO OpenGL/OpenVR �
 src/view/             All OpenGL rendering (Scene).
 src/vr/               OpenVR device tracking (exe-only; converts OpenVR state into
                       model `TrackedDevice` snapshots — the only place OpenVR headers
-                      are included).
+                      are included in the exe).
+src/spike/            THROWAWAY step-1 spike of `doc/driver-plan.md`. Split so that
+                      every function either runs in a unit test or is a pure
+                      forwarder: all logic lives in the `SpikeLib` static library
+                      (linked by the DLL, the client and the tests), and the two
+                      files outside it are adapters exempt from the coverage bar
+                      because no test target compiles them.
+                      `SpikeDriver.cpp` = THE DRIVER ADAPTER, one instruction per
+                      function (two only to create-then-call): `MinHookApi`,
+                      `Win32ModuleApi`, `nowSeconds`, the six detour entry points,
+                      `OpenVrServerEnvironment`, `OpenVrWatchdogEnvironment`, the two
+                      providers, the leaked singletons, `HmdDriverFactory`. It hooks
+                      `GetGenericInterface`, `TrackedDeviceAdded`,
+                      `TrackedDevicePoseUpdated`, `Create/UpdateBooleanComponent`,
+                      `CreateScalarComponent`; observes and logs only, forwards every
+                      call unchanged.
+                      `SpikeClient.cpp` = the client adapter (`IVRSystem` →
+                      `ClientPoseSource`) + `main`. In SpikeLib:
+                      `SpikeObserver.*` (all observation/bookkeeping; deps injected
+                      as `Logger&` / `InterfaceHooks&` / `DeviceProperties*` /
+                      clock fn), `SpikeServer.*` (provider lifecycle behind
+                      `ServerEnvironment`/`WatchdogEnvironment`, factory
+                      classification + `serveFactoryRequest` =
+                      `HmdDriverFactory`'s body), `SpikeHooks.*` (`VTableHookBase`
+                      state machine over the `HookApi` seam — MinHook-free — plus
+                      `initializeHookLibrary`, the `MH_Initialize` status decision),
+                      `SpikeDriverHooks.*` (the vtable index table and log labels as
+                      named constants, `DriverHookSet` with the install order and the
+                      reverse-order `removeAll`, and the six `observe*` functions that
+                      ARE the detour bodies), `SpikeDriverEnvironment.*`
+                      (`OpenVrProperties` over a `vr::VRProperties()` fn-pointer seam,
+                      `driverLogSink`, `ModuleApi` + `modulePathOfAddress`),
+                      `SpikeLog.*` (pure path/line formatting + injectable
+                      `Logger`), `SpikeNames.*` (enum labels, openvr-free header),
+                      `SpikeInterfaces.h` (interface-version decision),
+                      `SpikePoseMath.h` (openvr-free `DriverPose_t` composition +
+                      matrix→pose conversion), `SpikeGuard.h` (`runGuarded`, the one
+                      place an exception is swallowed), `SpikeClientReport.*`
+                      (client sampling loop + line formatting).
+                      Deleted at step 7 when the real `src/driver*` code lands.
+src/driverdll/00trackingcorrector/driver.vrdrivermanifest
+                      SteamVR driver manifest (`alwaysActivate`, name
+                      `00trackingcorrector`). Directory name, manifest `name` and DLL
+                      name must all agree; copied next to `bin/win64/` by a post-build
+                      step. The `00` prefix makes SteamVR load us before other drivers.
 src/bindings/         Vendored ImGui backends (imgui_impl_glfw/opengl3). AUTO-COPIED by
                       conanfile.py from the imgui package — gitignored, never edit.
-tests/                GoogleTest suites mirroring src/model.
+tests/                GoogleTest suites mirroring src/model, plus the spike suites.
+                      `Spike{Observer,Server,Hooks,DriverHooks,DriverEnvironment,Log,ClientReport}Test.cpp`
+                      drive SpikeLib directly against fakes — no DLL, no MinHook, no
+                      vrserver, and (deliberately) no filesystem, clock or
+                      environment: a driver test whose result depends on the machine
+                      proves nothing, so streams are `ostringstream`s, time is an
+                      injected `double`, and MinHook is a fake `HookApi` whose
+                      failure statuses are set per test. `SpikeDriverTest.cpp` is the
+                      DLL-boundary integration proof on top: it loads the spike
+                      driver DLL and drives it through a fake vrserver (fake
+                      `IVRDriverContext`/`IVRServerDriverHost`/`IVRProperties`/
+                      `IVRDriverInput`/`IVRDriverLog`), asserting hook installation on
+                      the plan's vtable indices, unchanged forwarding, metadata reads,
+                      component resolution, trigger edges and the composition wiring —
+                      everything about the spike that does not need SteamVR.
 unity/                Standalone Unity Editor tooling (C#), copied into a project's
                       Editor/ folder — NOT part of the C++ build. `AvatarSkeletonExporter.cs`
                       copies a humanoid avatar's skeleton to our skeleton JSON with no
@@ -314,7 +425,7 @@ unity/                Standalone Unity Editor tooling (C#), copied into a projec
   - `viewMatrix()/projectionMatrix()` — from the last `setViewport`; needed by
     ImGuizmo (call right after the left viewport).
 
-### VR layer (`src/vr/`) — exe-only, only place OpenVR headers are included
+### VR layer (`src/vr/`) — exe-only, only place OpenVR headers are included in the exe
 
 - `OpenVrTracking` (`OpenVrTracking.h/.cpp`) — tracked-device provider. Header is
   OpenVR-free: snapshots come out as model `TrackedDevice` values (OpenVR's standing
@@ -382,7 +493,8 @@ per-target position/rotation drag fields, reset button).
 | imguizmo | cci.20231114 | Translate/rotate gizmos for IK targets |
 | nlohmann_json | 3.11.3 | Config (de)serialization via `to_json`/`from_json` free functions |
 | spdlog | 1.15.3 | Error/info logging to rotating file; linked to the exe only — model layer stays log-free |
-| openvr | 1.16.8 | SteamVR device poses + trigger input; linked to the exe only, headers only in `src/vr/` |
+| openvr | 1.16.8 | SteamVR device poses + trigger input; linked to the exe only, headers only in `src/vr/`. The spike driver DLL uses `openvr_driver.h` **headers only** (no `openvr_api` link — vrserver supplies the implementations) |
+| minhook | 1.3.4 | Vtable detours inside `vrserver.exe`; linked by the driver DLL only. `SpikeLib` stays MinHook-free behind the `HookApi` seam |
 | gtest | 1.15.0 | Tests, wired via `gtest_discover_tests` |
 
 ## Conventions & gotchas
@@ -401,7 +513,7 @@ per-target position/rotation drag fields, reset button).
   (main.cpp). Third-party calls are wrapped at the call site (rethrown as `Error`
   with the original message) so the log says which call threw. No `catch (...)`;
   what we can't report fully, we don't catch.
-- Indentation: 4 spaces in `src/model`, `src/view`, `tests`; tabs in `src/main.cpp`.
+- Indentation: 4 spaces in `src/model`, `src/view`, `src/spike`, `tests`; tabs in `src/main.cpp`.
   Match the file you're editing.
 - `src/bindings/` and `CMakeUserPresets.json` are generated — never edit by hand.
 - Tests: add new suites to the `TrackingCorrectorTests` target in `CMakeLists.txt`;
