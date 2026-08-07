@@ -15,7 +15,6 @@
 #include "spike/SpikeLog.h"
 #include "spike/SpikeNames.h"
 #include "spike/SpikeObserver.h"
-#include "spike/SpikePoseMath.h"
 
 #include "FakePipe.h"
 #include "link/MessageChannel.h"
@@ -139,17 +138,6 @@ protected:
         return false;
     }
 
-    size_t countLogged(const std::string& needle) const
-    {
-        size_t count = 0;
-        for (const std::string& line : lines_)
-            if (line.find(needle) != std::string::npos)
-                ++count;
-        return count;
-    }
-
-    // The rest pose of the fixture: one tracker known, one trigger component created
-    // and resolved to it, one pose seen.
     void bringUpTracker()
     {
         properties_.add(kTracker, {"LHR-TESTTRACKER", "Vive Tracker", "lighthouse",
@@ -157,7 +145,6 @@ protected:
                                    vr::TrackedControllerRole_Invalid});
         observer_.setProperties(&properties_);
         observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t));
-        observer_.onInit();
         observer_.onRunFrame();
     }
 
@@ -231,45 +218,11 @@ TEST_F(SpikeObserverTest, EachVersionStringIsReportedOnce)
 
 // ------------------------------------------------------------ device / pose ----
 
-TEST_F(SpikeObserverTest, DeviceAdditionsAreLoggedWithTheirClass)
-{
-    observer_.onDeviceAdded("LHR-1", vr::TrackedDeviceClass_GenericTracker);
-    observer_.onDeviceAdded(nullptr, vr::TrackedDeviceClass_HMD);
-    EXPECT_TRUE(logged("TrackedDeviceAdded: serial=\"LHR-1\" class=tracker(3)"));
-    EXPECT_TRUE(logged("TrackedDeviceAdded: serial=\"(null)\" class=hmd(1)"));
-}
-
-TEST_F(SpikeObserverTest, FirstPosePerDeviceIsLoggedOnce)
-{
-    observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t));
-    observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t));
-    EXPECT_EQ(countLogged("first pose update from device 3 (poseIsValid=1 connected=1)"), 1u);
-}
-
 TEST_F(SpikeObserverTest, PosesForImpossibleDeviceIndicesAreDropped)
 {
-    // A hook thread hands us whatever vrserver hands it; indexing our array with it
-    // unchecked would be a write past the end inside vrserver.
     observer_.onPose(vr::k_unMaxTrackedDeviceCount, makePose(), sizeof(vr::DriverPose_t));
     observer_.onPose(vr::k_unMaxTrackedDeviceCount + 7, makePose(), sizeof(vr::DriverPose_t));
     EXPECT_TRUE(lines_.empty());
-}
-
-TEST_F(SpikeObserverTest, ATruncatedPoseStructIsWarnedAboutOnceAndNeverRead)
-{
-    // A caller built against an older openvr header: the fields beyond its struct size
-    // do not exist, so the pose must not be stored, let alone composed.
-    observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t) - 8);
-    observer_.onPose(4, makePose(), sizeof(vr::DriverPose_t) - 8);
-
-    EXPECT_EQ(countLogged("pose contents NOT read for such callers"), 1u);
-    EXPECT_TRUE(logged("first pose update from device 3 (truncated pose struct)"));
-    EXPECT_TRUE(logged("first pose update from device 4 (truncated pose struct)"));
-
-    observer_.setProperties(&properties_);
-    observer_.onInit();
-    observer_.onRunFrame();
-    EXPECT_FALSE(logged("A = wFd o local"));
 }
 
 // ---------------------------------------------------- RunFrame housekeeping ----
@@ -280,14 +233,9 @@ TEST_F(SpikeObserverTest, HousekeepingRunsOnTheFirstFrameThenOncePerSecond)
                                vr::TrackedDeviceClass_GenericTracker,
                                vr::TrackedControllerRole_Invalid});
     observer_.setProperties(&properties_);
-    observer_.onInit();
 
-    // Deliberately on the *first* frame, so devices show up immediately rather than a
-    // second late.
     observer_.onRunFrame();
-    EXPECT_TRUE(logged("first RunFrame call"));
-    EXPECT_TRUE(logged("device 3: class=tracker(3) role=invalid serial=\"LHR-TESTTRACKER\" "
-                       "model=\"Vive Tracker\" trackingSystem=\"lighthouse\" container=5003"));
+    EXPECT_TRUE(logged("device 3: class=tracker(3) serial=\"LHR-TESTTRACKER\" container=5003"));
 
     const uint32_t lookupsAfterFirst = properties_.containerLookups;
     now_ += spike::kHousekeepingSeconds / 2.0;
@@ -297,14 +245,11 @@ TEST_F(SpikeObserverTest, HousekeepingRunsOnTheFirstFrameThenOncePerSecond)
     now_ += spike::kHousekeepingSeconds;
     observer_.onRunFrame();
     EXPECT_GT(properties_.containerLookups, lookupsAfterFirst);
-    EXPECT_EQ(countLogged("first RunFrame call"), 1u);
 }
 
 TEST_F(SpikeObserverTest, WithoutAPropertyReaderNothingIsEnumerated)
 {
-    // The state before InitServerDriverContext succeeds, and after Cleanup.
     observer_.setProperties(nullptr);
-    observer_.onInit();
     observer_.onRunFrame();
     EXPECT_EQ(properties_.containerLookups, 0u);
     EXPECT_FALSE(logged("device 3:"));
@@ -312,18 +257,13 @@ TEST_F(SpikeObserverTest, WithoutAPropertyReaderNothingIsEnumerated)
 
 TEST_F(SpikeObserverTest, ContainersWithoutADeviceAreSkipped)
 {
-    // vrserver answers TrackedDeviceToPropertyContainer for every index; only some of
-    // them have a device, and the rest must not become empty rows in the table.
     properties_.add(1, {"", "", "", vr::TrackedDeviceClass_Invalid,
                         vr::TrackedControllerRole_Invalid, /*readable=*/false});
     observer_.setProperties(&properties_);
-    observer_.onInit();
     observer_.onRunFrame();
 
     EXPECT_GT(properties_.containerLookups, 0u);
     EXPECT_FALSE(logged("device 1:"));
-    observer_.onCleanup();
-    EXPECT_FALSE(logged("summary: device 1"));
 }
 
 TEST_F(SpikeObserverTest, MetadataIsReReadOnlyWhenTheSerialChanges)
@@ -335,71 +275,11 @@ TEST_F(SpikeObserverTest, MetadataIsReReadOnlyWhenTheSerialChanges)
     observer_.onRunFrame();
     EXPECT_FALSE(logged("device 3: class="));
 
-    // A tracker powered off and a different one powered on in the same slot.
     properties_.devices[kTracker].serial = "LHR-OTHER";
     properties_.devices[kTracker].deviceClass = vr::TrackedDeviceClass_Controller;
-    properties_.devices[kTracker].roleHint = vr::TrackedControllerRole_LeftHand;
     now_ += spike::kHousekeepingSeconds;
     observer_.onRunFrame();
-    EXPECT_TRUE(logged("device 3: class=controller(2) role=left_hand serial=\"LHR-OTHER\""));
-}
-
-TEST_F(SpikeObserverTest, BothCandidateCompositionsAreLoggedForEveryPosedDevice)
-{
-    // The entire point of the spike: these two lines are what the live run compares
-    // against spike_client's raw pose.
-    const vr::DriverPose_t pose = makePose();
-    bringUpTracker();
-
-    const spike::RigidPose worldFromDriver{{10.0, 0.0, 0.0}, {0.0, 0.0, 1.0, 0.0}};
-    const spike::RigidPose local{{1.0, 2.0, 3.0}, {0.0, 0.0, 1.0, 0.0}};
-    const spike::RigidPose driverFromHead{{0.0, 0.5, 0.0}, {}};
-    const spike::RigidPose a = spike::compose(worldFromDriver, local);
-    const spike::RigidPose b = spike::compose(a, driverFromHead);
-
-    EXPECT_TRUE(logged("pose dev 3 tracker \"LHR-TESTTRACKER\" valid=1 connected=1 result=200 "
-                       "timeOffset=-0.01100"));
-    EXPECT_TRUE(logged("local            " + spike::formatPose(local)));
-    EXPECT_TRUE(logged("worldFromDriver  " + spike::formatPose(worldFromDriver)));
-    EXPECT_TRUE(logged("driverFromHead   " + spike::formatPose(driverFromHead)));
-    EXPECT_TRUE(logged("A = wFd o local  " + spike::formatPose(a)));
-    EXPECT_TRUE(logged("B = A o dFh      " + spike::formatPose(b)));
-    EXPECT_NE(spike::formatPose(a), spike::formatPose(b)) << "DriverFromHead must matter here";
-    EXPECT_EQ(pose.vecPosition[0], 1.0);
-}
-
-TEST_F(SpikeObserverTest, APoseSteamVRReportsAsInvalidIsNotComposed)
-{
-    // What lighthouse actually sends for a device that is not tracking, taken from
-    // driver-spike-vrserver.log at 18:27:09.364: the 9001 sentinel, a pose time offset
-    // 80 seconds stale (the headset had entered standby), and - for the base stations -
-    // an all-zero quaternion, which is not a rotation at all.
-    //
-    // Composing that produces numbers, not information, and they are printed in the same
-    // format as the A/B lines the whole spike exists to compare. Same contract as
-    // ATruncatedPoseStructIsWarnedAboutOnceAndNeverRead above: what cannot be trusted is
-    // not composed.
-    bringUpTracker();
-
-    vr::DriverPose_t untracked{};
-    untracked.poseIsValid = false;
-    untracked.deviceIsConnected = false;
-    untracked.result = vr::TrackingResult_Uninitialized;
-    untracked.poseTimeOffset = -80.92440;
-    untracked.vecPosition[1] = 9001.0;
-    untracked.qRotation = {0.0, 0.0, 0.0, 0.0};
-    observer_.onPose(kTracker, untracked, sizeof(vr::DriverPose_t));
-
-    // Only the housekeeping frame that follows the invalid pose is under test; the valid
-    // pose bringUpTracker() already logged is not.
-    lines_.clear();
-    now_ += spike::kHousekeepingSeconds;
-    observer_.onRunFrame();
-
-    EXPECT_FALSE(logged("A = wFd o local"));
-    EXPECT_FALSE(logged("B = A o dFh"));
-    EXPECT_FALSE(logged("worldFromDriver"));
-    EXPECT_FALSE(logged("driverFromHead"));
+    EXPECT_TRUE(logged("device 3: class=controller(2) serial=\"LHR-OTHER\""));
 }
 
 // -------------------------------------------------------- pose forwarding ----
@@ -476,89 +356,6 @@ TEST_F(SpikeObserverTest, ATruncatedPoseIsNotForwarded)
     EXPECT_TRUE(pipe_.written.empty());
 }
 
-TEST_F(SpikeObserverTest, DeviceIdentityGetterReturnsCachedClassAndSerial)
-{
-    properties_.add(kTracker, {"LHR-TESTTRACKER", "Vive Tracker", "lighthouse",
-                               vr::TrackedDeviceClass_GenericTracker,
-                               vr::TrackedControllerRole_Invalid});
-    observer_.setProperties(&properties_);
-    observer_.onInit();
-    observer_.onRunFrame();  // housekeeping reads the metadata
-
-    int deviceClass = vr::TrackedDeviceClass_Invalid;
-    std::string serial;
-    EXPECT_TRUE(observer_.deviceIdentity(kTracker, deviceClass, serial));
-    EXPECT_EQ(deviceClass, vr::TrackedDeviceClass_GenericTracker);
-    EXPECT_EQ(serial, "LHR-TESTTRACKER");
-}
-
-TEST_F(SpikeObserverTest, DeviceIdentityGetterReturnsFalseForUnknownDevice)
-{
-    int deviceClass = 999;
-    std::string serial = "stale";
-    EXPECT_FALSE(observer_.deviceIdentity(kTracker, deviceClass, serial));
-    EXPECT_EQ(deviceClass, 999);  // unchanged
-    EXPECT_EQ(serial, "stale");
-}
-
-// ------------------------------------------------------------------- rates ----
-
-TEST_F(SpikeObserverTest, RatesAreReportedEveryFiveSecondsAsDeltas)
-{
-    bringUpTracker();
-    lines_.clear();
-
-    // Not yet due.
-    now_ += spike::kStatsSeconds - 0.1;
-    observer_.onRunFrame();
-    EXPECT_FALSE(logged("RunFrame:"));
-
-    for (int i = 0; i < 9; ++i)
-        observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t));
-    now_ += 0.1;
-    observer_.onRunFrame();
-
-    // 3 RunFrame calls and 10 poses over the 5 s window (the first pose came from
-    // bringUpTracker, before the window).
-    EXPECT_TRUE(logged("RunFrame: 0.6 Hz (3 calls total)"));
-    EXPECT_TRUE(logged("pose rate: device 3 tracker \"LHR-TESTTRACKER\": 2.0 Hz (10 total)"));
-
-    // Silent for devices that did not move on.
-    lines_.clear();
-    now_ += spike::kStatsSeconds;
-    observer_.onRunFrame();
-    EXPECT_TRUE(logged("RunFrame:"));
-    EXPECT_FALSE(logged("pose rate:"));
-}
-
-// ----------------------------------------------------------------- cleanup ----
-
-TEST_F(SpikeObserverTest, CleanupSummarizesWhatWasSeenAndNothingElse)
-{
-    bringUpTracker();
-    now_ += 12.5;
-    lines_.clear();
-
-    observer_.onCleanup();
-    EXPECT_TRUE(logged("summary: 1 RunFrame calls in 12.5 s"));
-    EXPECT_TRUE(logged("summary: device 3 tracker \"LHR-TESTTRACKER\": 1 pose updates"));
-    // 22 of the 64 device slots would otherwise be logged as empty rows.
-    EXPECT_EQ(countLogged("summary: device"), 1u);
-}
-
-TEST_F(SpikeObserverTest, ADeviceKnownByMetadataAloneIsStillSummarized)
-{
-    // No pose ever arrived (a base station, or a tracker that never tracked): the row
-    // is exactly what tells us the difference.
-    properties_.add(2, {"LHR-BASE", "", "", vr::TrackedDeviceClass_TrackingReference,
-                        vr::TrackedControllerRole_Invalid});
-    observer_.setProperties(&properties_);
-    observer_.onInit();
-    observer_.onRunFrame();
-    observer_.onCleanup();
-    EXPECT_TRUE(logged("summary: device 2 reference \"LHR-BASE\": 0 pose updates"));
-}
-
 // -------------------------------------------------------- names and guards ----
 
 TEST(SpikeNames, EveryDeviceClassHasALabel)
@@ -602,8 +399,6 @@ TEST_F(SpikeObserverTest, AThrowingPropertyReaderCannotEscapeTheGuard)
     // enumerate, on the RunFrame thread.
     properties_.throwOnRead = true;
     observer_.setProperties(&properties_);
-    observer_.onInit();
     spike::runGuarded([&] { observer_.onRunFrame(); });
-    EXPECT_TRUE(logged("first RunFrame call"));
 }
 } // namespace

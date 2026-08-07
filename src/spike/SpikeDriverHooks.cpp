@@ -54,10 +54,6 @@ bool observeTrackedDeviceAdded(DriverHookSet& hooks, SpikeObserver& observer,
                                vr::ETrackedDeviceClass deviceClass,
                                vr::ITrackedDeviceServerDriver* driver)
 {
-    // Observed *before* the call: vrserver may call straight back into the device driver
-    // (activation) while still inside TrackedDeviceAdded, and those callbacks should
-    // find the device already recorded.
-    runGuarded([&] { observer.onDeviceAdded(serial, deviceClass); });
     return hooks.trackedDeviceAdded.original()(self, serial, deviceClass, driver);
 }
 

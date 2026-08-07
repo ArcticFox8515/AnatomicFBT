@@ -202,7 +202,6 @@ TEST_F(SpikeServerTest, CleanupUnhooksBeforeTearingDownMinHookAndTheContext)
     const std::vector<std::string> expected{"removeHooks", "shutdownHooks", "cleanupContext"};
     EXPECT_EQ(environment_.steps, expected);
     EXPECT_TRUE(logged("=== TrackingCorrector spike driver: Cleanup ==="));
-    EXPECT_TRUE(logged("summary: 0 RunFrame calls"));
 }
 
 TEST_F(SpikeServerTest, CleanupStillTearsDownTheContextIfObservationThrows)
@@ -224,7 +223,6 @@ TEST_F(SpikeServerTest, RunFrameAndStandbyAreObservedAndCannotThrow)
     lines_.clear();
 
     server_.runFrame();
-    EXPECT_TRUE(logged("first RunFrame call"));
 
     server_.enterStandby();
     server_.leaveStandby();

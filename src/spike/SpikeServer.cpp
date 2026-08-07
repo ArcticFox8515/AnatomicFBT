@@ -71,7 +71,6 @@ vr::EVRInitError SpikeServer::init(vr::IVRDriverContext* context)
         }
 
         observer_.setProperties(environment_.properties());
-        observer_.onInit();
 
         // Detour on the raw context pointer: every *other* driver's interface
         // acquisition passes through the same vrserver implementation, so this is how
@@ -96,7 +95,6 @@ void SpikeServer::cleanup()
 {
     runGuarded([&] {
         log_.logf("=== TrackingCorrector spike driver: Cleanup ===");
-        observer_.onCleanup();
         observer_.setProperties(nullptr);
         environment_.removeHooks();
         environment_.shutdownHookLibrary();

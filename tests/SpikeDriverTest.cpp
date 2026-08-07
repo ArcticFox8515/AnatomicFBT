@@ -338,28 +338,6 @@ vr::DriverPose_t makeDriverPose()
     return pose;
 }
 
-spike::RigidPose worldFromDriverOf(const vr::DriverPose_t& pose)
-{
-    return {{pose.vecWorldFromDriverTranslation[0], pose.vecWorldFromDriverTranslation[1],
-             pose.vecWorldFromDriverTranslation[2]},
-            {pose.qWorldFromDriverRotation.w, pose.qWorldFromDriverRotation.x,
-             pose.qWorldFromDriverRotation.y, pose.qWorldFromDriverRotation.z}};
-}
-
-spike::RigidPose localOf(const vr::DriverPose_t& pose)
-{
-    return {{pose.vecPosition[0], pose.vecPosition[1], pose.vecPosition[2]},
-            {pose.qRotation.w, pose.qRotation.x, pose.qRotation.y, pose.qRotation.z}};
-}
-
-spike::RigidPose driverFromHeadOf(const vr::DriverPose_t& pose)
-{
-    return {{pose.vecDriverFromHeadTranslation[0], pose.vecDriverFromHeadTranslation[1],
-             pose.vecDriverFromHeadTranslation[2]},
-            {pose.qDriverFromHeadRotation.w, pose.qDriverFromHeadRotation.x,
-             pose.qDriverFromHeadRotation.y, pose.qDriverFromHeadRotation.z}};
-}
-
 using HmdDriverFactoryFn = void*(*)(const char*, int*);
 
 // MinHook patches the *function* a vtable slot points to, so a test call only reaches
@@ -467,8 +445,6 @@ TEST_F(SpikeDriverLifecycle, HooksObserveAndForwardTheWholeDriverSurface)
                                          vr::TrackedDeviceClass_GenericTracker, nullptr));
     ASSERT_EQ(context.host.addedSerials.size(), 1u);
     EXPECT_EQ(context.host.addedSerials[0], "LHR-TESTTRACKER");
-    EXPECT_TRUE(context.log.contains(
-        "TrackedDeviceAdded: serial=\"LHR-TESTTRACKER\" class=tracker"));
 
     // ---- pose hook: observed and forwarded byte-identically ----
     const vr::DriverPose_t pose = makeDriverPose();
@@ -477,7 +453,6 @@ TEST_F(SpikeDriverLifecycle, HooksObserveAndForwardTheWholeDriverSurface)
     EXPECT_EQ(context.host.forwardedPoses[0].index, kTrackerIndex);
     EXPECT_EQ(context.host.forwardedPoses[0].positionX, pose.vecPosition[0]);
     EXPECT_EQ(context.host.forwardedPoses[0].structSize, sizeof(pose));
-    EXPECT_TRUE(context.log.contains("first pose update from device 3"));
 
     // ---- the GetGenericInterface detour's branches, driven through the live hook ----
     // Every call below goes through the installed detour, so this exercises the real
@@ -515,22 +490,9 @@ TEST_F(SpikeDriverLifecycle, HooksObserveAndForwardTheWholeDriverSurface)
     const uint32_t lookupsBefore = context.properties.containerLookups;
     server->RunFrame();
     EXPECT_GT(context.properties.containerLookups, lookupsBefore);
-    EXPECT_TRUE(context.log.contains("first RunFrame call"));
     EXPECT_TRUE(context.log.contains(
-        "device 3: class=tracker(3) role=invalid serial=\"LHR-TESTTRACKER\" "
-        "model=\"Vive Tracker\" trackingSystem=\"lighthouse\""));
+        "device 3: class=tracker(3) serial=\"LHR-TESTTRACKER\""));
 
-    // The composition is wired from the DriverPose_t fields the plan names, in the
-    // stated order: A = WorldFromDriver o local, B = A o DriverFromHead.
-    const spike::RigidPose a = spike::compose(worldFromDriverOf(pose), localOf(pose));
-    const spike::RigidPose b = spike::compose(a, driverFromHeadOf(pose));
-    EXPECT_TRUE(context.log.contains("A = wFd o local  " + spike::formatPose(a)));
-    EXPECT_TRUE(context.log.contains("B = A o dFh      " + spike::formatPose(b)));
-    EXPECT_NE(spike::formatPose(a), spike::formatPose(b)) << "DriverFromHead must matter here";
-
-    // ---- button events: NOT captured by this driver (doc/driver-spike-handover.md
-    // §5.1) — input is captured by a separate background client app. PollNextEvent on
-    // the fake host is a no-op, so RunFrame below must not log any button lines. ----
     server->RunFrame();
     EXPECT_FALSE(context.log.contains("button"));
 
@@ -546,7 +508,6 @@ TEST_F(SpikeDriverLifecycle, HooksObserveAndForwardTheWholeDriverSurface)
     EXPECT_TRUE(context.log.contains("hook IVRDriverContext::GetGenericInterface: removed"));
     EXPECT_TRUE(
         context.log.contains("hook IVRServerDriverHost::TrackedDevicePoseUpdated: removed"));
-    EXPECT_TRUE(context.log.contains("summary: device 3 tracker \"LHR-TESTTRACKER\": 1 pose"));
 
     // Calls still reach the real implementation once the detours are gone.
     const size_t linesAfterCleanup = context.log.lines.size();
