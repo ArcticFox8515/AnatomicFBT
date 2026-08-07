@@ -1,21 +1,31 @@
 # Handover: SteamVR driver spike (step 1 of `doc/driver-plan.md`)
 
-Status: the spike DLL compiles, loads, and **now meets the line-coverage bar of §2.1**
-(session 2 restructured `src/spike` for it — see §6). The **concurrency proof of §2.2
-is still incomplete and its known defects are still unfixed** (§7), and **no live
-SteamVR run has happened** (§8). Read `doc/driver-plan.md` first, then this file, then
-`AGENTS.md`.
+Written at the end of session 4, which **ran the spike driver inside a live SteamVR
+session** and analysed the telemetry. Step 1 has now served its purpose: the questions
+it existed to answer are answered (§3), and what remains is a defect list (§5), not
+exploration.
+
+Read `doc/driver-plan.md` first, then this file, then `AGENTS.md`.
+
+**The test suite is deliberately red.** Three tests assert contracts the spike violates.
+They are the reproductions of §5.2 and §5.4 and must stay failing until those fixes
+land:
+
+- `SpikeHooksTest.AnInstallReenteredDuringCreateKeepsAnOriginalToCallThrough`
+- `SpikeHooksTest.AnInstallReenteredDuringCreateHooksTheFunctionOnlyOnce`
+- `SpikeObserverTest.APoseSteamVRReportsAsInvalidIsNotComposed`
+
+Debug: 268 passed, 3 failed, 271 total. Release was **not** rebuilt or run in session 4.
 
 ---
 
 ## 1. Why this file exists
 
-The spike DLL runs **inside `vrserver.exe`**, which SteamVR may run elevated. A crash,
-a hang, or a data race in our code takes down the user's whole VR session, and a
-`throw` escaping into vrserver kills it outright. Code review alone is not an
-acceptable gate for that. The rules in §2 were set by the repo owner during the first
-session and are non-negotiable for everything under `src/spike/` and, later,
-`src/driver*/`.
+The spike DLL runs **inside `vrserver.exe`**, which SteamVR may run elevated. A crash, a
+hang or a data race in our code takes down the user's whole VR session, and a `throw`
+escaping into vrserver kills it outright. Code review alone is not an acceptable gate
+for that. The rules in §2 were set by the repo owner and are non-negotiable for
+everything under `src/spike/` and, later, `src/driver*/`.
 
 ---
 
@@ -27,541 +37,370 @@ session and are non-negotiable for everything under `src/spike/` and, later,
 > parameters, during the test run. The only exemption is pass-through/pimpl-style
 > forwarding (`void f(int a) { impl->f(a); }`).
 
-Not "every case" — but every **line**, including error branches, early returns, log
-branches, and the standby/watchdog entry points. If a line cannot be reached from a
-test, that is a design smell: restructure until it can (see §6).
+Not "every case" — every **line**, including error branches, early returns, log
+branches and the standby/watchdog entry points. If a line cannot be reached from a test,
+that is a design smell: restructure until it can.
 
-This must be **measured**, not argued. Proposed tool: **OpenCppCoverage** (free, works
-with MSVC PDBs, HTML + Cobertura output), driven by a `run-coverage.bat` next to
-`run-tests.bat`. It is not a Conan package — installing it is a decision for the repo
-owner. Until it is in place, coverage claims are estimates and must be labelled as
-such. **The claim in §6 is exactly such an unmeasured claim: it is line-by-line
-reading of the code plus mutation spot-checks, not a coverage report.**
+This must be **measured**, not argued. Proposed tool: **OpenCppCoverage** (free, MSVC
+PDBs, HTML + Cobertura), driven by a `run-coverage.bat` next to `run-tests.bat`. It is
+not a Conan package, so installing it is the owner's decision. Until then, every coverage
+claim in this repo is reading plus mutation spot-checks, and must be labelled as such.
 
-#### 2.1b The adapter exemption is narrower than it was being read (session 3)
+### 2.1a The adapter exemption is narrow
 
-`SpikeDriver.cpp` is compiled into `driver_00trackingcorrector` **and into nothing
-else**. No test target compiles it, so:
-
-- no unit test can execute a single line of it, and
-- an OpenCppCoverage run over `TrackingCorrectorTests` will report it as 0%, because
-  `SpikeDriverTest` reaches it only through `LoadLibrary` — a side effect, i.e. an
-  integration test, which under §2.1a is not evidence about decisions at all.
-
-Session 2 leaned on "most of `SpikeDriver.cpp` is executed by `SpikeDriverTest`". That
-is true and it is not the bar. The rule the owner set in session 3, and the one that now
-holds:
+`SpikeDriver.cpp` is compiled into `driver_00trackingcorrector` **and nothing else**. No
+test target compiles it, so no unit test can execute a line of it and a coverage run will
+report it as 0%. `SpikeDriverTest` reaches it only through `LoadLibrary`, which is an
+integration test and therefore not evidence about decisions.
 
 > Every function in `SpikeDriver.cpp` is **one instruction**. Two at most, and only when
 > the first creates the implementation object and the second calls a method on it. No
 > branch, no loop, no comparison, no arithmetic — if you are writing one, it belongs in
 > `SpikeLib` with a test.
 
-What that forced out of the DLL, all of it previously unreachable (§6a):
-the MinHook status classification, the vtable index table, the install/removal order,
-every detour body, the `IVRProperties` / `IVRDriverLog` availability checks, the property
-read error check, the module-path buffer handling, and `HmdDriverFactory`'s dispatch.
+`SpikeClient.cpp` is the same kind of file, and is not executed by any test at all.
 
-### 2.1a Unit tests must not depend on the machine
+### 2.1b Unit tests must not depend on the machine
 
-Added in session 2, after a first attempt at §6 wrote tests that opened real files
-under `%TEMP%`: a spike test may not touch the **filesystem, the wall clock, the
-environment, or any real thread**. The result of a test that does is a property of the
-machine it ran on, and proves nothing about code that runs inside `vrserver.exe`.
-Concretely: streams are `std::ostringstream`, time is an injected `double`, MinHook is
-a fake `HookApi`, `LOCALAPPDATA` / the module path arrive as a `LogEnvironment` value.
-The one exception is `SpikeDriverTest`, which loads the real DLL — the DLL opens its
-own log file, and that is the price of testing the real binary.
+A spike test may not touch the **filesystem, the wall clock, the environment, or any real
+thread**. The result of a test that does is a property of the machine it ran on and proves
+nothing about code inside `vrserver.exe`. Concretely: streams are `std::ostringstream`,
+time is an injected `double`, MinHook is a fake `HookApi`, the environment arrives as a
+value. The one exception is `SpikeDriverTest`, which loads the real DLL and so lets the
+DLL open its own log file.
+
+**Corollary, established in session 4:** a concurrency defect that can only be shown with
+real threads is a defect in *our* design, not a limit of testing. Both hook-install races
+below reproduce single-threaded, by letting the fake `HookApi` re-enter `install()` from
+inside `create()` — which is exactly the interleaving a second thread produces. No
+threads in tests.
 
 ### 2.2 Concurrency: proof, not tests
 
-Races in the hook threads cannot be caught by unit tests. For every piece of shared
-mutable state, the handover/PR must contain a written enumeration of **every** access
-path (which thread, which entry point, holding which lock) and an argument for why no
-interleaving is harmful. §7 starts that document — it is incomplete and it already
-found real defects.
+For every piece of shared mutable state, the handover/PR must contain a written
+enumeration of **every** access path (which thread, which entry point, holding which
+lock) and an argument for why no interleaving is harmful. §6 holds that document. It is
+incomplete.
 
 ### 2.3 Process rules (violations happened; do not repeat)
 
-- Answer the question that was asked **before** changing code. Refactors and
-  experiments need agreement first.
-- Edit source files **only** with the edit/write tools. Never with shell
-  `-replace` / `sed`-style munging: a regex escape wrote `\&\&` into
-  `SpikeInterfaces.h` and broke the build in session 1. **It happened again in session
-  2** — a PowerShell `Set-Content` round-trip re-encoded one em dash in `AGENTS.md` into
-  `U+FFFD`; caught by scanning the file for `U+FFFD` and repaired with the edit tool.
-  The rule is not advice.
+- Answer the question that was asked **before** changing code. Refactors and experiments
+  need agreement first.
+- **One topic per message.** If a reply starts on issue N it ends on issue N.
+- Edit source files **only** with the edit/write tools. Never shell `-replace` /
+  `sed`-style munging: a regex escape wrote `\&\&` into `SpikeInterfaces.h` and broke the
+  build in session 1, and a PowerShell `Set-Content` round-trip re-encoded an em dash in
+  `AGENTS.md` into `U+FFFD` in session 2.
 - Never write outside the workspace. The only sanctioned external path is
-  `C:\Users\ARCTIC~1\AppData\Local\Temp\opencode`. A stray backup was left at
-  `%TEMP%\SpikeInterfaces.bak` — **delete it** (pending, needs owner's OK).
+  `C:\Users\ARCTIC~1\AppData\Local\Temp\opencode`. A stray backup is still at
+  `%TEMP%\SpikeInterfaces.bak` — delete it (pending, needs owner's OK).
 - Do not say "verified" for something that was only compiled or only loaded. State
   exactly what was executed.
+- **Close Steam, not just SteamVR, before building the Release driver** (§8).
 
 ---
 
-## 3. What exists right now
+## 3. What the live run established
 
-### Targets (`CMakeLists.txt`)
+Session 4, ~86 s session, one Meta Quest 3 (`oculus` driver) plus 7 lighthouse devices
+(2 Index controllers, a Tundra Tracker, a VIVE Tracker 3.0, 3 base stations), with
+`spike_client` sampling alongside. Logs:
+`%LOCALAPPDATA%\TrackingCorrector\driver-spike-vrserver.log`,
+`client-spike-spike_client.log`, `driver-spike-Steam.log`.
 
-| Target | Kind | Notes |
-|---|---|---|
-| `SpikeLib` | STATIC | **All** spike logic. openvr **include dirs only**, no MinHook, no openvr_api. Linked by the three targets below. |
-| `driver_00trackingcorrector` | SHARED | Spike driver DLL = `SpikeDriver.cpp` (adapter) + `SpikeLib` + `minhook::minhook`. |
-| `spike_client` | console exe | `SpikeClient.cpp` (adapter) + `SpikeLib` + `openvr::openvr`. No glm any more (the matrix→pose conversion moved into `SpikePoseMath.h`). |
-| `TrackingCorrectorTests` | exe | Links `SpikeLib`; builds the seven spike unit-test files plus `SpikeDriverTest.cpp`, which gets `SPIKE_DRIVER_DLL="$<TARGET_FILE:driver_00trackingcorrector>"` and `add_dependencies` on the DLL. It does **not** compile `SpikeDriver.cpp` — see §2.1b. |
-
-Staging: **only the Release DLL** goes to
-`build/driver/00trackingcorrector/bin/win64/` (the path SteamVR loads) plus the
-manifest copied to `build/driver/00trackingcorrector/`. Other configs keep the default
-output dir, so a Debug build cannot silently replace the DLL SteamVR is using, and the
-tests load the DLL of their own config.
-
-### Files
-
-```
-SpikeLib (every line of these runs in a unit test):
-src/spike/SpikeObserver.h/.cpp   All observation and bookkeeping: interface dispatch,
-                                 device table, component table, trigger edges, pose
-                                 sampling, 1 s housekeeping / 5 s statistics, summary.
-                                 Seams: Logger&, InterfaceHooks&, DeviceProperties*,
-                                 NowFn (monotonic seconds).
-src/spike/SpikeServer.h/.cpp     Provider lifecycle behind ServerEnvironment /
-                                 WatchdogEnvironment; classifyFactoryRequest();
-                                 serveFactoryRequest() (HmdDriverFactory's body);
-                                 componentWasCreated().
-src/spike/SpikeHooks.h/.cpp      VTableHookBase install/remove state machine over the
-                                 HookApi seam (MinHook-free) + typed VTableHook<F> +
-                                 initializeHookLibrary() (the MH_Initialize status
-                                 classification, incl. ALREADY_INITIALIZED).
-src/spike/SpikeDriverHooks.h/.cpp
-                                 The driver's six hooks: the function-pointer types, the
-                                 vtable index table + log labels as named constants,
-                                 DriverHookSet (installs, reverse-order removeAll,
-                                 implements InterfaceHooks) and the six observe*
-                                 functions that ARE the detour bodies — forward
-                                 unchanged, then notify the observer under runGuarded.
-                                 Moved out of SpikeDriver.cpp in session 3 (§2.1b).
-src/spike/SpikeDriverEnvironment.h/.cpp
-                                 The vrserver/Win32 glue that has decisions in it:
-                                 OpenVrProperties (DeviceProperties over a
-                                 vr::VRProperties() function-pointer seam, incl. the
-                                 "no IVRProperties" and "property read failed"
-                                 branches), driverLogSink() (the IVRDriverLog copy,
-                                 incl. "no driver log"), ModuleApi + modulePathOfAddress()
-                                 (GetModuleHandleEx/GetModuleFileName composition and
-                                 buffer handling). Also session 3.
-src/spike/SpikeLog.h/.cpp        Pure path/timestamp/line formatting + Logger (stream,
-                                 sink and timestamp source injected). The four
-                                 adapter functions at the bottom (log(),
-                                 currentLogEnvironment(), localTimestamp(),
-                                 openProcessLog()) are branch-free forwarders.
-src/spike/SpikeNames.h/.cpp      Enum labels + isTriggerClick(); header is openvr-free
-                                 so the client can use it too.
-src/spike/SpikeInterfaces.h      classifyInterface() + interfaceFamily().
-src/spike/SpikePoseMath.h        openvr-free double-precision rigid-pose math +
-                                 poseFromRowMajor34() (HmdMatrix34 -> pose).
-src/spike/SpikeGuard.h           runGuarded(): the one place an exception is swallowed.
-src/spike/SpikeClientReport.h/.cpp
-                                 Client sampling loop behind ClientPoseSource + the
-                                 line formatting.
-
-Adapters (compiled into no test target, therefore one instruction per function — §2.1b):
-src/spike/SpikeDriver.cpp        MinHookApi, Win32ModuleApi, nowSeconds, the six detour
-                                 entry points, OpenVrServerEnvironment,
-                                 OpenVrWatchdogEnvironment, the two providers, the
-                                 leaked-singleton accessors, HmdDriverFactory.
-src/spike/SpikeClient.cpp        OpenVrClientSource + main().
-
-src/driverdll/00trackingcorrector/driver.vrdrivermanifest
-tests/SpikeObserverTest.cpp      29 tests: the whole observation surface, plus the enum
-                                 labels, the component-name predicate and runGuarded.
-tests/SpikeServerTest.cpp        18 tests: provider lifecycle, watchdog, standby policy,
-                                 factory classification, serveFactoryRequest and
-                                 component-creation decisions.
-tests/SpikeHooksTest.cpp         10 tests: the hook state machine against a fake MinHook
-                                 + the hook-library status classification.
-tests/SpikeDriverHooksTest.cpp   15 tests: the vtable index table, which detour goes in
-                                 which slot, reverse-order removal, and every detour
-                                 body (unchanged forwarding, observe-before vs
-                                 observe-after, failed component creation).
-tests/SpikeDriverEnvironmentTest.cpp
-                                 16 tests: properties over a fake IVRProperties, the
-                                 driver-log sink, the module-path composition.
-tests/SpikeLogTest.cpp           12 tests: path/format purity + Logger behaviour.
-tests/SpikeClientReportTest.cpp  7 tests: matrix->pose branches + the sampling loop.
-tests/SpikeDriverTest.cpp        12 tests: the fake-vrserver harness on the real DLL (2)
-                                 + interface classification (6) + composition math (4).
-                                 INTEGRATION, not unit: it LoadLibrary's the DLL.
-build-driver.bat                 Release build of DLL + client (close SteamVR first).
-install-driver.bat               vrpathreg adddriver on the staged dir.
-uninstall-driver.bat             vrpathreg removedriver.
-```
-
-`conanfile.py` gained `minhook/1.3.4`. `AGENTS.md` documents all of the above.
-
-### Logs
-
-- Driver: `%LOCALAPPDATA%\TrackingCorrector\driver-spike-<process>.log`
-  (`vrserver`, `vrwatchdog`, `TrackingCorrectorTests`) **and** `IVRDriverLog` →
-  SteamVR's `vrserver.txt`.
-- Client: `%LOCALAPPDATA%\TrackingCorrector\client-spike-spike_client.log` + stdout.
-
-### Build/test state (end of session 3)
-
-- Debug: `cmake --build build --config Debug` clean; `ctest -C Debug` **268/268 passed**
-  (160 before the session-2 restructure, 227 after it; 120 of the 268 are `Spike*`).
-- Release: clean; `ctest -C Release` **268/268 passed**. Running the suite in Release
-  matters and is part of the routine — it caught a bug the Debug run could not (see the
-  devirtualization note in §10).
-- The 41 tests added in session 3 all cover code that moved out of `SpikeDriver.cpp`
-  (§2.1b): 15 in `SpikeDriverHooksTest`, 16 in `SpikeDriverEnvironmentTest`, 3 in
-  `SpikeHooksTest` (hook-library status), 6 in `SpikeServerTest` (`serveFactoryRequest`,
-  standby policy). Nothing about the DLL's behaviour changed, and `SpikeDriverTest` —
-  which drives the real DLL — still passes unmodified, which is the evidence that the
-  extraction was behaviour-preserving.
-- **Not re-checked after the session-3 refactor:** `dumpbin /dependents` and `/exports`
-  on the staged Release DLL, and whether the staged DLL matches the current source. The
-  Release DLL *was* rebuilt (it is what `ctest -C Release` loaded), but the dependency
-  and export lists were last inspected in session 2, before the extraction.
-
-State as of end of session 2, still valid unless contradicted above:
-
-- `dumpbin /dependents` on the staged Release DLL showed **only `KERNEL32.dll`**,
-  `/exports` exactly `HmdDriverFactory` — the `<filesystem>` / `<fstream>` /
-  `std::function` additions did not pull a CRT DLL in (static CRT).
-- Non-vacuity spot-check: four deliberate mutations (drop the "first stream wins" guard
-  in `Logger::setStream`; drop the `original_ = nullptr` rollback after an
-  `MH_EnableHook` failure; double the statistics interval in `onRunFrame`; flip a sign
-  in one branch of `poseFromRowMajor34`). Three were caught immediately; the fourth was
-  **not**, because the 180° test rotations produce symmetric matrices in which that
-  sign cancels — the test was extended with asymmetric 160° rotations per branch, after
-  which the mutation is caught. All four mutations were reverted and the suite is green.
-  **The session-3 tests have had no such mutation check yet.**
+- **The pose composition is `B`**: `world = worldFromDriver ∘ (vecPosition, qRotation) ∘
+  driverFromHead`, i.e. what the `DriverPose_t` comments say. Evidence: device 1 driver
+  `B` = (1.1037, 1.3424, 0.6518) @18:26:50.267 against client raw
+  (1.0915, 1.3168, 0.6379) @18:26:50.979, while `A` = (1.2051, 1.2201, 0.6546) and its
+  quaternion is unrelated. The candidates differ by the whole `driverFromHead`
+  translation, 0.10-0.15 m on a controller, an order of magnitude above sampling skew and
+  hardware noise. Same verdict independently on device 4. **Record this in
+  `doc/driver-plan.md` "Verified groundwork" — step 3's `DriverPoseMath` depends on it.**
+- **Cross-driver visibility works.** All 8 devices, belonging to two foreign drivers,
+  arrived through hooks we installed; the driver-side device set and ids match what
+  `spike_client` saw client-side. The `00` prefix plus the `GetGenericInterface` detour
+  does what `doc/spacecalibrator-notes.md` promised.
+- **Driver-side metadata by index works** for devices we do not own: serial, class, role
+  hint, model, tracking system, container handle. Mid-session arrivals are picked up
+  within one housekeeping second.
+- **Rates**: `RunFrame` ~95-104 Hz (7710 calls); HMD poses 71.8 Hz; each lighthouse
+  device 370-410 Hz, so roughly **1.6 k pose callbacks/s across 4 devices**, on driver
+  threads. This is the number the concurrency and locking work has to survive.
+- **`unPoseStructSize`** was always `sizeof(DriverPose_t)` = 280; the truncated-struct
+  warning never fired.
+- **Hook lifecycle is clean**: six hooks installed on the plan's vtable indices, removed
+  in reverse order at `Cleanup`, no crash, no hang, no SteamVR complaint.
+- **Standby happens** (`EnterStandby` at 18:27:04) and matters: afterwards devices keep
+  sending poses with `poseIsValid=0` and `poseTimeOffset` around **-80 s**. Stale poses
+  are a real input, not a hypothetical.
+- **`poseIsValid=1` does not mean sane.** The Tundra Tracker reported
+  (1305.50, 7837.01, -4230.18) — ~9 km — with `result=Running_OK`, driver-side *and*
+  client-side, for its whole valid stretch. Base stations send `qRotation` all zeros,
+  which is not a rotation. The real driver needs validity, quaternion and magnitude gates
+  before anything reaches the solver.
+- **Interface versions in the wild are not the ones we build against.** vrserver handed
+  out `IVRServerDriverHost_005` and `IVRDriverInput_004` alongside the `_006` / `_003` we
+  hook. No device was lost to `_005`. `_004` is why §5.1 exists.
+- **`raw` ≈ `standing` on this machine** (differences ~1e-4), so the run did *not*
+  discriminate the two universes. Do not read it as confirmation of the coordinate-space
+  assumption in `doc/driver-plan.md`; that assumption is still an assumption.
 
 ---
 
-## 4. What is actually established, and what is not
+## 4. Claims from session 4 that were investigated and withdrawn
 
-Executed and observed (Debug/Release builds on this machine):
+Recorded so they are not raised again:
 
-- DLL compiles and links with no `openvr_api`; `dumpbin /dependents` shows **only
-  `KERNEL32.dll`** (Conan toolchain links the CRT statically, so no CRT DLL is needed
-  inside vrserver). `dumpbin /exports` shows exactly `HmdDriverFactory`.
-- `LoadLibrary` + `HmdDriverFactory` works; both providers are returned; an unknown
-  interface name yields `nullptr` + `VRInitError_Init_InterfaceNotFound` (105).
-- Through the fake-vrserver harness (in-process, no SteamVR): MinHook patches the
-  vtable slots the plan hardcodes (`GetGenericInterface` 0, `TrackedDeviceAdded` 0,
-  `TrackedDevicePoseUpdated` 1, `Create/UpdateBooleanComponent` 0/1,
-  `CreateScalarComponent` 2); detour signatures are ABI-correct; hooked calls are
-  forwarded unchanged; `IVRProperties` metadata reads work; a boolean component
-  resolves to a device id; trigger rising/falling edges are logged; `Cleanup` removes
-  the hooks. Mutation-checked once: moving the pose hook to vtable index 2 makes 4
-  assertions fail, so the harness is not vacuous.
-- `vrpathreg.exe` located via `%LOCALAPPDATA%\openvr\openvrpaths.vrpath` →
-  `C:\Program Files (x86)\Steam\steamapps\common\SteamVR`.
-- `spike_client` without SteamVR: `VR_Init failed: Not starting vrserver for background
-  app (121)` — the intended behaviour.
-
-**Not established (needs the live run):** which composition formula (`A` = WorldFromDriver∘local,
-`B` = A∘DriverFromHead) matches the client raw pose; real device classes/serials; real
-pose rate and `RunFrame` cadence; real trigger component paths and whether any
-controller is scalar-only; whether other drivers' interfaces route through the same
-vrserver implementation (the load-order/`00`-prefix assumption); behaviour under device
-connect/disconnect.
+- *"The spike cannot settle A vs B from its own logs because the two samplers are
+  unsynchronized."* The samplers are unsynchronized and it does not matter: the
+  separation being measured is 0.10-0.15 m, the sampling skew costs centimetres. The
+  claim also leaned on the HMD's logged identity transforms as if that were a property of
+  the design.
+- *"Our `RunFrame` work caused the `RunFrame` collapse to 11.5 Hz at 18:26:34."* It did
+  not. We emitted 180 log lines in that 10 s window and ~490 lines per 10 s afterwards
+  while `RunFrame` sat at 100 Hz, and the per-second property scan covers all 64 slots
+  regardless of device count. The dip tracks device *activation* — vrserver's own work —
+  and `doc/driver-plan.md` already reasons that a slow `RunFrame` costs us nothing but
+  delayed metadata.
 
 ---
 
-## 5. Test inventory (79 spike tests)
+## 5. Work for the next session
 
-**Unit tests against fakes (SpikeLib, no DLL / no MinHook / no vrserver / no
-filesystem / no clock):**
+In this order.
 
-- `SpikeObserverTest` (24) — interface dispatch (hook host, hook input, unsupported
-  version ×2, not needed, vrserver returned NULL, null version string, dedupe across
-  repeated requests); device-added logging; first pose per device; poses for
-  out-of-range indices dropped; truncated `unPoseStructSize` warned once and never
-  read; boolean/scalar component creation incl. null names; trigger edges (down,
-  repeat, up, unknown handle counted, unresolved device logged as `?`); housekeeping on
-  the first frame then once per second; no property reader; containers without a
-  device; metadata re-read only when the serial changes; component→device resolution
-  and the never-resolved case; both candidate compositions against `spike::compose`
-  computed in the test; the 5 s rate report as a delta; the cleanup summary incl. the
-  skip for untouched device slots and a metadata-only device; a throwing property
-  reader contained by `runGuarded`.
-- `SpikeNames` (4) + `SpikeGuard` (1) — every enum label arm, the trigger-name suffix
-  rule, and that neither a `std::exception` nor a non-exception throw escapes a hook.
-- `SpikeServerTest` (7) — Init's hook order; a failing driver context passed back
-  unchanged with nothing hooked; MinHook failing → `VRInitError_Driver_Failed`; a throw
-  during Init failing the load instead of reaching vrserver; Cleanup's ordering
-  (unhook → MinHook down → context released → log closed) and that it still releases
-  the context when observation throws; RunFrame/standby observed and unable to throw.
-- `SpikeWatchdogTest` (2) + `SpikeFactory` (3) — the watchdog's success and
-  context-failure paths, and the factory's three decisions incl. `nullptr`.
-- `SpikeHooksTest` (7) — install lands on the requested vtable slot with the requested
-  detour; double install is a no-op; null object refused; `MH_CreateHook` failure;
-  `MH_EnableHook` failure rolls back and clears `original`; remove is idempotent;
-  reinstall after remove.
-- `SpikeLogTest` (12) — `processBaseName` / `logDirectory` / `logPath` /
-  `formatTimestamp` / `formatLogLine` edge cases; line format; sink content; first
-  stream wins; close silences both outputs; unusable and null streams refused; writing
-  with no stream and no sink; the default timestamp source's shape.
-- `SpikeClientReportTest` (7) — `poseFromRowMajor34` round-trips for every
-  largest-component branch, including asymmetric rotations (see the mutation note in
-  §3); the client line format matching the driver's columns; the duration predicate;
-  the sampling loop with and without devices.
+### 5.1 Remove the input hooks; get input from `PollNextEvent` instead
 
-**Integration proof on the real DLL (`SpikeDriverTest`, 2 + 10 pure tests):**
+**Why:** they observed nothing. `IVRDriverInput_003` was hooked from our own eager fetch
+at 18:25:43.877; the drivers that matter asked for `IVRDriverInput_004`
+(18:25:44.182, logged `NOT HOOKED`). In 86 s with two Index controllers: zero
+`CreateBooleanComponent`, zero `CreateScalarComponent`, zero trigger lines, and zero
+"components created before our hook" counts — so nothing at all used the version we
+hooked. Chasing `_004` would mean a newer `openvr_driver.h` than conan's 1.16.8 and three
+more detours inside vrserver for data that is available without any hook: **VR events
+(`PollNextEvent`)**.
 
-`SpikeDriverLifecycle` loads the DLL and drives a fake vrserver:
-- factory serves both providers, rejects unknown interfaces, tolerates a `nullptr`
-  interface name and a `nullptr` return code;
-- `GetInterfaceVersions()[0] == IVRSettings_Version`;
-- `Init` → all six context interfaces requested, `IVRDriverInput` fetched through the
-  detour, all six hooks report "installed" on the plan's vtable indices;
-- `TrackedDeviceAdded` / `TrackedDevicePoseUpdated` observed + forwarded unchanged;
-- component creation, trigger-name recognition, the detour's five branches, dedupe;
-- `RunFrame` → metadata line, component→device resolution, pose sample lines whose
-  `A`/`B` strings equal `spike::compose` computed independently in the test;
-- trigger DOWN/repeat/up, unknown handle tolerated; standby entry points;
-- `Cleanup` → "removed" lines, summary lines, and no further observation.
+**Remove:** the three `IVRDriverInput` detours and their entry points; `hookDriverInput`
+on both `DriverHookSet` and the `InterfaceHooks` seam; `ServerEnvironment::hookDriverInput`;
+`InterfaceAction::HookDriverInput` and the `driverInputVersion` parameter of
+`classifyInterface`; the component table, `componentByHandle_`, `unknownBooleanUpdates_`,
+`resolveComponents()`, the trigger-edge logging and the component summary in
+`SpikeObserver`; `componentWasCreated()`; `isTriggerClick()`; and every test that exists
+only for the above (`SpikeObserverTest` component/trigger cases, the
+`SpikeDriverHooksTest` component detour cases, the `SpikeDriverTest` component and
+trigger assertions, plus the fake `IVRDriverInput` in that harness).
 
-Mutation-checked once (session 1): moving the pose hook to vtable index 2 makes 4
-assertions fail, so the harness is not vacuous.
+**Then update `doc/driver-plan.md`**, which currently specifies the button path as
+`CreateBooleanComponent` + `UpdateBooleanComponent` hooks with a scalar fallback
+(§"Buttons", and the `DeviceButtons` message). The replacement is an event source. Note
+while doing it: the plan's reason for driver-side input was that phase A deletes the
+app's OpenVR client session — that reason survives, only the mechanism changes.
 
-`SpikeInterfaceClassification` (6) and `SpikePoseMath` (4): pure functions, direct
-assertions, analytic expected values.
+### 5.2 Fix the hook-install race (reproduced, two failing tests)
+
+**Evidence it is live, not theoretical:** `hook IVRServerDriverHost::TrackedDeviceAdded:
+installed` at 18:25:43.854 (the eager install in `SpikeServer::init`) and `interface
+"IVRServerDriverHost_006": hooking` at 18:25:43.958 — two callers on one hook object,
+104 ms apart, one of them on an arbitrary thread, with nothing serializing them. Same for
+`IVRDriverInput_003` at 43.877. `install()` publishes `target_` only at its very end
+(`SpikeHooks.cpp:42`), so the second caller does not see `installed()` and walks into
+`MH_CreateHook` on an already-hooked function.
+
+**Reproductions** (`tests/SpikeHooksTest.cpp`, single-threaded — the fake's `create()`
+re-enters `install()`, and `*original` is written before the re-entry exactly as
+`MH_CreateHook` publishes its trampoline before returning):
+
+- `AnInstallReenteredDuringCreateKeepsAnOriginalToCallThrough` — first create OK, second
+  returns `MH_ERROR_ALREADY_CREATED`. Result today: `installed()` true, `original()`
+  **null**, because the loser's rollback (`SpikeHooks.cpp:30`) cleared the winner's
+  trampoline. Every detour body opens with `hooks.x.original()(...)`, so that state is a
+  call through null inside vrserver, at 1.6 kHz.
+- `AnInstallReenteredDuringCreateHooksTheFunctionOnlyOnce` — both creates accepted: two
+  create/enable pairs on one function, a hook chained onto a hook, and `removeAll()`
+  unwinds one of them. 4 recorded calls instead of 2.
+
+**Fix direction:** one serialization point for all installs, dedupe by hook object rather
+than by version string, and stop clearing `original_` on a failure path that can run
+after another caller has published the hook. The `HookApi` seam means the fix is
+unit-testable. Do not add threads to the tests.
+
+### 5.3 Rework `Logger`: formatting and dispatch to a sink, nothing else. The sink is spdlog
+
+`Logger` currently carries a second, unplanned output mechanism next to the `LogSink` the
+plan specifies (`doc/driver-plan.md` §"Logging"): a `shared_ptr<ostream>`, a path, an
+`isOpen`/`filePath`/`close` surface, its own timestamp source and line formatter, and a
+`flush()` on every line — under a mutex.
+
+**Keep:** `LogSink = std::function<void(const char*)>`, `setSink`, `logf`, `log()`.
+
+**Delete:** `setStream`, `stream_`, `path_`, `isOpen()`, `filePath()`, `close()`,
+`TimestampFn`/`setTimestampSource`/`timestamp_`, `localTimestamp`, `formatTimestamp`,
+`formatLogLine`, `LogEnvironment`, `currentLogEnvironment`, `logPath`, `logDirectory`,
+`processBaseName`, `openProcessLog`, and `mutex_` — plus the call sites
+(`SpikeServer.cpp:68` logs the file path, `:115` and `:160` close the log,
+`SpikeClient.cpp:83,98,113`) and the `SpikeLogTest` cases that exist only for the deleted
+code. Tests that use `setStream` (`SpikeHooksTest`, `SpikeDriverHooksTest`,
+`SpikeServerTest`) move to `setSink`, which most spike tests already use.
+
+Dropping the mutex is only sound with one rule attached: **the sink is installed once and
+never cleared.** Today `close()` clears it during `Cleanup` while pose threads are still
+running, which is defect §6.3 in another guise. With the spdlog logger leaked like every
+other process-wide object in the DLL, `sink_` is written before any hook is installed
+(`SpikeServer::init` wires logging at `:65`, installs hooks at `:85-91`) and only read
+afterwards.
+
+spdlog then owns destinations, timestamps, buffering and flushing. `SpikeLib` stays
+spdlog-free so the test binary does not link it; the spdlog logger is created in the
+adapter side (`SpikeDriver.cpp` / `SpikeClient.cpp`), which needs `spdlog::spdlog` added
+to `driver_00trackingcorrector` and `spike_client` in `CMakeLists.txt`.
+
+**Open, for the owner:** whether the spdlog logger keeps a sink that copies lines to
+`IVRDriverLog` (SteamVR's `vrserver.txt`). If not, `driverLogSink()`,
+`ServerEnvironment::routeLogToDriverLog()` and their three tests go as well.
+
+### 5.4 `logPoseSamples` must not compose a pose SteamVR calls invalid (reproduced)
+
+`logPoseSamples` gates on `lastPoseValid` (`SpikeObserver.cpp:284`), which means "a pose
+struct was stored", not `pose.poseIsValid` — the field name is itself the bug. So it
+composed and printed four transform lines per untracked device: base-station zero
+quaternions, the 9001 sentinel, the Tundra Tracker's 9 km position, `timeOffset=-80.9`.
+That is most of the tail of the log, in the same format as the `A`/`B` lines the spike
+exists to compare.
+
+**Reproduction:** `SpikeObserverTest.APoseSteamVRReportsAsInvalidIsNotComposed`, built
+from the actual 18:27:09.364 pose. It asserts only that the four composition lines are
+absent, so it holds under either contract below.
+
+**Contract decision for the owner:** for an invalid pose, drop all six lines for that
+device, or keep the one-line header (`valid=0 result=1 timeOffset=-80.92440` — how the
+standby staleness became visible at all) and drop only the four composition lines? Once
+decided, add the matching header assertion to the test.
 
 ---
 
-## 6. Coverage: how the restructure closed the backlog (session 2)
+## 6. Postponed to a later iteration: the concurrency defects
 
-Session 1's list of never-executed lines (watchdog Init/Cleanup, the standby callbacks,
-every failure path in `Init`, the `catch (...)`s, `onPose`'s early return and truncated
-branch, the component-creation error paths, `refreshDeviceMetadata`'s three skips, the
-whole 5 s `logRates` path, most `deviceClassName`/`roleHintName` arms, `onCleanup`'s
-skip, `SpikeLog`'s failure branches, `VTableHook`'s failure branches, and
-`SpikeClient.cpp` in its entirety) is **closed**, by doing what §6 of the previous
-handover proposed:
+The owner's decision at the end of session 4: fix §5 first, then this. The state
+inventory and the analysis are still valid and still incomplete.
 
-1. **`SpikeLib`** (static) holds every spike source except the two adapters, so the
-   logic is constructible in a test instead of only reachable through `LoadLibrary`.
-   openvr_driver.h is used for its *types* only.
-2. **Seams instead of globals.** `SpikeObserver` takes `Logger&`, `InterfaceHooks&`,
-   `DeviceProperties*` and a `NowFn` (monotonic seconds — the 1 s / 5 s branches are
-   tested by advancing a `double`, no sleeping). `SpikeServer` / `SpikeWatchdog` take a
-   `ServerEnvironment` / `WatchdogEnvironment` covering `InitServerDriverContext`,
-   `MH_Initialize`, the module path, the pid, the hook installs and the teardown.
-   `VTableHookBase` talks to a `HookApi` instead of MinHook. `Logger` is handed a
-   stream, a sink and a timestamp source.
-3. **Decisions extracted from the adapters** so nothing that branches lives in an
-   untested file: `classifyFactoryRequest` (incl. `nullptr`), `componentWasCreated`
-   (the `result != None` / `handle == nullptr` guard the detours use),
-   `clientShouldContinue`, `poseFromRowMajor34`, `logPath` / `logDirectory` /
-   `processBaseName` / `formatTimestamp`, and `runGuarded` (the single `catch (...)`).
-4. **The two adapter files are the whole exemption.** `SpikeDriver.cpp` and
-   `SpikeClient.cpp` contain only forwarders — the six detours (observe through
-   `runGuarded`, forward unchanged), `MinHookApi`, `OpenVrDeviceProperties`,
-   `OpenVrServerEnvironment`, `OpenVrWatchdogEnvironment`, the two providers,
-   `HmdDriverFactory`, `OpenVrClientSource`, `main`. Most of `SpikeDriver.cpp` is still
-   executed by `SpikeDriverTest` through the real DLL; `SpikeClient.cpp` is not
-   executed at all (it needs SteamVR), which is precisely why nothing but forwarding
-   may live in it.
-5. **The DLL-boundary lifecycle test is kept** as the integration proof on top.
-
-Not covered, deliberately, and all of it inside the two adapter files: the
-`MH_ERROR_ALREADY_INITIALIZED` branch of `initHookLibrary`, the `vr::VRProperties()`
-null check in `properties()`, `MinHookApi::statusName` (no MinHook call fails in the
-DLL test), and all of `SpikeClient.cpp`.
-
-**This is still an unmeasured claim** (§2.1): it is reading plus the mutation
-spot-checks in §3. Installing OpenCppCoverage and adding `run-coverage.bat` remains the
-open item, and is the only thing that turns "every line" into a fact.
-
----
-
-## 7. Concurrency proof — STARTED, INCOMPLETE, DEFECTS FOUND
-
-Threads in play (per `doc/spacecalibrator-notes.md` §8):
-1. vrserver main thread — `Init`, `RunFrame`, `Cleanup`, standby callbacks.
-2. Arbitrary per-driver threads — `TrackedDevicePoseUpdated`,
-   `Create/UpdateBooleanComponent`, `CreateScalarComponent`, and any other driver's
-   `GetGenericInterface` calls, all arriving through our detours concurrently.
-3. Whatever thread SteamVR calls `HmdDriverFactory` on (once per process).
-
-### Shared state inventory (updated for the session-2 structure)
+Threads in play (`doc/spacecalibrator-notes.md` §8): the vrserver main thread (`Init`,
+`RunFrame`, `Cleanup`, standby); arbitrary per-driver threads (`TrackedDevicePoseUpdated`
+and other drivers' `GetGenericInterface`, measured at ~1.6 k calls/s in §3); and whatever
+thread calls `HmdDriverFactory`.
 
 | State | Owner | Accessed from | Lock |
 |---|---|---|---|
-| `devices_`, `components_`, `componentByHandle_`, `interfaces_`, `poseSizeWarned_`, `unknownBooleanUpdates_`, `properties_` | `SpikeObserver` | hook threads + main thread | `SpikeObserver::mutex_` — **held on every access as written today** |
-| `runFrameCount_`, `runFrameCountAtStats_`, `startedAt_`, `housekeepingAt_`, `statsAt_` | `SpikeObserver` | main thread only (`onInit`, `onRunFrame`, `onCleanup`) | none — relies on a main-thread-only invariant that is now **commented in the header but still not enforced** |
-| `HookSet` in `hooks()` (six `VTableHook` objects: `target_`, `original_`, `name_`) | `SpikeDriver.cpp` file scope, leaked | installed from the main thread **and** from detours; `original_` read by every detour on arbitrary threads | **none** |
-| `Logger` in `log()` (`stream_`, `sink_`, `timestamp_`, `path_`) | `SpikeLog.cpp`, leaked | all threads | `Logger::mutex_` on **every** member access, `filePath()` included |
+| `devices_`, `interfaces_`, `poseSizeWarned_`, `properties_` | `SpikeObserver` | hook threads + main | `SpikeObserver::mutex_`, held on every access |
+| `runFrameCount_`, `runFrameCountAtStats_`, `startedAt_`, `housekeepingAt_`, `statsAt_` | `SpikeObserver` | main only | none — invariant commented, not enforced |
+| the six `VTableHook`s (`target_`, `original_`, `name_`) | `SpikeDriver.cpp` file scope, leaked | installed from main **and** from detours; `original_` read by every detour | **none** |
+| `Logger` state | `SpikeLog.cpp`, leaked | all threads | `Logger::mutex_` on every access |
 
-### Defect status
+1. **Double-install race — reproduced, fix scheduled as §5.2.**
+2. **Unsynchronized publication of `original_` — open.** Detours read it on arbitrary
+   threads with no acquire while `install()` writes it. Practically survivable on x86-64,
+   formally a data race. Fix: `std::atomic<void*>`, loaded once at detour entry. **Not
+   reproducible by any test** — an aligned pointer store is not torn and MSVC has no
+   ThreadSanitizer; this one is an argument, per §2.2.
+3. **Teardown race in `Cleanup` — open, worst consequence.** `MH_RemoveHook` rewinds
+   threads out of the patched target, but a thread already inside our detour body can
+   read `original_` after `remove()` nulled it. `Cleanup` runs on the main thread with
+   pose threads live. The null-out must go regardless of which fix is chosen.
+4. **DLL-unload race — mostly addressed.** Every process-wide object is created with
+   `new` in a function-static accessor and never destroyed, so a late detour touches no
+   destroyed object. The DLL's *code* being unmapped while hooks point into it remains
+   exposed; SpaceCalibrator has the same exposure. Document it, do not pretend it away.
+5. **Main-thread-only invariant — partly addressed.** Commented in `SpikeObserver.h`, not
+   enforced. A debug thread-id assert is the remaining work.
+6. **Blocking under the lock — open, and now measured.** `logPoseSamples` (`:280`),
+   `logRates` (`:327`), `resolveComponents` (`:259`) and `onCleanup` (`:195`) log while
+   holding `SpikeObserver::mutex_`, and pose threads take that same lock 1.6 k times a
+   second. §5.3 makes each line cheap; it does not fix the lock discipline. The
+   structural fix is snapshot under lock, release, then log.
 
-1. **Double-install race on `VTableHook` (real, STILL UNFIXED).**
-   `SpikeObserver::onInterfaceRequested` serializes installs behind `mutex_` + the
-   `interfaces_` dedupe, **but `SpikeServer::init` also calls
-   `environment_.hookServerDriverHost()` / `hookDriverInput()` eagerly, bypassing the
-   dedupe entirely** (it has to: the context caches those interfaces before our detour
-   exists). Another driver's thread can be inside the detour path for the same version
-   string at the same moment, so two threads can call `install()` on the same hook
-   object concurrently: `installed()` check → `create` → writes to `target_`/`original_`
-   are all unsynchronized. Outcome ranges from a duplicate hook to a torn `original_` —
-   i.e. a bad call target inside vrserver.
-   *Fix direction:* one serialization point for all installs (install only under
-   `mutex_`, dedupe by hook object, not by version string), or make `VTableHookBase`
-   internally synchronized. The restructure moved this code behind the `HookApi` seam,
-   which means a fix can now be unit-tested — but no fix has been made.
-2. **Unsynchronized publication of `original_` (real, STILL UNFIXED).** Detours do
-   `hooks().x.original()(...)` on arbitrary threads with no atomic/acquire, while
-   `install()` writes it. Practically survivable on x86-64, formally a data race.
-   *Fix direction:* `std::atomic<void*>` in `VTableHookBase`, loaded once at detour
-   entry.
-3. **Teardown race in `Cleanup` (real, worst consequence, STILL UNFIXED).**
-   `MH_RemoveHook` rewinds threads out of the *patched target*, but a thread already
-   executing **inside our detour body** can then read `original_` after `remove()`
-   nulled it → call through null. `Cleanup` runs on the main thread while pose threads
-   are still live.
-   *Fix direction:* never null `original_`; gate detour bodies on an atomic `enabled`
-   flag; or accept SpaceCalibrator's "remove all, then never touch" ordering and prove
-   it — but the null-out must go either way.
-4. **DLL-unload race (mostly addressed).** Every piece of process-wide state is now
-   created with `new` in a function-static accessor and **never destroyed** (`log()`,
-   `hookApi()`, `hooks()`, `interfaceHooks()`, `observer()`, and both providers), so a
-   detour that runs after the DLL's static destructors would have fired no longer
-   touches destroyed objects. The remaining exposure is the DLL's *code* being unmapped
-   while hooks still point into it — nothing our code can do about that; it is the same
-   exposure SpaceCalibrator has, and it must stay documented rather than pretended away.
-5. **`logFilePath()` returning a reference without the lock — FIXED.** It is now
-   `Logger::filePath()`, returning `std::string` by value under `mutex_`.
-6. **Main-thread-only invariant (partly addressed).** The `runFrameCount_` / tick
-   fields are grouped under a comment in `SpikeObserver.h` saying they are main-thread
-   only. Still not *enforced*: a debug thread-id assert is the remaining work.
-
-Also to be proved, not yet analysed:
-- Lock ordering: `SpikeObserver::mutex_` → `Logger::mutex_` is the only nesting today
-  (logging under the state lock in `resolveComponents`, `logPoseSamples`, `logRates`,
-  `onCleanup`); the log sink calls into vrserver's `IVRDriverLog`, which must be assumed
-  not to re-enter us. Confirm and state it as an invariant.
-- **Blocking under the lock:** `Logger::write` does stream I/O with a `flush()` on every
-  line **while `SpikeObserver::mutex_` is held** in several places, and pose threads take
-  that same lock. This violates the plan's "a hook thread never blocks" contract and
-  will matter more once the pipe write joins the picture. Move logging outside the lock.
-- `MH_Initialize` / `MH_Uninitialize` being called from `Init`/`Cleanup` while another
-  driver could be loading (MinHook itself is thread-safe; our sequencing around it is
-  what needs the argument).
-
-**Defects 1-3 and 6 are still open.** The concurrency work should land *before* the live
-SteamVR run, because the failure mode is "SteamVR dies and we don't know why".
+Also still to be argued: lock ordering (`SpikeObserver::mutex_` → `Logger::mutex_` is the
+only nesting today, and the driver-log sink calls into vrserver, which must be assumed not
+to re-enter us), and the sequencing around `MH_Initialize`/`MH_Uninitialize` while another
+driver could be loading.
 
 ---
 
-## 8. The live run (still pending — this is the point of step 1)
+## 7. Documentation that the live run made wrong
 
-1. Close SteamVR. `build-driver.bat` (Release).
-2. `install-driver.bat`, restart SteamVR.
-3. Hold every device still. Run `build\Release\spike_client.exe 30`.
-4. Compare, at equal timestamps, `driver-spike-vrserver.log` against
-   `client-spike-spike_client.log`:
-   - whichever of `A = wFd o local` / `B = A o dFh` equals the client's `raw` line
-     settles the composition formula for `src/driver/DriverPoseMath` (step 3);
-   - the `raw` vs `standing` difference confirms the coordinate-space assumption in
-     `doc/driver-plan.md` §"Coordinate space".
-5. Then: pull both triggers (expect `trigger DOWN` lines with the right device),
-   power a tracker off/on (device table refresh), check `pose rate:` and `RunFrame:`
-   lines for cadence, and grep for `NOT HOOKED` / `returned NULL` — either means the
-   real driver's assumptions are wrong.
-6. Record the findings **in `doc/driver-plan.md`** (§"Verified groundwork" and the
-   risks list), because steps 3-7 are designed against them.
-7. `uninstall-driver.bat` when done.
+- `AGENTS.md`: "**`vrserver.exe` holds the DLL open — close SteamVR before rebuilding**"
+  and the log process list "`vrserver`, `vrwatchdog`, `TrackingCorrectorTests`".
+- `build-driver.bat` header comment: same claim about vrserver.
+- This file's §2.3 now carries the correct rule; the two above still need fixing.
 
-Gotcha: `vrserver.exe` holds the DLL open — SteamVR must be closed before every driver
-rebuild.
+Correct facts: the watchdog provider is loaded by **`steam.exe`** on this SteamVR version
+(`driver-spike-Steam.log`, `HmdDriverFactory("IVRWatchdogProvider_001")` at 18:27:15,
+5 s after vrserver's `Cleanup`), `watchdog Cleanup` is never called, and the DLL was still
+mapped in `steam.exe` with SteamVR closed. Since `CMakeLists.txt:130-131` points the
+Release linker straight at the staged path, a Release driver build fails with `LNK1104`
+until **Steam itself** exits.
 
 ---
 
-## 9. Open decisions for the owner
+## 8. Discoveries worth not re-learning
 
-1. ~~**Scope:** do the coverage restructure on the throwaway spike?~~ **Decided in
-   session 2: yes.** `src/spike` was restructured so that every function either runs in
-   a unit test or is a pure forwarder (§6). The same shape is what steps 3-7 need
-   anyway, so it is not wasted.
-2. **Keep or revert `src/spike/SpikeInterfaces.h`** and the `onInterfaceRequested`
-   switch — added without being asked in session 1. Still open; it is kept for now and
-   is unit-tested, and its `classifyInterface` is the reason the "unsupported version"
-   path can be tested at all.
-3. **Install OpenCppCoverage** (or another MSVC-compatible coverage tool) so the line
-   bar is measured rather than claimed. **Still the biggest open item** — §6's claim is
-   reading + mutation spot-checks, not a report.
-4. Whether the extra hooks I added beyond the plan's step-1 list
-   (`TrackedDeviceAdded`, `CreateScalarComponent`) stay — each is extra risk inside
-   vrserver for extra information.
-5. ~~Delete `%TEMP%\SpikeInterfaces.bak`.~~ Not touched in session 2 (writing or
-   deleting outside the workspace needs the owner's OK); still pending.
-6. **Concurrency (§7 defects 1-3, 6):** fix on the spike before the live run, or accept
-   the risk for a deliberate, supervised run? The failure mode is SteamVR dying with no
-   explanation, so the recommendation is to fix first.
-
----
-
-## 10. Discoveries worth not re-learning
-
-- `VR_INIT_SERVER_DRIVER_CONTEXT` / `InitServerDriverContext` fetches and **caches**
-  `IVRServerDriverHost`, `IVRSettings`, `IVRProperties`, `IVRDriverLog`,
-  `IVRDriverManager`, `IVRResources` *before* our `GetGenericInterface` detour can
-  exist. So the detour only ever sees later requests — ours (`IVRDriverInput`) and
-  other drivers'. That is why the interfaces we care about must also be hooked eagerly
-  from the pointers the context already holds. `SpikeDriver.cpp` calls
-  `vr::InitServerDriverContext` directly instead of the macro so the failure can be
-  logged.
+- `InitServerDriverContext` fetches and **caches** `IVRServerDriverHost`, `IVRSettings`,
+  `IVRProperties`, `IVRDriverLog`, `IVRDriverManager`, `IVRResources` *before* our
+  `GetGenericInterface` detour can exist. The detour only ever sees later requests. That
+  is why those interfaces must also be hooked eagerly from the pointers the context
+  already holds — and it is the source of the double-install race in §5.2.
 - Hooking works globally because MinHook patches the *function body* the vtable slot
-  points to, which is shared by every instance of vrserver's concrete class — that is
-  the whole reason other drivers' devices become visible.
-- Vtable indices confirmed against the conan `openvr/1.16.8` header (`IVRDriverContext`
-  0; `IVRServerDriverHost_006` 0/1; `IVRDriverInput_003` 0/1/2/3).
-- `k_InterfaceVersions` lists the interfaces a *driver implements* (Settings,
-  ITrackedDeviceServerDriver, …), not the host interfaces — returning it verbatim is
-  the ABI check SteamVR demands.
-- Client-side raw universe enum is `vr::TrackingUniverseRawAndUncalibrated` (not
-  `TrackingUniverseRaw`).
-- The Conan toolchain sets `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded[Debug]`, i.e.
-  **static CRT** — a driver DLL with no CRT DLL dependency in any config.
-- `unPoseStructSize` may be smaller than `sizeof(DriverPose_t)` for a caller built
-  against an older header; fields must not be read in that case (handled, and now
-  tested — `SpikeObserverTest.ATruncatedPoseStructIsWarnedAboutOnceAndNeverRead`).
+  points at, shared by every instance of vrserver's concrete class. That is why other
+  drivers' devices become visible, and why deduping installs by version string is safe for
+  coverage but not for correctness.
+- Vtable indices, from conan `openvr/1.16.8`: `IVRDriverContext::GetGenericInterface` 0;
+  `IVRServerDriverHost_006` `TrackedDeviceAdded` 0, `TrackedDevicePoseUpdated` 1.
+- `k_InterfaceVersions` lists the interfaces a *driver implements*, not the host
+  interfaces — returning it verbatim is the ABI check SteamVR demands.
+- Client-side raw universe enum is `vr::TrackingUniverseRawAndUncalibrated`.
+- The Conan toolchain sets `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded[Debug]`, i.e. static
+  CRT — the DLL depends on `KERNEL32.dll` only, in any config.
+- `openvr.h` and `openvr_driver.h` cannot be included in one translation unit but can be
+  linked into one binary; hence the openvr-free headers in `SpikeNames.h` /
+  `SpikeClientReport.h` and why `spike_client` can link `SpikeLib`.
+- MinHook's `MH_OK` is 0, which is what lets `HookApi` speak plain `int`.
+- **A hook test must force real virtual dispatch.** Calling a fake directly lets a Release
+  build devirtualize and inline it, skipping the patched body: forwarding assertions still
+  pass while observation assertions fail, which reads exactly like a broken hook. Hence
+  `throughVtable()` in `SpikeDriverTest`, and hence **run `ctest -C Release` as well as
+  Debug for anything touching the hooks.**
+- Log lines contain non-ASCII em dashes (`SpikeObserver.cpp:50`, `SpikeServer.cpp:75`),
+  which reach the log file as raw UTF-8 bytes and read as mojibake in ANSI viewers. MSVC
+  is not given `/utf-8`; it works by accident. Keep log strings ASCII.
 - Housekeeping deliberately runs on the **first** `RunFrame`, not one second in.
-- Tests writing to `%LOCALAPPDATA%\TrackingCorrector\driver-spike-TrackingCorrectorTests.log`
-  is a side effect of the DLL-boundary test — and the *only* filesystem side effect the
-  test suite has (§2.1a).
-- `openvr.h` and `openvr_driver.h` cannot be included in the same translation unit, but
-  they can be linked into the same binary: the types they share come from the same
-  inlined `vrtypes.h` with the same include guard. That is why `SpikeNames.h` /
-  `SpikeClientReport.h` are openvr-free headers with the openvr include confined to
-  their `.cpp`, and why `spike_client` can link `SpikeLib`.
-- MinHook's `MH_OK` is 0, which is what lets `HookApi` speak plain `int` and keep
-  `SpikeLib` MinHook-free.
-- **A hook test must force a real virtual dispatch.** MinHook patches the *function* a
-  vtable slot points to, so calling a fake directly (`context.host.TrackedDeviceAdded(…)`)
-  lets a Release build devirtualize and inline it, skipping the patched body — the
-  forwarding assertions still pass (the inlined body has the same side effects) while
-  the observation assertions fail, which reads exactly like a broken hook. This is why
-  `SpikeDriverTest` routes every such call through `throughVtable()` (a `volatile`
-  pointer). It cost one Release-only failure to find; **run `ctest -C Release` as well
-  as Debug for anything touching the hooks.**
+- `%LOCALAPPDATA%\TrackingCorrector\driver-spike-TrackingCorrectorTests.log` is written by
+  `SpikeDriverTest` loading the real DLL, and is the only filesystem side effect the test
+  suite has (§2.1b).
 
 ---
 
-## 11. Suggested order of work in the next session
+## 9. Build, run, install
 
-1. Rebuild Debug + full `ctest` (expect 227) **and Release + `ctest -C Release`**;
-   confirm green (§3, and the devirtualization note in §10).
-2. Settle the remaining §9 decisions with the owner (coverage tooling, the extra hooks,
-   `SpikeInterfaces.h`, the stray `%TEMP%` file).
-3. Concurrency: fix §7 defects 1-3 and 6, update the proof in §7 as part of the same
-   change. The `HookApi` seam means the install/remove synchronization can now be
-   unit-tested rather than argued.
-4. Coverage tooling (OpenCppCoverage + `run-coverage.bat`), then re-check §6's claim
-   against the report instead of against reading.
-5. Only then the live SteamVR run (§8), and record the findings in
-   `doc/driver-plan.md`.
+- `build-driver.bat` — Release DLL + `spike_client`. **Exit Steam first** (§7).
+- `install-driver.bat` / `uninstall-driver.bat` — `vrpathreg adddriver|removedriver` on
+  `build/driver/00trackingcorrector`; nothing is copied, SteamVR loads the driver out of
+  the build tree. Restart SteamVR after either.
+- `run-tests.bat` — Debug `ctest`. Expect the three intentional failures listed at the
+  top until §5.2 and §5.4 land.
+- `ctest -C Release` — required for anything touching the hooks (§8).
+- Live-run procedure, if another one is needed: hold every device still (session 4 did
+  not, which is why the composition evidence is a margin argument rather than an
+  equality), run `spike_client <seconds>` alongside, then grep the driver log for
+  `NOT HOOKED` and `returned NULL`.
+
+---
+
+## 10. Open decisions for the owner
+
+1. **OpenCppCoverage** (§2.1) — still the biggest open item; until it exists the coverage
+   bar is claimed, not measured.
+2. **The invalid-pose contract** in §5.4: drop all six lines, or keep the header.
+3. **`IVRDriverLog` output** in §5.3: does the spdlog logger still copy lines into
+   SteamVR's `vrserver.txt`?
+4. **`%TEMP%\SpikeInterfaces.bak`** — still there, still needs an OK to delete.
+5. Whether `TrackedDeviceAdded` and `CreateScalarComponent` — hooks added beyond the
+   plan's step-1 list — stay. `CreateScalarComponent` goes with §5.1 regardless;
+   `TrackedDeviceAdded` earned its place (it is how device arrival was observed at all).

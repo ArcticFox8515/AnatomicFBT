@@ -472,6 +472,40 @@ TEST_F(SpikeObserverTest, BothCandidateCompositionsAreLoggedForEveryPosedDevice)
     EXPECT_EQ(pose.vecPosition[0], 1.0);
 }
 
+TEST_F(SpikeObserverTest, APoseSteamVRReportsAsInvalidIsNotComposed)
+{
+    // What lighthouse actually sends for a device that is not tracking, taken from
+    // driver-spike-vrserver.log at 18:27:09.364: the 9001 sentinel, a pose time offset
+    // 80 seconds stale (the headset had entered standby), and - for the base stations -
+    // an all-zero quaternion, which is not a rotation at all.
+    //
+    // Composing that produces numbers, not information, and they are printed in the same
+    // format as the A/B lines the whole spike exists to compare. Same contract as
+    // ATruncatedPoseStructIsWarnedAboutOnceAndNeverRead above: what cannot be trusted is
+    // not composed.
+    bringUpTracker();
+
+    vr::DriverPose_t untracked{};
+    untracked.poseIsValid = false;
+    untracked.deviceIsConnected = false;
+    untracked.result = vr::TrackingResult_Uninitialized;
+    untracked.poseTimeOffset = -80.92440;
+    untracked.vecPosition[1] = 9001.0;
+    untracked.qRotation = {0.0, 0.0, 0.0, 0.0};
+    observer_.onPose(kTracker, untracked, sizeof(vr::DriverPose_t));
+
+    // Only the housekeeping frame that follows the invalid pose is under test; the valid
+    // pose bringUpTracker() already logged is not.
+    lines_.clear();
+    now_ += spike::kHousekeepingSeconds;
+    observer_.onRunFrame();
+
+    EXPECT_FALSE(logged("A = wFd o local"));
+    EXPECT_FALSE(logged("B = A o dFh"));
+    EXPECT_FALSE(logged("worldFromDriver"));
+    EXPECT_FALSE(logged("driverFromHead"));
+}
+
 // ------------------------------------------------------------------- rates ----
 
 TEST_F(SpikeObserverTest, RatesAreReportedEveryFiveSecondsAsDeltas)

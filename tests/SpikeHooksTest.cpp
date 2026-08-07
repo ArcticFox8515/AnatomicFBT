@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <functional>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -34,6 +35,10 @@ void detour() {}
 // fake only has to answer the same question the adapter answers with one comparison.
 constexpr int kFakeAlreadyInitialized = 1;
 
+// MinHook's MH_ERROR_ALREADY_CREATED: what the *second* MH_CreateHook on one function
+// returns. Only the loser of a concurrent install ever sees it.
+constexpr int kFakeAlreadyCreated = 2;
+
 class FakeHookApi : public spike::HookApi
 {
 public:
@@ -57,9 +62,23 @@ public:
     {
         calls.push_back({"create", target});
         detours.push_back(detourFunction);
-        if (createStatus == spike::kHookOk)
+        const int status = nextCreateStatus();
+        // MH_CreateHook writes the trampoline out-parameter before it returns, so the
+        // winner of a race has already published its `original` by the time the loser
+        // runs its rollback. Ordering the fake the same way is what makes the loser's
+        // damage visible.
+        if (status == spike::kHookOk)
             *original = trampoline;
-        return createStatus;
+        // The re-entry seam: a second install() lands here, inside the first one's
+        // create, which is exactly where a second thread sits — after the `installed()`
+        // check and before `target_` is published. One shot, or it recurses forever.
+        if (onCreate)
+        {
+            const std::function<void()> reentry = onCreate;
+            onCreate = nullptr;
+            reentry();
+        }
+        return status;
     }
 
     int enable(void* target) override
@@ -83,12 +102,26 @@ public:
     std::vector<Call> calls;
     std::vector<void*> detours;
     int createStatus = spike::kHookOk;
+    // Per-call statuses, for the cases where the same function is created twice and the
+    // two calls must answer differently. Falls back to createStatus when exhausted.
+    std::vector<int> createStatusQueue;
+    std::function<void()> onCreate;
     int enableStatus = spike::kHookOk;
     int initializeStatus = spike::kHookOk;
     int initializeCalls = 0;
     int shutdownCalls = 0;
     int lastStatusNameQuery = spike::kHookOk;
     void* trampoline = reinterpret_cast<void*>(&slotTwo);
+
+private:
+    int nextCreateStatus()
+    {
+        if (createStatusQueue.empty())
+            return createStatus;
+        const int status = createStatusQueue.front();
+        createStatusQueue.erase(createStatusQueue.begin());
+        return status;
+    }
 };
 
 class SpikeHooksTest : public ::testing::Test
@@ -149,6 +182,53 @@ TEST_F(SpikeHooksTest, InstallingTwiceIsANoOp)
 
     EXPECT_TRUE(hook.install("Fake::SlotZero", &object_, 0, &detour));
     EXPECT_EQ(api_.calls.size(), callsAfterFirst);
+}
+
+// ---- two callers, one hook object ------------------------------------------------
+//
+// The sequential double install above is the easy half. The live run showed the other
+// half in driver-spike-vrserver.log: the eager install from SpikeServer::init ("hook
+// IVRServerDriverHost::TrackedDeviceAdded: installed", 18:25:43.854) and a second
+// install driven by another caller's GetGenericInterface ("interface
+// \"IVRServerDriverHost_006\": hooking", 18:25:43.958) — two callers on one hook
+// object, 104 ms apart, with nothing serializing them.
+//
+// install() publishes target_ only at its very end, so the second caller does not see
+// installed() and walks straight into MH_CreateHook on a function that is already
+// hooked. Reproduced without threads: the fake re-enters install() from inside the
+// first call's create, which is the exact point a second thread occupies.
+
+TEST_F(SpikeHooksTest, AnInstallReenteredDuringCreateKeepsAnOriginalToCallThrough)
+{
+    // First caller wins MH_CreateHook and gets the trampoline; the second gets
+    // MH_ERROR_ALREADY_CREATED and runs the rollback branch, which clears original_.
+    VoidHook hook(api_, logger_);
+    api_.createStatusQueue = {spike::kHookOk, kFakeAlreadyCreated};
+    api_.onCreate = [&] { hook.install("Fake::SlotZero", &object_, 0, &detour); };
+
+    ASSERT_TRUE(hook.install("Fake::SlotZero", &object_, 0, &detour));
+
+    // The function inside vrserver is patched and enabled either way. What must never
+    // survive is a live hook with no original: every detour body starts with
+    // `hooks.x.original()(...)`, so this state is a call through null on the next pose
+    // update — with vrserver's threads already running through it.
+    ASSERT_TRUE(hook.installed());
+    EXPECT_NE(hook.original(), nullptr);
+}
+
+TEST_F(SpikeHooksTest, AnInstallReenteredDuringCreateHooksTheFunctionOnlyOnce)
+{
+    // Same interleaving, the case where MinHook would accept both creates: two
+    // create/enable pairs on one function chain a hook onto a hook, so every call is
+    // observed twice and remove() in Cleanup unwinds only the outer one.
+    VoidHook hook(api_, logger_);
+    api_.onCreate = [&] { hook.install("Fake::SlotOne", &object_, 1, &detour); };
+
+    ASSERT_TRUE(hook.install("Fake::SlotOne", &object_, 1, &detour));
+
+    ASSERT_EQ(api_.calls.size(), 2u);
+    EXPECT_EQ(api_.calls[0].what, "create");
+    EXPECT_EQ(api_.calls[1].what, "enable");
 }
 
 TEST_F(SpikeHooksTest, NullObjectIsReportedAndNotHooked)
