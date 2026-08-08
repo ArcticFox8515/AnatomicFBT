@@ -22,8 +22,8 @@
 // A frame header (u32 length, u16 type) prefixes each payload; the framing
 // layer (MessageChannel) splits the stream on length alone, so an unknown
 // `type` is skipped by length, not rejected — that is how an older app
-// survives a newer driver. A `length > kMaxPayloadBytes` is a protocol error:
-// the stream is unrecoverable.
+// survives a newer driver. A `length` above what fits the `Message` payload
+// union is a protocol error: the stream is unrecoverable.
 //
 // `link` links neither model code nor glm nor openvr. `DeviceKind` is this
 // layer's own enum with pinned wire values; the driver maps
@@ -64,11 +64,6 @@ enum class MessageType : std::uint16_t
     DevicePose = 2,
 };
 
-// Largest payload the framing layer will accept. Frames above this are a
-// protocol error rather than a buffer to grow into — a pose is ~68 bytes and a
-// 64 KiB cap leaves headroom without admitting a runaway allocation.
-inline constexpr std::uint32_t kMaxPayloadBytes = 65536;
-
 // Largest serial string carried on the wire. OpenVR serials ("LHR-XXXXXXXX")
 // are short; 32 bytes is ample and keeps the pose POD compact.
 inline constexpr std::uint32_t kMaxSerialBytes = 32;
@@ -85,5 +80,20 @@ struct DevicePose
     float position[3] = {0.0f, 0.0f, 0.0f};
     float rotation[4] = {0.0f, 0.0f, 0.0f, 1.0f};  // xyzw, identity
     char serial[kMaxSerialBytes] = {};
+};
+
+// A frame on the wire and in memory: a u32 payload length, a u16 type, then the
+// payload union. The length is the payload length (not the whole frame) and is
+// filled by the sender. The framing layer reads the header, then exactly `size`
+// payload bytes; a `size` larger than the union is a protocol error. Only one
+// payload shape exists today (`DevicePose`); a future type adds a union member.
+struct Message
+{
+    std::uint32_t size = 0;
+    MessageType type = MessageType::DevicePose;
+    union
+    {
+        DevicePose pose{};
+    };
 };
 } // namespace link

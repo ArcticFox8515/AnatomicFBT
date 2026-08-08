@@ -1,10 +1,10 @@
-#include "SpikeLog.h"
+#include "Log.h"
 
 #include <cstdarg>
 #include <cstdio>
 #include <utility>
 
-namespace spike
+namespace link
 {
 LogSink compositeSink(LogSink first, LogSink second)
 {
@@ -54,4 +54,4 @@ Logger& loggingTo(Logger& logger, LogSink sink)
         logger.setSink(std::move(sink));
     return logger;
 }
-} // namespace spike
+} // namespace link

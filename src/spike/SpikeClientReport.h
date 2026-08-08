@@ -7,6 +7,7 @@
 // openvr.h is deliberately NOT included here: this header is shared with code built
 // against openvr_driver.h, and the poses arrive already converted.
 
+#include "SpikeLog.h"
 #include "SpikePoseMath.h"
 
 #include <cstdint>
@@ -16,8 +17,6 @@
 
 namespace spike
 {
-class Logger;
-
 struct ClientDeviceSample
 {
     uint32_t index = 0;

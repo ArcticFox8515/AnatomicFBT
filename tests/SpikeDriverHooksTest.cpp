@@ -235,7 +235,7 @@ protected:
                                   reinterpret_cast<void*>(&detourC)};
     spike::DriverHookSet hooks_{api_, logger_, detours_};
 
-    link::MessageChannel channel_{[] { return nullptr; }};
+    link::MessageChannel channel_{logger_, [] { return nullptr; }};
     spike::SpikeObserver observer_{logger_, hooks_, [] { return 0.0; }, channel_};
 };
 

@@ -37,7 +37,6 @@ public:
     // createPipe result: non-null = success, null = failure.
     void* createPipeResult = reinterpret_cast<void*>(1);
     int createPipeCallCount = 0;
-    std::string createPipeName;
     std::size_t createPipeInBufferSize = 0;
     std::size_t createPipeOutBufferSize = 0;
 
@@ -55,6 +54,9 @@ public:
     // Creation result per call index (0, 1, 2 in call order).
     int createEventResults[3] = {1, 1, 1};
     int createEventCallCount = 0;
+
+    // Sizes of the overlapped vectors received by createEvent, in call order.
+    std::vector<std::size_t> createEventOverlappedSizes;
 
     // closeEvent return value. Default true (success).
     bool closeEventResult = true;
@@ -85,11 +87,9 @@ public:
 
     std::size_t overlappedSize() const override { return overlappedSizeResult; }
 
-    void* createPipe(const char* name, std::size_t inBufferSize,
-                     std::size_t outBufferSize) override
+    void* createPipe(std::size_t inBufferSize, std::size_t outBufferSize) override
     {
         createPipeCallCount++;
-        createPipeName = name ? name : "";
         createPipeInBufferSize = inBufferSize;
         createPipeOutBufferSize = outBufferSize;
         err_ = createPipeResult ? 0u : forcedErr;
@@ -97,22 +97,23 @@ public:
         return createPipeResult;
     }
 
-    bool createEvent(void* ov) override
+    bool createEvent(std::vector<unsigned char>& overlapped) override
     {
-        createEventPtrs.push_back(ov);
+        createEventPtrs.push_back(overlapped.data());
+        createEventOverlappedSizes.push_back(overlapped.size());
         const int result = createEventResults[createEventCallCount++];
         err_ = result ? 0u : forcedErr;
         return result != 0;
     }
 
-    bool closeEvent(void* ov) override
+    bool closeEvent(std::vector<unsigned char>& overlapped) override
     {
-        closeEventPtrs.push_back(ov);
+        closeEventPtrs.push_back(overlapped.data());
         err_ = closeEventResult ? 0u : forcedErr;
         return closeEventResult;
     }
 
-    bool startConnect(void* handle, void*) override
+    bool startConnect(void* handle, std::vector<unsigned char>&) override
     {
         handlesPassedToConnect.push_back(handle);
         if (!startConnectResult && startConnectErr == link::errIoPending)
@@ -121,7 +122,7 @@ public:
         return startConnectResult;
     }
 
-    bool completeConnect(void* handle, void*) override
+    bool completeConnect(void* handle, std::vector<unsigned char>&) override
     {
         handlesPassedToConnect.push_back(handle);
         if (!connectInFlight)
@@ -135,7 +136,7 @@ public:
     }
 
     bool startRead(void* handle, std::uint8_t* buffer, std::size_t size,
-                   std::size_t& readOut, void*) override
+                   std::size_t& readOut, std::vector<unsigned char>&) override
     {
         handlesPassedToRead.push_back(handle);
         if (readInFlight_)
@@ -165,7 +166,7 @@ public:
         return true;
     }
 
-    bool completeRead(void* handle, std::size_t& readOut, void*) override
+    bool completeRead(void* handle, std::size_t& readOut, std::vector<unsigned char>&) override
     {
         handlesPassedToRead.push_back(handle);
         if (!readInFlight_)
@@ -193,7 +194,7 @@ public:
     }
 
     bool startWrite(void* handle, const std::uint8_t* data, std::size_t size,
-                    std::size_t& writtenOut, void*) override
+                    std::size_t& writtenOut, std::vector<unsigned char>&) override
     {
         handlesPassedToWrite.push_back(handle);
         if (writeForceErr != 0)
@@ -238,7 +239,7 @@ public:
         return true;
     }
 
-    bool completeWrite(void* handle, std::size_t& writtenOut, void*) override
+    bool completeWrite(void* handle, std::size_t& writtenOut, std::vector<unsigned char>&) override
     {
         handlesPassedToWrite.push_back(handle);
         if (!writeInFlight_)

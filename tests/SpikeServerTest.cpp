@@ -134,7 +134,7 @@ protected:
     std::vector<std::string> lines_;
     spike::Logger logger_;
     NoInterfaceHooks hooks_;
-    link::MessageChannel channel_{[] { return nullptr; }};
+    link::MessageChannel channel_{logger_, [] { return nullptr; }};
     spike::SpikeObserver observer_{logger_, hooks_, [] { return 0.0; }, channel_};
     FakeServerEnvironment environment_;
     spike::SpikeServer server_{logger_, observer_, environment_, channel_};
@@ -259,7 +259,7 @@ protected:
     spike::Logger logger_;
     NoInterfaceHooks hooks_;
     link_test::FakePipe pipe_;
-    link::MessageChannel channel_{link_test::borrowPipeFactory(pipe_)};
+    link::MessageChannel channel_{logger_, link_test::borrowPipeFactory(pipe_)};
     spike::SpikeObserver observer_{logger_, hooks_, [] { return 0.0; }, channel_};
     FakeServerEnvironment environment_;
     spike::SpikeServer server_{logger_, observer_, environment_, channel_};

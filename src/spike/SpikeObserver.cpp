@@ -146,8 +146,11 @@ void SpikeObserver::onPose(uint32_t index, const vr::DriverPose_t& pose, uint32_
     const std::size_t n = (std::min)(entry.serial.size(), sizeof(wire.serial) - 1);
     std::memcpy(wire.serial, entry.serial.data(), n);
 
-    channel_.send(link::MessageType::DevicePose,
-                  reinterpret_cast<const std::uint8_t*>(&wire), sizeof(wire));
+    link::Message message;
+    message.size = sizeof(link::DevicePose);
+    message.type = link::MessageType::DevicePose;
+    message.pose = wire;
+    channel_.send(message);
 }
 
 void SpikeObserver::onRunFrame()

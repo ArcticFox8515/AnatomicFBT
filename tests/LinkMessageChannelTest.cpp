@@ -9,6 +9,7 @@
 // nothing touches Win32.
 
 #include "FakePipe.h"
+#include "link/Log.h"
 #include "link/MessageChannel.h"
 #include "link/Pipe.h"
 #include "link/Protocol.h"
@@ -46,6 +47,21 @@ std::vector<std::uint8_t> frame(link::MessageType type, const std::uint8_t* payl
 std::vector<std::uint8_t> frame(link::MessageType type, const std::vector<std::uint8_t>& payload)
 {
     return frame(type, payload.data(), payload.size());
+}
+
+link::Message message(const link::DevicePose& pose)
+{
+    link::Message m;
+    m.size = sizeof(link::DevicePose);
+    m.type = link::MessageType::DevicePose;
+    m.pose = pose;
+    return m;
+}
+
+link::Logger& testLogger()
+{
+    static link::Logger logger;
+    return logger;
 }
 
 static_assert(sizeof(link::DevicePose) == 68, "pose POD size drifted");
@@ -102,7 +118,7 @@ TEST(LinkClassifyIo, UnknownErrorIsFailed)
 TEST(LinkMessageChannel, SendsAndReceivesADevicePose)
 {
     link_test::FakePipe pipe;
-    link::MessageChannel channel(link_test::borrowPipeFactory(pipe));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(pipe));
     std::vector<link::Message> dummy;
     channel.receive(dummy);
 
@@ -112,8 +128,7 @@ TEST(LinkMessageChannel, SendsAndReceivesADevicePose)
     pose.deviceKind = link::DeviceKind::Controller;
     pose.position[0] = 0.5f;
     pose.rotation[3] = 1.0f;
-    ASSERT_TRUE(channel.send(link::MessageType::DevicePose,
-                             reinterpret_cast<const std::uint8_t*>(&pose), sizeof(pose)));
+    channel.send(message(pose));
 
     pipe.feedRead(pipe.written);
 
@@ -121,13 +136,11 @@ TEST(LinkMessageChannel, SendsAndReceivesADevicePose)
     EXPECT_EQ(channel.receive(messages), 1u);
     ASSERT_EQ(messages.size(), 1u);
     EXPECT_EQ(messages[0].type, link::MessageType::DevicePose);
-    ASSERT_EQ(messages[0].payload.size(), sizeof(link::DevicePose));
-    link::DevicePose restored;
-    std::memcpy(&restored, messages[0].payload.data(), sizeof(restored));
-    EXPECT_EQ(restored.deviceId, 11u);
-    EXPECT_EQ(restored.tracking, link::TrackingState::Tracking);
-    EXPECT_EQ(restored.deviceKind, link::DeviceKind::Controller);
-    EXPECT_FLOAT_EQ(restored.position[0], 0.5f);
+    ASSERT_EQ(messages[0].size, sizeof(link::DevicePose));
+    EXPECT_EQ(messages[0].pose.deviceId, 11u);
+    EXPECT_EQ(messages[0].pose.tracking, link::TrackingState::Tracking);
+    EXPECT_EQ(messages[0].pose.deviceKind, link::DeviceKind::Controller);
+    EXPECT_FLOAT_EQ(messages[0].pose.position[0], 0.5f);
 }
 
 // ---- reassembly across split reads ----------------------------------------
@@ -135,7 +148,7 @@ TEST(LinkMessageChannel, SendsAndReceivesADevicePose)
 TEST(LinkMessageChannel, ReassemblesAFrameSplitAcrossThreeReads)
 {
     link_test::FakePipe pipe;
-    link::MessageChannel channel(link_test::borrowPipeFactory(pipe));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(pipe));
 
     link::DevicePose pose;
     pose.deviceId = 1;
@@ -154,13 +167,13 @@ TEST(LinkMessageChannel, ReassemblesAFrameSplitAcrossThreeReads)
     EXPECT_EQ(channel.receive(messages), 1u);
     ASSERT_EQ(messages.size(), 1u);
     EXPECT_EQ(messages[0].type, link::MessageType::DevicePose);
-    ASSERT_EQ(messages[0].payload.size(), sizeof(link::DevicePose));
+    ASSERT_EQ(messages[0].size, sizeof(link::DevicePose));
 }
 
 TEST(LinkMessageChannel, ReassemblesTwoFramesDeliveredInOneRead)
 {
     link_test::FakePipe pipe;
-    link::MessageChannel channel(link_test::borrowPipeFactory(pipe));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(pipe));
 
     link::DevicePose pose1;
     pose1.deviceId = 1;
@@ -186,7 +199,7 @@ TEST(LinkMessageChannel, ReassemblesTwoFramesDeliveredInOneRead)
 TEST(LinkMessageChannel, KeepsAPartialFrameForTheNextReceive)
 {
     link_test::FakePipe pipe;
-    link::MessageChannel channel(link_test::borrowPipeFactory(pipe));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(pipe));
 
     link::DevicePose pose;
     pose.deviceId = 9;
@@ -210,7 +223,7 @@ TEST(LinkMessageChannel, KeepsAPartialFrameForTheNextReceive)
 TEST(LinkMessageChannel, PendingReadCompletesOnNextReceive)
 {
     link_test::FakePipe pipe;
-    link::MessageChannel channel(link_test::borrowPipeFactory(pipe));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(pipe));
     std::vector<link::Message> dummy;
     channel.receive(dummy);
 
@@ -225,10 +238,8 @@ TEST(LinkMessageChannel, PendingReadCompletesOnNextReceive)
     pipe.feedRead(wire);
     EXPECT_EQ(channel.receive(messages), 1u);
     ASSERT_EQ(messages.size(), 1u);
-    ASSERT_EQ(messages[0].payload.size(), sizeof(link::DevicePose));
-    link::DevicePose restored;
-    std::memcpy(&restored, messages[0].payload.data(), sizeof(restored));
-    EXPECT_EQ(restored.deviceId, 7u);
+    ASSERT_EQ(messages[0].size, sizeof(link::DevicePose));
+    EXPECT_EQ(messages[0].pose.deviceId, 7u);
 }
 
 // ---- partial / pending writes ----------------------------------------------
@@ -237,14 +248,13 @@ TEST(LinkMessageChannel, RetainsBacklogWhenPipeIsPendingAndDrainsOnNextSend)
 {
     link_test::FakePipe pipe;
     pipe.writePendingAfter = 4;
-    link::MessageChannel channel(link_test::borrowPipeFactory(pipe));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(pipe));
     std::vector<link::Message> dummy;
     channel.receive(dummy);
 
     link::DevicePose pose;
     pose.deviceId = 2;
-    ASSERT_TRUE(channel.send(link::MessageType::DevicePose,
-                             reinterpret_cast<const std::uint8_t*>(&pose), sizeof(pose)));
+    channel.send(message(pose));
 
     const std::size_t frameSize = sizeof(link::DevicePose) + kFrameHeaderSize;
     EXPECT_LT(pipe.written.size(), frameSize);
@@ -252,41 +262,21 @@ TEST(LinkMessageChannel, RetainsBacklogWhenPipeIsPendingAndDrainsOnNextSend)
     pipe.writePendingAfter = 0;
     link::DevicePose pose2;
     pose2.deviceId = 3;
-    ASSERT_TRUE(channel.send(link::MessageType::DevicePose,
-                             reinterpret_cast<const std::uint8_t*>(&pose2), sizeof(pose2)));
+    channel.send(message(pose2));
     EXPECT_EQ(pipe.written.size(), frameSize + sizeof(link::DevicePose) + kFrameHeaderSize);
-}
-
-TEST(LinkMessageChannel, SendReturnsFalseWhenOutboundBufferIsFull)
-{
-    link_test::FakePipe pipe;
-    pipe.writeForceErr = link::errIoPending;
-    link::MessageChannel channel(link_test::borrowPipeFactory(pipe));
-    std::vector<link::Message> dummy;
-    channel.receive(dummy);
-
-    link::DevicePose pose;
-    for (int i = 0; i < 100000; ++i)
-    {
-        if (!channel.send(link::MessageType::DevicePose,
-                          reinterpret_cast<const std::uint8_t*>(&pose), sizeof(pose)))
-            return;
-    }
-    FAIL() << "send never refused despite the outbound cap";
 }
 
 TEST(LinkMessageChannel, PendingWriteCompletesOnNextReceive)
 {
     link_test::FakePipe pipe;
     pipe.writeForceErr = link::errIoPending;
-    link::MessageChannel channel(link_test::borrowPipeFactory(pipe));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(pipe));
     std::vector<link::Message> dummy;
     channel.receive(dummy);
 
     link::DevicePose pose;
     pose.deviceId = 42;
-    ASSERT_TRUE(channel.send(link::MessageType::DevicePose,
-                             reinterpret_cast<const std::uint8_t*>(&pose), sizeof(pose)));
+    channel.send(message(pose));
     ASSERT_TRUE(pipe.written.empty());
 
     pipe.writeForceErr = 0;
@@ -298,9 +288,7 @@ TEST(LinkMessageChannel, PendingWriteCompletesOnNextReceive)
     messages.clear();
     EXPECT_EQ(channel.receive(messages), 1u);
     ASSERT_EQ(messages.size(), 1u);
-    link::DevicePose restored;
-    std::memcpy(&restored, messages[0].payload.data(), sizeof(restored));
-    EXPECT_EQ(restored.deviceId, 42u);
+    EXPECT_EQ(messages[0].pose.deviceId, 42u);
 }
 
 // ---- unknown type skipped between known ones ------------------------------
@@ -308,7 +296,7 @@ TEST(LinkMessageChannel, PendingWriteCompletesOnNextReceive)
 TEST(LinkMessageChannel, SkipsAnUnknownMessageTypeAndContinues)
 {
     link_test::FakePipe pipe;
-    link::MessageChannel channel(link_test::borrowPipeFactory(pipe));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(pipe));
 
     link::DevicePose pose1;
     pose1.deviceId = 5;
@@ -337,10 +325,10 @@ TEST(LinkMessageChannel, SkipsAnUnknownMessageTypeAndContinues)
 TEST(LinkMessageChannel, TheOldDeviceMetadataTypeIsSkippedAsUnknown)
 {
     link_test::FakePipe pipe;
-    link::MessageChannel channel(link_test::borrowPipeFactory(pipe));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(pipe));
 
     const auto legacy = frame(static_cast<link::MessageType>(1),
-                               std::vector<std::uint8_t>(8, 0).data(), 8);
+                              std::vector<std::uint8_t>(8, 0).data(), 8);
     link::DevicePose pose;
     pose.deviceId = 42;
     const auto current = frame(link::MessageType::DevicePose,
@@ -362,14 +350,13 @@ TEST(LinkMessageChannel, TheOldDeviceMetadataTypeIsSkippedAsUnknown)
 TEST(LinkMessageChannel, FactoryReturnsNullptrWhenNoClientIsConnected)
 {
     link::PipeFactoryFn factory = [] { return nullptr; };
-    link::MessageChannel channel(factory);
+    link::MessageChannel channel(testLogger(), factory);
 
     std::vector<link::Message> messages;
     EXPECT_EQ(channel.receive(messages), 0u);
 
     link::DevicePose pose;
-    EXPECT_FALSE(channel.send(link::MessageType::DevicePose,
-                              reinterpret_cast<const std::uint8_t*>(&pose), sizeof(pose)));
+    channel.send(message(pose));
 }
 
 // ---- dead pipe dropped, channel resets for next client --------------------
@@ -378,21 +365,20 @@ TEST(LinkMessageChannel, DropsAPipeThatThePeerClosedAndResetsForNextClient)
 {
     link_test::FakePipe fake;
     fake.readEmptyErr = link::errBrokenPipe;
-    link::MessageChannel channel(link_test::borrowPipeFactory(fake));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(fake));
 
     std::vector<link::Message> messages;
     channel.receive(messages);
 
     link::DevicePose pose;
-    EXPECT_FALSE(channel.send(link::MessageType::DevicePose,
-                              reinterpret_cast<const std::uint8_t*>(&pose), sizeof(pose)));
+    channel.send(message(pose));
 }
 
 TEST(LinkMessageChannel, DropsAPipeThatFailedAndPreservesLastError)
 {
     link_test::FakePipe fake;
     fake.readEmptyErr = 5;
-    link::MessageChannel channel(link_test::borrowPipeFactory(fake));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(fake));
 
     std::vector<link::Message> messages;
     channel.receive(messages);
@@ -403,10 +389,10 @@ TEST(LinkMessageChannel, DropsAPipeThatFailedAndPreservesLastError)
 TEST(LinkMessageChannel, OversizeLengthDropsThePipe)
 {
     link_test::FakePipe fake;
-    link::MessageChannel channel(link_test::borrowPipeFactory(fake));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(fake));
 
     std::vector<std::uint8_t> header(8);
-    const std::uint32_t tooLong = link::kMaxPayloadBytes + 1;
+    const std::uint32_t tooLong = sizeof(link::DevicePose) + 1;
     header[0] = static_cast<std::uint8_t>(tooLong & 0xFF);
     header[1] = static_cast<std::uint8_t>((tooLong >> 8) & 0xFF);
     header[2] = static_cast<std::uint8_t>((tooLong >> 16) & 0xFF);
@@ -418,21 +404,7 @@ TEST(LinkMessageChannel, OversizeLengthDropsThePipe)
     std::vector<link::Message> messages;
     channel.receive(messages);
 
-    link::DevicePose pose;
-    EXPECT_FALSE(channel.send(link::MessageType::DevicePose,
-                              reinterpret_cast<const std::uint8_t*>(&pose), sizeof(pose)));
     EXPECT_FALSE(channel.lastError().empty());
-}
-
-TEST(LinkMessageChannel, RefusesToSendOversizePayload)
-{
-    link_test::FakePipe pipe;
-    link::MessageChannel channel(link_test::borrowPipeFactory(pipe));
-    std::vector<link::Message> dummy;
-    channel.receive(dummy);
-
-    std::vector<std::uint8_t> huge(link::kMaxPayloadBytes + 1, 0);
-    EXPECT_FALSE(channel.send(link::MessageType::DevicePose, huge.data(), huge.size()));
 }
 
 // ---- reconnect after a drop -----------------------------------------------
@@ -440,15 +412,14 @@ TEST(LinkMessageChannel, RefusesToSendOversizePayload)
 TEST(LinkMessageChannel, ReconnectsAfterADrop)
 {
     link_test::FakePipe fake;
-    link::MessageChannel channel(link_test::borrowPipeFactory(fake));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(fake));
 
     std::vector<link::Message> messages;
     channel.receive(messages);
 
     link::DevicePose pose;
     pose.deviceId = 1;
-    ASSERT_TRUE(channel.send(link::MessageType::DevicePose,
-                             reinterpret_cast<const std::uint8_t*>(&pose), sizeof(pose)));
+    channel.send(message(pose));
     fake.feedRead(fake.written);
     messages.clear();
     channel.receive(messages);
@@ -467,15 +438,13 @@ TEST(LinkMessageChannel, ReconnectsAfterADrop)
     messages.clear();
     channel.receive(messages);
     ASSERT_EQ(messages.size(), 1u);
-    link::DevicePose restored;
-    std::memcpy(&restored, messages[0].payload.data(), sizeof(restored));
-    EXPECT_EQ(restored.deviceId, 2u);
+    EXPECT_EQ(messages[0].pose.deviceId, 2u);
 }
 
 TEST(LinkMessageChannel, ClearsBacklogOnReconnectSoNoSnapshotIsDelivered)
 {
     link_test::FakePipe fake;
-    link::MessageChannel channel(link_test::borrowPipeFactory(fake));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(fake));
 
     std::vector<link::Message> messages;
     channel.receive(messages);
@@ -483,8 +452,7 @@ TEST(LinkMessageChannel, ClearsBacklogOnReconnectSoNoSnapshotIsDelivered)
     fake.writeForceErr = link::errIoPending;
     link::DevicePose pose;
     pose.deviceId = 99;
-    channel.send(link::MessageType::DevicePose,
-                 reinterpret_cast<const std::uint8_t*>(&pose), sizeof(pose));
+    channel.send(message(pose));
     ASSERT_TRUE(fake.written.empty());
 
     fake.readEmptyErr = link::errBrokenPipe;
@@ -496,8 +464,7 @@ TEST(LinkMessageChannel, ClearsBacklogOnReconnectSoNoSnapshotIsDelivered)
 
     link::DevicePose pose2;
     pose2.deviceId = 100;
-    ASSERT_TRUE(channel.send(link::MessageType::DevicePose,
-                             reinterpret_cast<const std::uint8_t*>(&pose2), sizeof(pose2)));
+    channel.send(message(pose2));
     const std::size_t oneFrame = kFrameHeaderSize + sizeof(link::DevicePose);
     EXPECT_EQ(fake.written.size(), oneFrame);
 }
@@ -508,14 +475,14 @@ TEST(LinkMessageChannel, OverlappedBuffersHaveExpectedSize)
 {
     link_test::FakePipe pipe;
     pipe.overlappedSizeResult = 24;
-    link::MessageChannel channel(link_test::borrowPipeFactory(pipe));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(pipe));
     std::vector<link::Message> dummy;
     channel.receive(dummy);
 
-    // MessageChannel sized its overlapped buffers to what the pipe reported.
-    EXPECT_EQ(channel.overlappedBufferSize(link::kConnectOverlapped), 24u);
-    EXPECT_EQ(channel.overlappedBufferSize(link::kReadOverlapped), 24u);
-    EXPECT_EQ(channel.overlappedBufferSize(link::kWriteOverlapped), 24u);
+    ASSERT_EQ(pipe.createEventOverlappedSizes.size(), 3u);
+    EXPECT_EQ(pipe.createEventOverlappedSizes[0], 24u);
+    EXPECT_EQ(pipe.createEventOverlappedSizes[1], 24u);
+    EXPECT_EQ(pipe.createEventOverlappedSizes[2], 24u);
 }
 
 // ---- handle is passed correctly to all methods ------------------------------
@@ -523,24 +490,20 @@ TEST(LinkMessageChannel, OverlappedBuffersHaveExpectedSize)
 TEST(LinkMessageChannel, PassesCorrectHandleToAllPipeMethods)
 {
     link_test::FakePipe pipe;
-    link::MessageChannel channel(link_test::borrowPipeFactory(pipe));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(pipe));
     std::vector<link::Message> dummy;
-    channel.receive(dummy);  // createPipe + createEvent x3 + startConnect
+    channel.receive(dummy);
 
-    // The handle createPipe returned is the one passed to connect/read/write/close.
     ASSERT_NE(pipe.createdHandle, nullptr);
     for (void* h : pipe.handlesPassedToConnect)
         EXPECT_EQ(h, pipe.createdHandle);
 
-    // Send a frame so the write path runs.
     link::DevicePose pose;
     pose.deviceId = 1;
-    ASSERT_TRUE(channel.send(link::MessageType::DevicePose,
-                             reinterpret_cast<const std::uint8_t*>(&pose), sizeof(pose)));
+    channel.send(message(pose));
     for (void* h : pipe.handlesPassedToWrite)
         EXPECT_EQ(h, pipe.createdHandle);
 
-    // Feed the written bytes back and receive so the read path runs.
     pipe.feedRead(pipe.written);
     std::vector<link::Message> messages;
     channel.receive(messages);
@@ -553,27 +516,21 @@ TEST(LinkMessageChannel, PassesCorrectHandleToAllPipeMethods)
 TEST(LinkMessageChannel, FullLifecycleCreatesAndClosesEverything)
 {
     link_test::FakePipe pipe;
-    link::MessageChannel channel(link_test::borrowPipeFactory(pipe));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(pipe));
 
     std::vector<link::Message> messages;
-    channel.receive(messages);  // createPipe + 3 createEvent + startConnect
+    channel.receive(messages);
 
-    // All 3 events created.
     EXPECT_EQ(pipe.createEventPtrs.size(), 3u);
-    // createPipe called once with correct name and buffer size.
     EXPECT_EQ(pipe.createPipeCallCount, 1);
-    EXPECT_EQ(pipe.createPipeName, link::kDriverPipeName);
     EXPECT_EQ(pipe.createPipeInBufferSize, link::pipeBufferSize);
     EXPECT_EQ(pipe.createPipeOutBufferSize, link::pipeBufferSize);
 
-    // Drop the pipe by closing the read side.
     pipe.readEmptyErr = link::errBrokenPipe;
     pipe.readQueue.clear();
     messages.clear();
-    channel.receive(messages);  // read returns Closed -> dropPipe
+    channel.receive(messages);
 
-    // closeEvent called 3 times (all events de-allocated), close called once
-    // with the correct handle.
     EXPECT_EQ(pipe.closeEventPtrs.size(), 3u);
     EXPECT_TRUE(pipe.closeCalled);
     EXPECT_EQ(pipe.closeHandle, pipe.createdHandle);
@@ -584,36 +541,30 @@ TEST(LinkMessageChannel, FullLifecycleCreatesAndClosesEverything)
 TEST(LinkMessageChannel, DropsPipeWhenThirdEventCreationFails)
 {
     link_test::FakePipe fake;
-    fake.createEventResults[2] = 0;  // third createEvent fails
+    fake.createEventResults[2] = 0;
     fake.forcedErr = 8;
-    link::MessageChannel channel(link_test::borrowPipeFactory(fake));
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(fake));
 
     std::vector<link::Message> messages;
     channel.receive(messages);
 
-    // 3 createEvent calls, 2 closeEvent calls (for the first two only).
     ASSERT_EQ(fake.createEventPtrs.size(), 3u);
     ASSERT_EQ(fake.closeEventPtrs.size(), 2u);
 
-    // The closed events are the first two — not the third.
     EXPECT_NE(fake.closeEventPtrs[0], fake.createEventPtrs[2]);
     EXPECT_NE(fake.closeEventPtrs[1], fake.createEventPtrs[2]);
 
-    link::DevicePose pose;
-    EXPECT_FALSE(channel.send(link::MessageType::DevicePose,
-                              reinterpret_cast<const std::uint8_t*>(&pose), sizeof(pose)));
     EXPECT_FALSE(channel.lastError().empty());
 
-    // Retry: all 3 events created.
     fake.createEventResults[2] = 1;
     fake.createEventCallCount = 0;
     fake.readEmptyErr = link::errIoPending;
     channel.receive(messages);
 
-    ASSERT_EQ(fake.createEventPtrs.size(), 6u);  // 3 from first attempt + 3 from retry
+    ASSERT_EQ(fake.createEventPtrs.size(), 6u);
 
-    ASSERT_TRUE(channel.send(link::MessageType::DevicePose,
-                              reinterpret_cast<const std::uint8_t*>(&pose), sizeof(pose)));
+    link::DevicePose pose;
+    channel.send(message(pose));
     const std::size_t oneFrame = kFrameHeaderSize + sizeof(link::DevicePose);
     EXPECT_EQ(fake.written.size(), oneFrame);
 }

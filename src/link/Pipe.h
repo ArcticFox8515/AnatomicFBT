@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <vector>
 
 namespace link
 {
@@ -78,37 +79,40 @@ public:
     // overlapped buffer. The implementation knows the real struct size.
     virtual std::size_t overlappedSize() const = 0;
 
-    // CreateNamedPipeA. Returns the handle (void*). The caller owns it and
-    // passes it to every subsequent method. Null or invalidHandle = failure.
-    virtual void* createPipe(const char* name, std::size_t inBufferSize,
-                             std::size_t outBufferSize) = 0;
+    // CreateNamedPipeA / CreateFileA. Returns the handle (void*). The caller owns
+    // it and passes it to every subsequent method. Null or invalidHandle = failure.
+    // The pipe name is a constructor argument of the concrete pipe the factory
+    // builds, so the seam is name-free.
+    virtual void* createPipe(std::size_t inBufferSize, std::size_t outBufferSize) = 0;
 
     // CreateEventW. Stores the event into the overlapped buffer. Returns true
     // on success, false on failure (caller checks lastError).
-    virtual bool createEvent(void* overlapped) = 0;
+    virtual bool createEvent(std::vector<unsigned char>& overlapped) = 0;
 
     // CloseHandle on the event stored in the overlapped buffer.
-    virtual bool closeEvent(void* overlapped) = 0;
+    virtual bool closeEvent(std::vector<unsigned char>& overlapped) = 0;
 
     // ConnectNamedPipe(handle, overlapped). Returns true on success/async-pending.
-    virtual bool startConnect(void* handle, void* overlapped) = 0;
+    virtual bool startConnect(void* handle, std::vector<unsigned char>& overlapped) = 0;
 
     // GetOverlappedResult(handle, overlapped, FALSE).
-    virtual bool completeConnect(void* handle, void* overlapped) = 0;
+    virtual bool completeConnect(void* handle, std::vector<unsigned char>& overlapped) = 0;
 
     // WriteFile(handle, data, size, &written, overlapped).
     virtual bool startWrite(void* handle, const std::uint8_t* data, std::size_t size,
-                           std::size_t& written, void* overlapped) = 0;
+                            std::size_t& written, std::vector<unsigned char>& overlapped) = 0;
 
     // GetOverlappedResult(handle, overlapped, &written, FALSE).
-    virtual bool completeWrite(void* handle, std::size_t& written, void* overlapped) = 0;
+    virtual bool completeWrite(void* handle, std::size_t& written,
+                               std::vector<unsigned char>& overlapped) = 0;
 
     // ReadFile(handle, buffer, size, &read, overlapped).
     virtual bool startRead(void* handle, std::uint8_t* buffer, std::size_t size,
-                          std::size_t& read, void* overlapped) = 0;
+                           std::size_t& read, std::vector<unsigned char>& overlapped) = 0;
 
     // GetOverlappedResult(handle, overlapped, &read, FALSE).
-    virtual bool completeRead(void* handle, std::size_t& read, void* overlapped) = 0;
+    virtual bool completeRead(void* handle, std::size_t& read,
+                              std::vector<unsigned char>& overlapped) = 0;
 
     // CloseHandle(handle).
     virtual bool close(void* handle) = 0;

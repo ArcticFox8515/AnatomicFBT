@@ -90,10 +90,24 @@ add_library(LinkLib STATIC
     src/link/Pipe.h
     src/link/Pipe.cpp
     src/link/Protocol.h
+    src/link/Log.h
+    src/link/Log.cpp
     src/link/MessageChannel.cpp
     src/link/MessageChannel.h)
 
 target_include_directories(LinkLib PUBLIC src)
+
+# --- Win32 named-pipe implementations of link::Pipe (doc/messagechannel-rework-plan.md §5) ---
+# Server + client pipes, each taking its name as a constructor argument. Linked by
+# the driver DLL and the tests; spike_client is untouched. The only part of the
+# link layer not covered by unit tests.
+
+add_library(PipeLib STATIC
+    src/pipe/Win32Pipe.h
+    src/pipe/Win32Pipe.cpp)
+
+target_include_directories(PipeLib PUBLIC src)
+target_link_libraries(PipeLib PUBLIC LinkLib)
 
 # --- Step-1 spike of doc/driver-plan.md: throwaway, observation-only ---------
 # Everything under src/spike is deleted once the real driver exists.
@@ -114,7 +128,6 @@ add_library(SpikeLib STATIC
     src/spike/SpikeHooks.cpp
     src/spike/SpikeHooks.h
     src/spike/SpikeInterfaces.h
-    src/spike/SpikeLog.cpp
     src/spike/SpikeLog.h
     src/spike/SpikeLogFile.cpp
     src/spike/SpikeLogFile.h
@@ -139,11 +152,9 @@ target_link_libraries(SpikeLib PUBLIC LinkLib)
 # (vrserver.exe supplies the implementations through the vtables it hands to Init),
 # so only the include dirs are taken from the conan target.
 add_library(driver_00trackingcorrector SHARED
-    src/spike/SpikeDriver.cpp
-    src/spike/SpikeDriverPipe.cpp
-    src/spike/SpikeDriverPipe.h)
+    src/spike/SpikeDriver.cpp)
 
-target_link_libraries(driver_00trackingcorrector PRIVATE SpikeLib minhook::minhook spdlog::spdlog)
+target_link_libraries(driver_00trackingcorrector PRIVATE SpikeLib minhook::minhook spdlog::spdlog PipeLib)
 
 # SteamVR layout: <driver dir>/driver.vrdrivermanifest + bin/win64/driver_<name>.dll,
 # where <name> must match the manifest name and the directory name. Only the Release
@@ -178,6 +189,7 @@ add_executable(TrackingCorrectorTests
     tests/SessionRecorderTest.cpp
     tests/LinkProtocolTest.cpp
     tests/LinkMessageChannelTest.cpp
+    tests/LinkPipeIntegrationTest.cpp
     tests/SpikeClientReportTest.cpp
     tests/SpikeDriverEnvironmentTest.cpp
     tests/SpikeDriverHooksTest.cpp
@@ -194,6 +206,7 @@ target_link_libraries(TrackingCorrectorTests
     TrackingCorrectorLib
     SpikeLib
     LinkLib
+    PipeLib
     GTest::gtest
     GTest::gtest_main
 )

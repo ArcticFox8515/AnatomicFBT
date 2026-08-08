@@ -154,7 +154,7 @@ protected:
     FakeInterfaceHooks hooks_;
     FakeProperties properties_;
     link_test::FakePipe pipe_;
-    link::MessageChannel channel_{link_test::borrowPipeFactory(pipe_)};
+    link::MessageChannel channel_{logger_, link_test::borrowPipeFactory(pipe_)};
     spike::SpikeObserver observer_{logger_, hooks_, [this] { return now_; }, channel_};
 };
 

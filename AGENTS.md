@@ -48,10 +48,11 @@ Conan 2 + Visual Studio 2022. Windows-only (`WIN32` exe, `WinMain` entry).
 | Target | Kind | Contents / deps |
 |---|---|---|
 | `TrackingCorrectorLib` | STATIC | `src/model` + `src/view`; glm, json, GLEW, glfw |
-| `LinkLib` | STATIC | `src/link` IPC seam + framing + protocol; std lib only (Win32 error constants as literals) |
+| `LinkLib` | STATIC | `src/link` IPC seam + framing + protocol + `Logger`; std lib only (Win32 error constants as literals) |
 | `TrackingCorrector` | WIN32 exe | `src/main.cpp`, `src/vr`, imgui/imguizmo, spdlog, openvr |
+| `PipeLib` | STATIC | `src/pipe/Win32Pipe.{h,cpp}` server+client `link::Pipe` impls; links `LinkLib`; Win32 only, untested |
 | `SpikeLib` | STATIC | all `src/spike` logic; openvr headers only; links `LinkLib` (step 3 server) |
-| `driver_00trackingcorrector` | SHARED | `src/spike/SpikeDriver.cpp` + `SpikeDriverPipe.cpp` + SpikeLib, minhook, spdlog |
+| `driver_00trackingcorrector` | SHARED | `src/spike/SpikeDriver.cpp` + SpikeLib, minhook, spdlog, `PipeLib` |
 | `spike_client` | exe | `src/spike/SpikeClient.cpp` + SpikeLib, openvr |
 | `TrackingCorrectorTests` | exe | `tests/`, gtest; add new suites here |
 
@@ -66,26 +67,31 @@ src/link/       Driver<->app IPC: `Pipe` transport seam (overlapped call pairs �
                 startWrite/completeWrite, close — one winapi call per method,
                 caller owns buffers and in-flight state), `MessageChannel`
                 framing/reassembly over it (owns the connection state machine,
-                read buffer, stable write buffer, in-flight flags), and the
-                wire protocol's `DevicePose` as a memcpy'd POD. `classifyIo`
+                a `Message` per direction, in-flight flags, a `std::mutex`),
+                the wire protocol's `Message`/`DevicePose` (memcpy'd POD), and
+                the `Logger`/`log()` moved here from the spike. `classifyIo`
                 maps winapi returns to `IoStatus` (literals, no windows.h).
                 Standard library only — no model, no glm, no openvr, no
-                spdlog — so the driver DLL links no model code. The real Win32
-                pipe forwarder is `src/spike/SpikeDriverPipe.cpp` (driver DLL
-                only); the mock pipe lives in tests/FakePipe.h.
+                spdlog — so the driver DLL links no model code. `SpikeLog.h`
+                is now a shim of using-declarations over `link::Log.h`.
+src/pipe/       Win32 named-pipe implementations of `link::Pipe` (`Win32ServerPipe`,
+                `Win32ClientPipe`), each taking its pipe name as a constructor
+                argument. Linked by the driver DLL and the tests; the only part
+                of the link layer not covered by unit tests.
 src/spike/      THROWAWAY step-1 spike of doc/driver-plan.md: observation-only SteamVR
                 driver that hooks GetGenericInterface / TrackedDeviceAdded /
                 TrackedDevicePoseUpdated and logs. Step 3: onPose forwards each pose
                 to a `link::MessageChannel` (driver-side server) so the app can
-                consume driver-side poses. All logic in SpikeLib; SpikeDriver.cpp,
-                SpikeDriverPipe.cpp and SpikeClient.cpp are pure adapters. Input
+                consume driver-side poses. All logic in SpikeLib; SpikeDriver.cpp
+                and SpikeClient.cpp are pure adapters. Input
                 capture is NOT part of it (neither IVRDriverInput hooks nor
                 PollNextEvent deliver buttons).
 src/driverdll/00trackingcorrector/driver.vrdrivermanifest  — copied next to bin/win64/.
 src/bindings/   Vendored ImGui backends, auto-copied by conanfile.py. Generated.
-tests/          GoogleTest suites mirroring src/model, src/link and src/spike.
+tests/          GoogleTest suites mirroring src/model, src/link, src/pipe and src/spike.
                 `FakePipe.h` is the `link::Pipe` mock used by the link suites and
                 the spike server pipe-lifecycle tests (`borrowPipeFactory`).
+                `LinkPipeIntegrationTest.cpp` is the one real Win32-pipe test.
 unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
 ```
 
@@ -155,19 +161,24 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   (`startConnect`/`completeConnect`, `startRead`/`completeRead`,
   `startWrite`/`completeWrite`, `close`; `IoStatus` =
   `Ok|Pending|Closed|Failed`). An unconnected byte stream; `PipeFactoryFn`
-  (`std::function<std::shared_ptr<Pipe>()>`) constructs an instance
-  (`CreateNamedPipe` in the ctor), and `MessageChannel` drives the connection
-  state machine. On `Pending` the op is in flight — the caller keeps the
-  buffer alive and polls `completeX` on the next frame. At most one op in
-  flight per direction; the caller (MessageChannel, under test) enforces
-  this. `shared_ptr` so a `send` on the hook thread can snapshot the pointer
-  across a concurrent `receive` drop. The real Win32 forwarder
-  (`src/spike/SpikeDriverPipe.cpp`, driver DLL only) is the only part not
+  (`std::function<std::shared_ptr<Pipe>()>`) constructs an instance, and
+  `MessageChannel` drives the connection state machine. The pipe name is a
+  constructor argument of the concrete pipe (`Win32ServerPipe` /
+  `Win32ClientPipe` in PipeLib), not a `createPipe` argument. Every overlapped
+  method takes the `std::vector<unsigned char>&` the channel owns; the
+  implementation casts `.data()`. On `Pending` the op is in flight — the
+  channel keeps the buffer/state and polls `completeX` on the next frame. At
+  most one op in flight per direction; the caller (MessageChannel, under test)
+  enforces this. `shared_ptr` so a `send` on the hook thread can snapshot the
+  pointer across a concurrent `receive` drop. The real Win32 forwarder
+  (`src/pipe/Win32Pipe.cpp`, driver DLL + tests) is the only part not
   unit-tested; `classifyIo` (pure, tested) maps winapi returns to `IoStatus`
   so the forwarder has no decisions.
 - `Protocol` — wire types only (no codec): `DevicePose`
   (id+tracking+kind+pos+rot+serial[32]) as a naturally-aligned POD, memcpy'd whole —
-  same style as `.tcrec`'s `writeRaw`/`readRaw` but one struct copy. The separate
+  same style as `.tcrec`'s `writeRaw`/`readRaw` but one struct copy. `Message` is the
+  frame in memory: `u32 size` (payload length, sender-filled), `u16 type`, then a
+  payload union (`DevicePose` today; a future type adds a union member). The separate
   `DeviceMetadata` message was folded into `DevicePose` in step 3; wire type 1 from an
   older driver is silently skipped (forward compat). `DeviceKind`/`TrackingState`/
   `MessageType` are this layer's own enums with pinned wire values; the driver maps
@@ -175,21 +186,27 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   `TrackedDeviceKind`. `tracking` collapses the two booleans the app ANDs in
   `OpenVrTracking::pollPoses`; zero = drop the device this frame (it then holds its
   last pose).
+- `Logger` — `LogSink`, `compositeSink`, `Logger`, `log()`, `loggingTo()` moved here
+  from the spike (`namespace link`); `SpikeLog.h` is a shim of using-declarations in
+  `namespace spike`. `MessageChannel` takes `Logger&` and logs five lines: pipe
+  create/`createEvent` failure with the win32 code, client connected, pipe dropped with
+  reason and code, size above the cap, frame of an unexpected type skipped.
 - `MessageChannel` — length-prefixed framing (u32 length, u16 type, payload)
-  + reassembly over a `Pipe`. Takes a `PipeFactoryFn`: constructs an
-  *unconnected* pipe via the factory from `receive()`, drives
-  `startConnect`/`completeConnect` until `Connected`, then reads/writes.
-  Owns the read buffer (fixed member array, address-stable for overlapped IO)
-  and the stable write buffer (`writing_`, pre-reserved to
-  `kMaxPayloadBytes`, never reallocated; bytes moved from the append-area
-  `outbound_` via `std::swap` when no write is in flight). Drops a dead pipe
-  (Closed/Failed/oversize length) and constructs the next one itself. `send`
-  frames into `outbound_` capped at `kMaxPayloadBytes` (returns false when
-  full or when there is no pipe — drop policy is the publisher's), `receive`
-  pumps pending writes, drains the pipe and yields complete frames. Unknown
-  types are skipped (consumed, not emitted); `length > kMaxPayloadBytes`
-  drops the pipe (stream sync unrecoverable for this client, the next one
-  gets a fresh start). `lastError()` exposes the drop reason.
+  + reassembly over a `Pipe`. Takes a `Logger&` and a `PipeFactoryFn`:
+  constructs an *unconnected* pipe via the factory from `receive()`, drives
+  `startConnect`/`completeConnect` until `Connected`, then reads/writes. Owns
+  a `Message` per direction plus per-direction offset/in-flight flags and a
+  `std::mutex` locked as the first statement of `send`/`receive`. `send(const
+  Message&)` does one `completeWrite` when a write is in flight, then one
+  `startWrite` of the tail if bytes remain; if the tail cleared it copies the
+  new message and starts one write; no loop, nothing returned. `receive`
+  pumps connect, one write step, then drains the pipe (one `completeRead` or
+  `startRead` per iteration into `readMessage_` for exactly the bytes still
+  missing — header first, then `size` payload bytes) until Pending or empty;
+  each complete frame is appended to the out vector. Unknown types are skipped
+  (consumed, not emitted); `size` above the payload union drops the pipe
+  (stream sync unrecoverable for this client, the next one gets a fresh
+  start). `lastError()` exposes the drop reason.
 
 ## View, VR, entry point
 
