@@ -56,8 +56,14 @@ corrections will be applied.
 4. **App-side link** — bytes to device snapshots (kind mapping, validity filter,
    ordering), disconnect, reconnect. The app's existing device type,
    recording format, mode/calibration/replay logic and old recordings stay untouched.
-5. **Real pipe implementation** — the only part not covered by unit tests, kept as thin as
-   possible; app reconnects periodically while disconnected.
+5. **Real pipe implementation** — the only part not covered by unit tests, kept as thin
+   as possible; the `Pipe` seam is 1:1 with the overlapped winapi call pairs
+   (`startConnect`/`completeConnect`, `startRead`/`completeRead`,
+   `startWrite`/`completeWrite`, `close`) and `MessageChannel` owns all the
+   overlapped state (connection state machine, read buffer, stable write buffer,
+   in-flight flags). Server half done (`SpikeDriverPipe.cpp`, driver DLL only);
+   client half + app reconnect outstanding. `classifyIo` (pure, tested) maps
+   winapi returns so the DLL forwarder has no decisions.
 6. **Promote the spike into the real driver** — reuse its hook and provider machinery,
    drop the observation-only code and the spike client, point the detours at the transport
    layer, close the two known concurrency defects (unsynchronized publication of the

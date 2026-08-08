@@ -36,6 +36,7 @@
 
 #include "SpikeDriverEnvironment.h"
 #include "SpikeDriverHooks.h"
+#include "SpikeDriverPipe.h"
 #include "SpikeHooks.h"
 #include "SpikeLog.h"
 #include "SpikeLogFile.h"
@@ -46,6 +47,8 @@
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/basic_file_sink.h>
+
+#include <windows.h>
 
 #include <windows.h>
 
@@ -168,7 +171,8 @@ void detourTrackedDevicePoseUpdated(vr::IVRServerDriverHost* self, uint32_t inde
 
 link::MessageChannel& channel()
 {
-    static link::MessageChannel* instance = new link::MessageChannel([] { return nullptr; });
+    static link::MessageChannel* instance =
+        new link::MessageChannel([] { return std::make_shared<link::Win32Pipe>(); });
     return *instance;
 }
 

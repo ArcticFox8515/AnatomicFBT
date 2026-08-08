@@ -1,14 +1,8 @@
 #pragma once
 
-// Test double for `link::Pipe` (doc/driver-plan.md phase A, step 3).
-//
-// Scripts the same calls the real Win32 pipe handles — `write`, `read`,
-// `close` — so the framing layer is exercised without Win32, threads, or a
-// network. Lives in the test target only; the real implementation arrives at
-// step 5 and is the only part of the link not covered by unit tests.
-
 #include "link/Pipe.h"
 
+#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -19,43 +13,63 @@ namespace link_test
 class FakePipe : public link::Pipe
 {
 public:
-    // ---- write side (the driver's send path) ----
+    // ---- connect ----
+    bool startConnectResult = true;
+    unsigned long startConnectErr = link::errIoPending;
+    bool completeConnectResult = true;
+    unsigned long completeConnectErr = link::errIoPending;
+    bool connectInFlight = false;
 
-    // Per-call cap on accepted bytes; 0 = accept all. A `writeCap` of N makes
-    // the next `write` accept at most N bytes and return `Ok` with `written`
-    // set to min(N, size); a subsequent call resumes the tail.
-    std::size_t writeCap = 0;
+    // ---- read side ----
+    std::vector<std::uint8_t> readQueue;
+    unsigned long readEmptyErr = link::errIoPending;
 
-    // After this many bytes have been accepted in total, `write` returns
-    // `Pending` instead of accepting more. 0 = no budget (always accept, up to
-    // writeCap). Set to a small N to force a partial send that survives a
-    // `send` call and only drains on a later `flush`; reset to 0 to release.
+    // ---- write side ----
+    unsigned long writeForceErr = 0;
+    std::size_t writeChunk = 0;
     std::size_t writePendingAfter = 0;
     std::size_t writeAcceptedTotal = 0;
-
-    // Force `write` to return this status instead of accepting bytes. `Failed`
-    // also sets lastError to `forcedError`.
-    link::IoStatus writeForce = link::IoStatus::Ok;
-    std::string forcedError;
-
-    // Every byte the pipe accepted, in order.
     std::vector<std::uint8_t> written;
 
-    // ---- read side (the app's receive path) ----
+    // ---- shared ----
+    unsigned long forcedErr = 0;
 
-    // Bytes queued for the app to read, consumed FIFO. Feed this with
-    // `feedRead` (often in small chunks to exercise split reads).
-    std::vector<std::uint8_t> readQueue;
+    // createPipe result: non-null = success, null = failure.
+    void* createPipeResult = reinterpret_cast<void*>(1);
+    int createPipeCallCount = 0;
+    std::string createPipeName;
+    std::size_t createPipeInBufferSize = 0;
+    std::size_t createPipeOutBufferSize = 0;
 
-    // Force `read` to return this status when `readQueue` is empty (or always,
-    // when `readForceAlways` is set). `Closed`/`Failed` set the channel state.
-    link::IoStatus readForce = link::IoStatus::Pending;
-    bool readForceAlways = false;
+    // The handle createPipe returned — used to verify subsequent calls pass
+    // the same handle.
+    void* createdHandle = nullptr;
 
-    // ---- close / state ----
+    // Handles passed to each method (for verifying the caller passes the
+    // correct handle).
+    std::vector<void*> handlesPassedToConnect;
+    std::vector<void*> handlesPassedToRead;
+    std::vector<void*> handlesPassedToWrite;
+    std::vector<void*> handlesPassedToClose;
 
-    bool isClosed = false;
-    std::string lastErrorText;
+    // Creation result per call index (0, 1, 2 in call order).
+    int createEventResults[3] = {1, 1, 1};
+    int createEventCallCount = 0;
+
+    // closeEvent return value. Default true (success).
+    bool closeEventResult = true;
+
+    // Whether close() was called and with what handle.
+    bool closeCalled = false;
+    void* closeHandle = nullptr;
+
+    // Pointers received in createEvent calls (in order).
+    std::vector<void*> createEventPtrs;
+    // Pointers received in closeEvent calls (in order).
+    std::vector<void*> closeEventPtrs;
+
+    // The overlapped size this fake reports (default 32).
+    std::size_t overlappedSizeResult = 32;
 
     void feedRead(const std::uint8_t* data, std::size_t size)
     {
@@ -67,74 +81,220 @@ public:
         feedRead(bytes.data(), bytes.size());
     }
 
-    link::IoStatus write(const std::uint8_t* data, std::size_t size,
-                          std::size_t& writtenOut) override
+    // ---- Pipe interface ----
+
+    std::size_t overlappedSize() const override { return overlappedSizeResult; }
+
+    void* createPipe(const char* name, std::size_t inBufferSize,
+                     std::size_t outBufferSize) override
     {
-        if (writeForce == link::IoStatus::Failed)
+        createPipeCallCount++;
+        createPipeName = name ? name : "";
+        createPipeInBufferSize = inBufferSize;
+        createPipeOutBufferSize = outBufferSize;
+        err_ = createPipeResult ? 0u : forcedErr;
+        createdHandle = createPipeResult;
+        return createPipeResult;
+    }
+
+    bool createEvent(void* ov) override
+    {
+        createEventPtrs.push_back(ov);
+        const int result = createEventResults[createEventCallCount++];
+        err_ = result ? 0u : forcedErr;
+        return result != 0;
+    }
+
+    bool closeEvent(void* ov) override
+    {
+        closeEventPtrs.push_back(ov);
+        err_ = closeEventResult ? 0u : forcedErr;
+        return closeEventResult;
+    }
+
+    bool startConnect(void* handle, void*) override
+    {
+        handlesPassedToConnect.push_back(handle);
+        if (!startConnectResult && startConnectErr == link::errIoPending)
+            connectInFlight = true;
+        err_ = startConnectResult ? 0u : startConnectErr;
+        return startConnectResult;
+    }
+
+    bool completeConnect(void* handle, void*) override
+    {
+        handlesPassedToConnect.push_back(handle);
+        if (!connectInFlight)
         {
-            lastErrorText = forcedError;
-            return link::IoStatus::Failed;
+            err_ = 5;
+            return false;
         }
-        if (writeForce == link::IoStatus::Closed)
-            return link::IoStatus::Closed;
-        if (writeForce == link::IoStatus::Pending)
+        connectInFlight = false;
+        err_ = completeConnectResult ? 0u : completeConnectErr;
+        return completeConnectResult;
+    }
+
+    bool startRead(void* handle, std::uint8_t* buffer, std::size_t size,
+                   std::size_t& readOut, void*) override
+    {
+        handlesPassedToRead.push_back(handle);
+        if (readInFlight_)
+        {
+            err_ = 5;
+            return false;
+        }
+
+        if (readQueue.empty())
+        {
+            readOut = 0;
+            err_ = readEmptyErr;
+            if (readEmptyErr == link::errIoPending)
+            {
+                readInFlight_ = true;
+                pendingReadBuffer_ = buffer;
+                pendingReadSize_ = size;
+            }
+            return false;
+        }
+
+        const std::size_t give = (std::min)(size, readQueue.size());
+        std::memcpy(buffer, readQueue.data(), give);
+        readQueue.erase(readQueue.begin(), readQueue.begin() + give);
+        readOut = give;
+        err_ = 0;
+        return true;
+    }
+
+    bool completeRead(void* handle, std::size_t& readOut, void*) override
+    {
+        handlesPassedToRead.push_back(handle);
+        if (!readInFlight_)
+        {
+            err_ = 5;
+            return false;
+        }
+
+        if (readQueue.empty())
+        {
+            readOut = 0;
+            err_ = readEmptyErr;
+            if (readEmptyErr != link::errIoPending)
+                readInFlight_ = false;
+            return false;
+        }
+
+        readInFlight_ = false;
+        const std::size_t give = (std::min)(pendingReadSize_, readQueue.size());
+        std::memcpy(pendingReadBuffer_, readQueue.data(), give);
+        readQueue.erase(readQueue.begin(), readQueue.begin() + give);
+        readOut = give;
+        err_ = 0;
+        return true;
+    }
+
+    bool startWrite(void* handle, const std::uint8_t* data, std::size_t size,
+                    std::size_t& writtenOut, void*) override
+    {
+        handlesPassedToWrite.push_back(handle);
+        if (writeForceErr != 0)
         {
             writtenOut = 0;
-            return link::IoStatus::Pending;
+            err_ = writeForceErr;
+            if (writeForceErr == link::errIoPending)
+            {
+                pendingWriteData_ = data;
+                pendingWriteSize_ = size;
+                writeInFlight_ = true;
+            }
+            return false;
         }
+
+        std::size_t accept = writeChunk == 0 ? size : (std::min)(writeChunk, size);
         if (writePendingAfter && writeAcceptedTotal >= writePendingAfter)
         {
             writtenOut = 0;
-            return link::IoStatus::Pending;
+            err_ = link::errIoPending;
+            pendingWriteData_ = data;
+            pendingWriteSize_ = size;
+            writeInFlight_ = true;
+            return false;
         }
-        const std::size_t cap = writeCap == 0 ? size : (std::min)(writeCap, size);
-        std::size_t accept = cap;
         if (writePendingAfter && writeAcceptedTotal + accept > writePendingAfter)
             accept = writePendingAfter - writeAcceptedTotal;
         if (accept == 0 && size > 0)
         {
             writtenOut = 0;
-            return link::IoStatus::Pending;
+            err_ = link::errIoPending;
+            pendingWriteData_ = data;
+            pendingWriteSize_ = size;
+            writeInFlight_ = true;
+            return false;
         }
+
         written.insert(written.end(), data, data + accept);
         writeAcceptedTotal += accept;
         writtenOut = accept;
-        return link::IoStatus::Ok;
+        err_ = 0;
+        return true;
     }
 
-    link::IoStatus read(std::uint8_t* buffer, std::size_t size, std::size_t& readOut) override
+    bool completeWrite(void* handle, std::size_t& writtenOut, void*) override
     {
-        if (readForceAlways && readForce != link::IoStatus::Ok)
+        handlesPassedToWrite.push_back(handle);
+        if (!writeInFlight_)
         {
-            readOut = 0;
-            if (readForce == link::IoStatus::Failed)
-                lastErrorText = forcedError;
-            return readForce;
+            err_ = 5;
+            return false;
         }
-        if (readQueue.empty())
+
+        if (writeForceErr == link::errIoPending)
         {
-            readOut = 0;
-            if (readForce == link::IoStatus::Failed)
-                lastErrorText = forcedError;
-            return readForce;
+            writtenOut = 0;
+            err_ = link::errIoPending;
+            return false;
         }
-        const std::size_t give = (std::min)(size, readQueue.size());
-        std::memcpy(buffer, readQueue.data(), give);
-        readQueue.erase(readQueue.begin(), readQueue.begin() + give);
-        readOut = give;
-        return link::IoStatus::Ok;
+
+        writeInFlight_ = false;
+        if (pendingWriteSize_ > 0)
+        {
+            written.insert(written.end(), pendingWriteData_,
+                           pendingWriteData_ + pendingWriteSize_);
+            writeAcceptedTotal += pendingWriteSize_;
+        }
+        writtenOut = pendingWriteSize_;
+        pendingWriteData_ = nullptr;
+        pendingWriteSize_ = 0;
+        err_ = 0;
+        return true;
     }
 
-    void close() override { isClosed = true; }
+    bool close(void* handle) override
+    {
+        closeCalled = true;
+        closeHandle = handle;
+        handlesPassedToClose.push_back(handle);
+        readInFlight_ = false;
+        writeInFlight_ = false;
+        connectInFlight = false;
+        pendingWriteData_ = nullptr;
+        pendingWriteSize_ = 0;
+        return true;
+    }
 
-    std::string lastError() const override { return lastErrorText; }
+    unsigned long lastError() const override { return err_; }
+
+private:
+    bool readInFlight_ = false;
+    std::uint8_t* pendingReadBuffer_ = nullptr;
+    std::size_t pendingReadSize_ = 0;
+
+    bool writeInFlight_ = false;
+    const std::uint8_t* pendingWriteData_ = nullptr;
+    std::size_t pendingWriteSize_ = 0;
+
+    unsigned long err_ = 0;
 };
 
-// A PipeFactoryFn that hands out a borrowed FakePipe (non-owning shared_ptr
-// with a no-op deleter), so a test can script the pipe across the channel's
-// construct/drop cycle in owning mode. The same FakePipe is returned on every
-// call, so a drop+reconnect reuses it — the test resets `written`/`readQueue`
-// between phases as needed.
 inline link::PipeFactoryFn borrowPipeFactory(FakePipe& pipe)
 {
     return [&pipe] {

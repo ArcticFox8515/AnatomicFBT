@@ -88,6 +88,7 @@ enable_testing()
 
 add_library(LinkLib STATIC
     src/link/Pipe.h
+    src/link/Pipe.cpp
     src/link/Protocol.h
     src/link/MessageChannel.cpp
     src/link/MessageChannel.h)
@@ -138,7 +139,9 @@ target_link_libraries(SpikeLib PUBLIC LinkLib)
 # (vrserver.exe supplies the implementations through the vtables it hands to Init),
 # so only the include dirs are taken from the conan target.
 add_library(driver_00trackingcorrector SHARED
-    src/spike/SpikeDriver.cpp)
+    src/spike/SpikeDriver.cpp
+    src/spike/SpikeDriverPipe.cpp
+    src/spike/SpikeDriverPipe.h)
 
 target_link_libraries(driver_00trackingcorrector PRIVATE SpikeLib minhook::minhook spdlog::spdlog)
 
