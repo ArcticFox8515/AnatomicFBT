@@ -274,11 +274,76 @@ TEST_F(ServerPipeTest, OnPoseForwardsThroughTheChannelAfterInit)
     vr::DriverPose_t pose{};
     pose.poseIsValid = true;
     pose.deviceIsConnected = true;
-    observer_.onPose(3, pose, sizeof(pose));
+    vr::DriverPose_t dummy{};
+    observer_.onPose(3, pose, sizeof(pose), dummy);
 
     // The pose was forwarded: the pipe received a DevicePose frame.
     const std::size_t oneFrame = sizeof(link::DevicePose) + 8;  // 8-byte header
     EXPECT_EQ(pipe_.written.size(), oneFrame);
+}
+
+TEST_F(ServerPipeTest, FedOverrideBytesAreAppliedOnNextOnPose)
+{
+    ASSERT_EQ(server_.init(nullptr), vr::VRInitError_None);
+    server_.runFrame();  // connects the pipe
+
+    // Feed a PoseOverride frame into the pipe's read queue.
+    link::PoseOverride ov;
+    ov.deviceId = 3;
+    ov.position[0] = 1.0f;
+    ov.rotation[3] = 1.0f;
+    std::vector<std::uint8_t> bytes;
+    const std::uint32_t len = static_cast<std::uint32_t>(sizeof(ov));
+    bytes.push_back(static_cast<std::uint8_t>(len & 0xFF));
+    bytes.push_back(static_cast<std::uint8_t>((len >> 8) & 0xFF));
+    bytes.push_back(static_cast<std::uint8_t>((len >> 16) & 0xFF));
+    bytes.push_back(static_cast<std::uint8_t>((len >> 24) & 0xFF));
+    const std::uint16_t t = static_cast<std::uint16_t>(link::MessageType::PoseOverride);
+    bytes.push_back(static_cast<std::uint8_t>(t & 0xFF));
+    bytes.push_back(static_cast<std::uint8_t>((t >> 8) & 0xFF));
+    bytes.push_back(0);
+    bytes.push_back(0);
+    const std::uint8_t* p = reinterpret_cast<const std::uint8_t*>(&ov);
+    bytes.insert(bytes.end(), p, p + sizeof(ov));
+    pipe_.feedRead(bytes);
+
+    server_.runFrame();  // receives and forwards to observer_.onMessages
+
+    vr::DriverPose_t pose{};
+    pose.poseIsValid = true;
+    pose.deviceIsConnected = true;
+    vr::DriverPose_t out{};
+    EXPECT_TRUE(observer_.onPose(3, pose, sizeof(pose), out));
+}
+
+TEST_F(ServerPipeTest, PipeDropClearsOverrides)
+{
+    ASSERT_EQ(server_.init(nullptr), vr::VRInitError_None);
+    server_.runFrame();
+
+    // Install an override directly.
+    std::vector<link::Message> msgs;
+    link::Message m;
+    m.size = sizeof(link::PoseOverride);
+    m.type = link::MessageType::PoseOverride;
+    m.poseOverride.deviceId = 3;
+    m.poseOverride.position[0] = 1.0f;
+    m.poseOverride.rotation[3] = 1.0f;
+    msgs.push_back(m);
+    observer_.onMessages(msgs);
+
+    vr::DriverPose_t pose{};
+    pose.poseIsValid = true;
+    pose.deviceIsConnected = true;
+    vr::DriverPose_t out{};
+    EXPECT_TRUE(observer_.onPose(3, pose, sizeof(pose), out));
+
+    // Drop the pipe.
+    pipe_.readEmptyErr = link::errBrokenPipe;
+    pipe_.readQueue.clear();
+    server_.runFrame();  // connected() goes false -> clearOverrides
+
+    EXPECT_FALSE(observer_.onPose(3, pose, sizeof(pose), out));
 }
 
 // --------------------------------------------------------------- watchdog ----

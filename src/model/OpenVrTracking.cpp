@@ -61,7 +61,11 @@ std::vector<TrackedDevice> OpenVrTracking::pollPoses()
         return {};
 
     for (const link::Message& message : messages)
+    {
+        if (message.type != link::MessageType::DevicePose)
+            continue;
         applyPose(message.pose);
+    }
     return devices_;
 }
 
@@ -98,5 +102,24 @@ void OpenVrTracking::applyPose(const link::DevicePose& pose)
     else
     {
         devices_.insert(it, {static_cast<int>(pose.deviceId), kind, {position, rotation}});
+    }
+}
+
+void OpenVrTracking::sendOffsets(const std::vector<DeviceOffset>& offsets)
+{
+    for (const DeviceOffset& offset : offsets)
+    {
+        link::Message message;
+        message.size = sizeof(link::PoseOverride);
+        message.type = link::MessageType::PoseOverride;
+        message.poseOverride.deviceId = static_cast<std::uint32_t>(offset.deviceId);
+        message.poseOverride.position[0] = offset.delta.position.x;
+        message.poseOverride.position[1] = offset.delta.position.y;
+        message.poseOverride.position[2] = offset.delta.position.z;
+        message.poseOverride.rotation[0] = offset.delta.rotation.x;
+        message.poseOverride.rotation[1] = offset.delta.rotation.y;
+        message.poseOverride.rotation[2] = offset.delta.rotation.z;
+        message.poseOverride.rotation[3] = offset.delta.rotation.w;
+        channel_.send(message);
     }
 }

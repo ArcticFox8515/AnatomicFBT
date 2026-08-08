@@ -89,8 +89,10 @@ src/driver/     The SteamVR driver (doc/driver-plan.md): hooks
                 GetGenericInterface / TrackedDeviceAdded /
                 TrackedDevicePoseUpdated, reads device metadata via IVRProperties,
                 and on each pose forwards it to a `link::MessageChannel`
-                (driver-side server) so the app can consume driver-side poses.
-                All logic in DriverLib; Driver.cpp is a pure adapter. Input
+                (driver-side server) so the app can consume driver-side poses,
+                then applies any app-supplied `PoseOverride` by premultiplying
+                `worldFromDriver` before forwarding the pose to SteamVR. All
+                logic in DriverLib; Driver.cpp is a pure adapter. Input
                 capture is NOT part of it (neither IVRDriverInput hooks nor
                 PollNextEvent deliver buttons).
 src/driverdll/00trackingcorrector/driver.vrdrivermanifest  — copied next to bin/win64/.
@@ -145,7 +147,9 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   snapshots. `init()` throws `Error` when the driver pipe is not connected
   (retryable); `pollPoses()` drains and returns the snapshot (ordered by device
   id, `Other` skipped, `Lost` removes — same observable filter as the old
-  client-API poll); `isInitialized()` = currently connected. The pipe factory
+  client-API poll; non-`DevicePose` types are skipped); `isInitialized()` =
+  currently connected. `sendOffsets` ships one `PoseOverride` per device per
+  frame upstream through the same duplex channel. The pipe factory
   (`Win32ClientPipe` on `kDriverPipeName`) and a clock fn (1/s reconnect
   throttle) are ctor args injected by the exe.
 - `TrackerCalibration` — device→target binding, OpenVR-free. Proximity assignment
@@ -167,9 +171,11 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   at calibration is deliberately dropped: the reference and avatar skeletons
   have differently-oriented bone frames (rest rotations / bone roll), so
   re-hanging in the local frame rotates the tracker wrong. No GL/OpenVR; the app
-  renders the corrected poses as markers in the right viewport. Driver-side
-  application (override `TrackedDevicePoseUpdated` via a reverse app→driver
-  channel) is the next step.
+  renders the corrected poses as markers in the right viewport.
+  `correctionOffsets` computes the rigid world-space delta per corrected device
+  (`delta = compose(corrected, inverse(raw))`); `OpenVrTracking::sendOffsets`
+  ships one `PoseOverride` per device each frame through the same duplex channel
+  the driver link uses.
 - `ModeController` — ManualPose/Calibration/Capture/Replay state machine, hardware-free.
   `update(rig, devices, captureGesture)` mutates the rig and returns
   `FramePlan{solve, goals, capturedOffsets}`. Invariant: Capture frames, including the
@@ -206,17 +212,21 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   unit-tested; `classifyIo` (pure, tested) maps winapi returns to `IoStatus`
   so the forwarder has no decisions.
 - `Protocol` — wire types only (no codec): `DevicePose`
-  (id+tracking+kind+pos+rot+serial[32]) as a naturally-aligned POD, memcpy'd whole —
+  (id+tracking+kind+pos+rot+serial[32]) downstream and `PoseOverride`
+  (id+pos+rot) upstream, both naturally-aligned PODs, memcpy'd whole —
   same style as `.tcrec`'s `writeRaw`/`readRaw` but one struct copy. `Message` is the
   frame in memory: `u32 size` (payload length, sender-filled), `u16 type`, then a
-  payload union (`DevicePose` today; a future type adds a union member). The separate
-  `DeviceMetadata` message was folded into `DevicePose` in step 3; wire type 1 from an
-  older driver is silently skipped (forward compat). `DeviceKind`/`TrackingState`/
-  `MessageType` are this layer's own enums with pinned wire values; the driver maps
-  `ETrackedDeviceClass` -> `DeviceKind`, the app maps `DeviceKind` ->
-  `TrackedDeviceKind`. `tracking` collapses the two booleans the app ANDs in
-  `OpenVrTracking::pollPoses`; zero = drop the device this frame (it then holds its
-  last pose).
+  payload union (`DevicePose` / `PoseOverride` today; a future type adds a union
+  member). The separate `DeviceMetadata` message was folded into `DevicePose` in
+  step 3; wire type 1 from an older driver is silently skipped (forward compat).
+  `PoseOverride` carries a rigid world-space delta: the driver premultiplies
+  `worldFromDriver` by it so vrserver's prediction (which runs in driver-local
+  space on the untouched local pose and velocities) stays exact. `DeviceKind`/
+  `TrackingState`/`MessageType` are this layer's own enums with pinned wire
+  values; the driver maps `ETrackedDeviceClass` -> `DeviceKind`, the app maps
+  `DeviceKind` -> `TrackedDeviceKind`. `tracking` collapses the two booleans the
+  app ANDs in `OpenVrTracking::pollPoses`; zero = drop the device this frame
+  (it then holds its last pose).
 - `Logger` — `LogSink`, `compositeSink`, `Logger`, `log()`, `loggingTo()` (in
   `namespace link`). Driver code uses these `link::` symbols directly.
   `MessageChannel` takes `Logger&` and logs five lines: pipe
@@ -234,9 +244,10 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   pumps connect, one write step, then drains the pipe (one `completeRead` or
   `startRead` per iteration into `readMessage_` for exactly the bytes still
   missing — header first, then `size` payload bytes) until Pending or empty;
-  each complete frame is appended to the out vector. Unknown types are skipped
-  (consumed, not emitted); `size` above the payload union drops the pipe
-  (stream sync unrecoverable for this client, the next one gets a fresh
+  each complete frame of a known type is appended to the out vector. Unknown
+  types are skipped (consumed, not emitted); `size` above the payload union
+  (bounded by `sizeof(Message) - header`, no named cap constant) drops the
+  pipe (stream sync unrecoverable for this client, the next one gets a fresh
   start). `lastError()` exposes the drop reason.
 
 ## View, VR, entry point
@@ -256,7 +267,9 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   `Error` when the driver pipe is not connected (retryable). `pollPoses()`
   drains pending frames and returns the snapshot (ordered by device id,
   `Other` skipped, `Lost` removes — same observable filter as the old
-  client-API poll). `isInitialized()` = currently connected.
+  client-API poll; non-`DevicePose` types are skipped). `isInitialized()` =
+  currently connected. `sendOffsets` ships one `PoseOverride` per device each
+  frame upstream through the same duplex channel the driver link uses.
 - `OpenVrInput` (`src/vr/`) — on-demand OpenVR background client for the
   both-triggers gesture only (no driver-side input source exists). `init()`
   uses `VRApplication_Background` (never launches SteamVR), throws `Error`.
@@ -271,9 +284,10 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   `OpenVrInput`), `ModeController::update`, tear down `OpenVrInput` if no longer in
   Calibration, execute the returned plan, `SessionRecorder::update`, camera follow,
   left viewport (IK skeleton + gizmos in ManualPose), `retargetPose` + right viewport
-  (avatar), `correctDevicePoses` + corrected tracker markers on the avatar, ImGui
-  panel (with per-target correction checkboxes when calibrated), replay timeline. All
-  mode logic lives in the model layer.
+  (avatar), `correctDevicePoses` + corrected tracker markers on the avatar,
+  `correctionOffsets` + `sendOffsets` (ship the deltas to the driver each frame),
+  ImGui panel (with per-target correction checkboxes when calibrated), replay
+  timeline. All mode logic lives in the model layer.
 
 ## Libraries (Conan, see `conanfile.py`)
 

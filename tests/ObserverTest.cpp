@@ -12,6 +12,7 @@
 // EventPoller seam to fake here.
 
 #include "driver/Guard.h"
+#include "driver/PoseMath.h"
 #include "link/Log.h"
 #include "driver/Names.h"
 #include "driver/Observer.h"
@@ -144,7 +145,7 @@ protected:
                                    vr::TrackedDeviceClass_GenericTracker,
                                    vr::TrackedControllerRole_Invalid});
         observer_.setProperties(&properties_);
-        observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t));
+        observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t), dummyPose_);
         observer_.onRunFrame();
     }
 
@@ -156,6 +157,7 @@ protected:
     link_test::FakePipe pipe_;
     link::MessageChannel channel_{logger_, link_test::borrowPipeFactory(pipe_)};
     driver::Observer observer_{logger_, hooks_, [this] { return now_; }, channel_};
+    vr::DriverPose_t dummyPose_{};
 };
 
 // ------------------------------------------------- GetGenericInterface dispatch ----
@@ -220,8 +222,8 @@ TEST_F(ObserverTest, EachVersionStringIsReportedOnce)
 
 TEST_F(ObserverTest, PosesForImpossibleDeviceIndicesAreDropped)
 {
-    observer_.onPose(vr::k_unMaxTrackedDeviceCount, makePose(), sizeof(vr::DriverPose_t));
-    observer_.onPose(vr::k_unMaxTrackedDeviceCount + 7, makePose(), sizeof(vr::DriverPose_t));
+    observer_.onPose(vr::k_unMaxTrackedDeviceCount, makePose(), sizeof(vr::DriverPose_t), dummyPose_);
+    observer_.onPose(vr::k_unMaxTrackedDeviceCount + 7, makePose(), sizeof(vr::DriverPose_t), dummyPose_);
     EXPECT_TRUE(lines_.empty());
 }
 
@@ -303,7 +305,7 @@ TEST_F(ObserverTest, ForwardsAPoseAsTheBCompositionWithClassAndSerial)
     std::vector<link::Message> dummy;
     channel_.receive(dummy);  // construct the pipe
 
-    observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t));
+    observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t), dummyPose_);
 
     // One frame on the wire: header (8) + DevicePose (68).
     ASSERT_EQ(pipe_.written.size(), 8u + sizeof(link::DevicePose));
@@ -337,7 +339,7 @@ TEST_F(ObserverTest, ForwardsAnInvalidPoseAsTrackingLost)
 
     vr::DriverPose_t untracked = makePose();
     untracked.poseIsValid = false;
-    observer_.onPose(kTracker, untracked, sizeof(vr::DriverPose_t));
+    observer_.onPose(kTracker, untracked, sizeof(vr::DriverPose_t), dummyPose_);
 
     const link::DevicePose wire = parseFirstPose(pipe_.written);
     EXPECT_EQ(wire.tracking, link::TrackingState::Lost);
@@ -352,8 +354,141 @@ TEST_F(ObserverTest, ATruncatedPoseIsNotForwarded)
     std::vector<link::Message> dummy;
     channel_.receive(dummy);  // construct the pipe
 
-    observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t) - 8);
+    observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t) - 8, dummyPose_);
     EXPECT_TRUE(pipe_.written.empty());
+}
+
+// ---------------------------------------------------------- override path ----
+
+namespace
+{
+link::Message overrideMessage(uint32_t deviceId, float posX, float posY, float posZ,
+                              float rotW = 1.0f)
+{
+    link::Message m;
+    m.size = sizeof(link::PoseOverride);
+    m.type = link::MessageType::PoseOverride;
+    m.poseOverride.deviceId = deviceId;
+    m.poseOverride.position[0] = posX;
+    m.poseOverride.position[1] = posY;
+    m.poseOverride.position[2] = posZ;
+    m.poseOverride.rotation[3] = rotW;
+    return m;
+}
+
+// Composes the full world pose from a DriverPose_t, matching Observer::onPose.
+driver::RigidPose worldFromPose(const vr::DriverPose_t& pose)
+{
+    using namespace driver;
+    const RigidPose worldFromDriver{{pose.vecWorldFromDriverTranslation[0],
+                                     pose.vecWorldFromDriverTranslation[1],
+                                     pose.vecWorldFromDriverTranslation[2]},
+                                    {pose.qWorldFromDriverRotation.w,
+                                     pose.qWorldFromDriverRotation.x,
+                                     pose.qWorldFromDriverRotation.y,
+                                     pose.qWorldFromDriverRotation.z}};
+    const RigidPose local{{pose.vecPosition[0], pose.vecPosition[1], pose.vecPosition[2]},
+                          {pose.qRotation.w, pose.qRotation.x, pose.qRotation.y,
+                           pose.qRotation.z}};
+    const RigidPose driverFromHead{{pose.vecDriverFromHeadTranslation[0],
+                                    pose.vecDriverFromHeadTranslation[1],
+                                    pose.vecDriverFromHeadTranslation[2]},
+                                   {pose.qDriverFromHeadRotation.w,
+                                    pose.qDriverFromHeadRotation.x,
+                                    pose.qDriverFromHeadRotation.y,
+                                    pose.qDriverFromHeadRotation.z}};
+    return compose(compose(worldFromDriver, local), driverFromHead);
+}
+} // namespace
+
+TEST_F(ObserverTest, OverridePatchesWorldFromDriverAndKeepsRawUpstream)
+{
+    bringUpTracker();
+    lines_.clear();
+
+    std::vector<link::Message> dummy;
+    channel_.receive(dummy);  // construct the pipe
+
+    // Install an override: delta = {pos={1,0,0}, rot=identity} in world space.
+    std::vector<link::Message> messages;
+    messages.push_back(overrideMessage(kTracker, 1.0f, 0.0f, 0.0f));
+    observer_.onMessages(messages);
+
+    vr::DriverPose_t out{};
+    const vr::DriverPose_t pose = makePose();
+    const bool replace = observer_.onPose(kTracker, pose, sizeof(vr::DriverPose_t), out);
+    EXPECT_TRUE(replace);
+
+    // The upstream frame still carries the raw world pose (9, 2.5, -3).
+    const link::DevicePose wire = parseFirstPose(pipe_.written);
+    EXPECT_FLOAT_EQ(wire.position[0], 9.0f);
+    EXPECT_FLOAT_EQ(wire.position[1], 2.5f);
+    EXPECT_FLOAT_EQ(wire.position[2], -3.0f);
+
+    // The out-pose's full world composition equals delta o rawWorld.
+    const driver::RigidPose rawWorld = worldFromPose(pose);
+    const driver::RigidPose outWorld = worldFromPose(out);
+    EXPECT_NEAR(outWorld.pos.x, rawWorld.pos.x + 1.0, 1e-4);
+    EXPECT_NEAR(outWorld.pos.y, rawWorld.pos.y, 1e-4);
+    EXPECT_NEAR(outWorld.pos.z, rawWorld.pos.z, 1e-4);
+    EXPECT_NEAR(outWorld.rot.w, rawWorld.rot.w, 1e-4);
+    EXPECT_NEAR(outWorld.rot.x, rawWorld.rot.x, 1e-4);
+    EXPECT_NEAR(outWorld.rot.y, rawWorld.rot.y, 1e-4);
+    EXPECT_NEAR(outWorld.rot.z, rawWorld.rot.z, 1e-4);
+}
+
+TEST_F(ObserverTest, NoOverrideReturnsFalseAndForwardsRaw)
+{
+    bringUpTracker();
+    lines_.clear();
+
+    std::vector<link::Message> dummy;
+    channel_.receive(dummy);
+
+    vr::DriverPose_t out{};
+    const bool replace = observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t), out);
+    EXPECT_FALSE(replace);
+}
+
+TEST_F(ObserverTest, OverrideExpiresAfterStaleTimeout)
+{
+    bringUpTracker();
+    lines_.clear();
+
+    std::vector<link::Message> dummy;
+    channel_.receive(dummy);
+
+    std::vector<link::Message> messages;
+    messages.push_back(overrideMessage(kTracker, 1.0f, 0.0f, 0.0f));
+    observer_.onMessages(messages);
+
+    vr::DriverPose_t out{};
+    EXPECT_TRUE(observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t), out));
+
+    // Advance past the stale window.
+    now_ += driver::kOverrideStaleSeconds + 0.1;
+    observer_.onRunFrame();
+
+    EXPECT_FALSE(observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t), out));
+}
+
+TEST_F(ObserverTest, ClearOverridesDisablesAll)
+{
+    bringUpTracker();
+    lines_.clear();
+
+    std::vector<link::Message> dummy;
+    channel_.receive(dummy);
+
+    std::vector<link::Message> messages;
+    messages.push_back(overrideMessage(kTracker, 1.0f, 0.0f, 0.0f));
+    observer_.onMessages(messages);
+
+    vr::DriverPose_t out{};
+    EXPECT_TRUE(observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t), out));
+
+    observer_.clearOverrides();
+    EXPECT_FALSE(observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t), out));
 }
 
 // -------------------------------------------------------- names and guards ----

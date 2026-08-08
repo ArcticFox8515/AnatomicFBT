@@ -11,8 +11,12 @@
 #include "link/Protocol.h"
 #include "model/Error.h"
 #include "model/OpenVrTracking.h"
+#include "model/Pose.h"
+#include "model/TrackerCorrection.h"
 
 #include <gtest/gtest.h>
+
+#include <glm/gtc/quaternion.hpp>
 
 #include <cstdint>
 #include <cstring>
@@ -228,4 +232,56 @@ TEST(OpenVrTracking, IsInitializedFalseAfterADrop)
     f.pipe.readQueue.clear();
     f.vr.pollPoses();
     EXPECT_FALSE(f.vr.isInitialized());
+}
+
+// ---- sendOffsets: upstream PoseOverride frames -----------------------------
+
+TEST(OpenVrTracking, SendOffsetsWritesOneFramePerDevice)
+{
+    TrackingFixture f;
+
+    std::vector<DeviceOffset> offsets;
+    offsets.push_back({1, {glm::vec3(0.1f, 0.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f)}});
+    offsets.push_back({2, {glm::vec3(0.0f, 0.2f, 0.0f), glm::angleAxis(0.5f, glm::vec3(0.0f, 1.0f, 0.0f))}});
+    f.vr.sendOffsets(offsets);
+
+    const std::size_t oneFrame = 8u + sizeof(link::PoseOverride);
+    ASSERT_EQ(f.pipe.written.size(), oneFrame * 2);
+
+    link::PoseOverride first;
+    std::memcpy(&first, f.pipe.written.data() + 8, sizeof(first));
+    EXPECT_EQ(first.deviceId, 1u);
+    EXPECT_FLOAT_EQ(first.position[0], 0.1f);
+
+    link::PoseOverride second;
+    std::memcpy(&second, f.pipe.written.data() + oneFrame + 8, sizeof(second));
+    EXPECT_EQ(second.deviceId, 2u);
+    EXPECT_FLOAT_EQ(second.position[1], 0.2f);
+}
+
+TEST(OpenVrTracking, InboundPoseOverrideDoesNotBecomeATrackedDevice)
+{
+    TrackingFixture f;
+
+    link::PoseOverride ov;
+    ov.deviceId = 5;
+    ov.position[0] = 1.0f;
+
+    std::vector<std::uint8_t> bytes;
+    const std::uint32_t len = static_cast<std::uint32_t>(sizeof(ov));
+    bytes.push_back(static_cast<std::uint8_t>(len & 0xFF));
+    bytes.push_back(static_cast<std::uint8_t>((len >> 8) & 0xFF));
+    bytes.push_back(static_cast<std::uint8_t>((len >> 16) & 0xFF));
+    bytes.push_back(static_cast<std::uint8_t>((len >> 24) & 0xFF));
+    const std::uint16_t t = static_cast<std::uint16_t>(link::MessageType::PoseOverride);
+    bytes.push_back(static_cast<std::uint8_t>(t & 0xFF));
+    bytes.push_back(static_cast<std::uint8_t>((t >> 8) & 0xFF));
+    bytes.push_back(0);
+    bytes.push_back(0);
+    const std::uint8_t* p = reinterpret_cast<const std::uint8_t*>(&ov);
+    bytes.insert(bytes.end(), p, p + sizeof(ov));
+
+    f.pipe.feedRead(bytes);
+    const auto devices = f.vr.pollPoses();
+    EXPECT_TRUE(devices.empty());
 }

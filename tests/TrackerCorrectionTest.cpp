@@ -277,3 +277,41 @@ TEST(CorrectDevicePoses, UncalibratedReturnsEmpty)
     const TrackerCalibration uncalibrated;
     EXPECT_TRUE(correctDevicePoses(uncalibrated, map, avatar).empty());
 }
+
+// ---- correctionOffsets: delta reproduces the corrected pose ----------------
+
+TEST(CorrectionOffsets, DeltaComposedWithRawReproducesCorrected)
+{
+    const Pose raw{glm::vec3(1.0f, 2.0f, 3.0f),
+                   glm::angleAxis(0.5f, glm::vec3(0.0f, 1.0f, 0.0f))};
+    const Pose corrected{glm::vec3(1.1f, 2.2f, 3.3f),
+                         glm::angleAxis(0.6f, glm::vec3(0.0f, 1.0f, 0.0f))};
+
+    std::vector<CorrectedPose> poses{{0, 42, corrected}};
+    std::vector<TrackedDevice> devices{{42, TrackedDeviceKind::Tracker, raw}};
+
+    const auto offsets = correctionOffsets(poses, devices);
+    ASSERT_EQ(offsets.size(), 1u);
+    EXPECT_EQ(offsets[0].deviceId, 42);
+
+    const Pose reconstructed = compose(offsets[0].delta, raw);
+    expectPoseNear(reconstructed, corrected);
+}
+
+TEST(CorrectionOffsets, DeviceMissingFromSnapshotIsSkipped)
+{
+    const Pose raw{glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f)};
+    const Pose corrected{glm::vec3(0.1f, 0.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f)};
+
+    std::vector<CorrectedPose> poses{{0, 99, corrected}};
+    std::vector<TrackedDevice> devices{{42, TrackedDeviceKind::Tracker, raw}};
+
+    EXPECT_TRUE(correctionOffsets(poses, devices).empty());
+}
+
+TEST(CorrectionOffsets, EmptyCorrectedYieldsEmptyOffsets)
+{
+    std::vector<CorrectedPose> poses;
+    std::vector<TrackedDevice> devices{{1, TrackedDeviceKind::Tracker, {}}};
+    EXPECT_TRUE(correctionOffsets(poses, devices).empty());
+}

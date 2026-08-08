@@ -22,6 +22,7 @@
 #include "link/MessageChannel.h"
 
 #include "model/TrackedDevice.h"
+#include "model/TrackerCorrection.h"
 
 #include <functional>
 #include <vector>
@@ -54,6 +55,12 @@ public:
     // once per second (per the injected clock) and returns an empty list, as
     // the old poll did when uninitialized.
     std::vector<TrackedDevice> pollPoses();
+
+    // Sends one `PoseOverride` frame per device offset to the driver, so the
+    // driver can rewrite each device's pose before handing it to SteamVR. The
+    // channel is duplex and this class owns the only end of it, so the upstream
+    // direction lives here. No-op while disconnected.
+    void sendOffsets(const std::vector<DeviceOffset>& offsets);
 
 private:
     void applyPose(const link::DevicePose& pose);

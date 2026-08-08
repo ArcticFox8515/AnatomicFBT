@@ -8,7 +8,7 @@
 class IkRig;
 class Skeleton;
 class TrackerCalibration;
-
+struct TrackedDevice;
 // Per-IK-target correction state: the avatar joint each target's tracker is
 // placed on (matched by joint name — built once at startup) and whether the
 // user has enabled the correction for that target. Targets with no matching
@@ -56,3 +56,19 @@ struct CorrectedPose
 std::vector<CorrectedPose> correctDevicePoses(const TrackerCalibration& calibration,
                                               const CorrectionMap& map,
                                               const Skeleton& avatar);
+
+// One device's correction for the driver: a rigid world-space delta such that
+// `compose(delta, rawDevicePose)` yields the corrected pose. The driver
+// premultiplies `worldFromDriver` by it.
+struct DeviceOffset
+{
+    int deviceId = -1;
+    Pose delta;
+};
+
+// Builds the per-frame override set from the corrected poses and the raw
+// device poses: `delta = compose(corrected, inverse(raw))`. Iterates
+// `corrected` only — an unticked target simply has no entry this frame, and
+// the driver expires its last override after `kOverrideStaleSeconds`.
+std::vector<DeviceOffset> correctionOffsets(const std::vector<CorrectedPose>& corrected,
+                                            const std::vector<TrackedDevice>& devices);

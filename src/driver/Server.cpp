@@ -107,8 +107,13 @@ void Server::runFrame()
     runGuarded([&] {
         observer_.onRunFrame();
 
-                std::vector<link::Message> messages;
+        std::vector<link::Message> messages;
         channel_.receive(messages);
+        observer_.onMessages(messages);
+
+        if (wasConnected_ && !channel_.connected())
+            observer_.clearOverrides();
+        wasConnected_ = channel_.connected();
     });
 }
 

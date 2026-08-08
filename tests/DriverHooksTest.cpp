@@ -128,6 +128,7 @@ struct StubRecord
     // TrackedDevicePoseUpdated
     uint32_t poseIndex = 0;
     double posePositionX = 0.0;
+    double poseWorldFromDriverX = 0.0;
     uint32_t poseStructSize = 0;
     const vr::DriverPose_t* poseAddress = nullptr;
 };
@@ -176,6 +177,7 @@ void stubTrackedDevicePoseUpdated(vr::IVRServerDriverHost* self, uint32_t index,
     g_stub.host = self;
     g_stub.poseIndex = index;
     g_stub.posePositionX = pose.vecPosition[0];
+    g_stub.poseWorldFromDriverX = pose.vecWorldFromDriverTranslation[0];
     g_stub.poseStructSize = poseStructSize;
     g_stub.poseAddress = &pose;
 }
@@ -376,5 +378,41 @@ TEST_F(DriverHooksTest, PoseUpdateIsForwardedByReferenceAndUnmodified)
     EXPECT_EQ(g_stub.poseAddress, &pose);
     EXPECT_DOUBLE_EQ(g_stub.posePositionX, 1.25);
     EXPECT_DOUBLE_EQ(pose.vecPosition[0], 1.25);
+}
+
+TEST_F(DriverHooksTest, PoseUpdateWithOverrideForwardsModifiedCopy)
+{
+    installWith(hooks_.poseUpdated, reinterpret_cast<void*>(&stubTrackedDevicePoseUpdated), 1);
+
+    // Install an override for device 7.
+    link::Message ov;
+    ov.size = sizeof(link::PoseOverride);
+    ov.type = link::MessageType::PoseOverride;
+    ov.poseOverride.deviceId = 7;
+    ov.poseOverride.position[0] = 5.0f;
+    ov.poseOverride.rotation[3] = 1.0f;
+    std::vector<link::Message> messages;
+    messages.push_back(ov);
+    observer_.onMessages(messages);
+
+    vr::DriverPose_t pose{};
+    pose.poseIsValid = true;
+    pose.deviceIsConnected = true;
+    pose.vecPosition[0] = 1.25;
+    pose.qRotation = {1.0, 0.0, 0.0, 0.0};
+    pose.qWorldFromDriverRotation = {1.0, 0.0, 0.0, 0.0};
+    pose.vecWorldFromDriverTranslation[0] = 10.0;
+    pose.qDriverFromHeadRotation = {1.0, 0.0, 0.0, 0.0};
+
+    driver::observeTrackedDevicePoseUpdated(hooks_, observer_,
+        reinterpret_cast<vr::IVRServerDriverHost*>(&object_), 7,
+        pose, sizeof(vr::DriverPose_t));
+
+    EXPECT_EQ(g_stub.calls, 1);
+    EXPECT_EQ(g_stub.poseStructSize, sizeof(vr::DriverPose_t));
+    // The override premultiplied delta={5,0,0,identity} onto worldFromDriver={10,...}:
+    // new worldFromDriver translation = {15, 0, 0}.
+    EXPECT_NE(g_stub.poseAddress, &pose);
+    EXPECT_DOUBLE_EQ(g_stub.poseWorldFromDriverX, 15.0);
 }
 } // namespace

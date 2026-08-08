@@ -2,13 +2,20 @@
 
 // Wire types for the driver link (doc/driver-plan.md phase A, step 3).
 //
-// A single message — `DevicePose` — covers everything the app consumes from the
-// tracking provider today (see OpenVrTracking pollPoses): the device's kind
-// and serial (the only things the app knows a device by besides its id) and the
-// per-device pose (id + position + rotation + the one validity predicate). The
-// separate metadata message was folded into the pose in step 3 so the channel
-// carries one frame per device update, not two. Nothing else from
-// `DriverPose_t` is read downstream yet, so nothing else is on the wire.
+// A single downstream message — `DevicePose` — covers everything the app
+// consumes from the tracking provider today (see OpenVrTracking pollPoses): the
+// device's kind and serial (the only things the app knows a device by besides
+// its id) and the per-device pose (id + position + rotation + the one validity
+// predicate). The separate metadata message was folded into the pose in step 3
+// so the channel carries one frame per device update, not two. Nothing else
+// from `DriverPose_t` is read downstream yet, so nothing else is on the wire.
+//
+// `PoseOverride` is the upstream message: the app's correction of a device's
+// pose, sent back through the same duplex pipe so the driver can rewrite the
+// pose it hands to SteamVR. It carries a device id and a rigid world-space
+// delta (`position`/`rotation`) such that `compose(delta, rawWorld)` yields the
+// corrected world pose; the driver applies it by premultiplying
+// `worldFromDriver`, so vrserver's pose prediction stays exact.
 //
 // The wire format is POD structs with explicit-width fields, memcpy'd whole —
 // same style as `.tcrec` (Recording.cpp writeRaw/readRaw), except we copy the
@@ -62,6 +69,7 @@ enum class TrackingState : std::uint8_t
 enum class MessageType : std::uint16_t
 {
     DevicePose = 2,
+    PoseOverride = 3,
 };
 
 // Largest serial string carried on the wire. OpenVR serials ("LHR-XXXXXXXX")
@@ -82,11 +90,28 @@ struct DevicePose
     char serial[kMaxSerialBytes] = {};
 };
 
+// Upstream (app -> driver) correction for one device. A rigid world-space delta
+// from the device's raw pose to its corrected pose: `compose(delta, rawWorld)`
+// yields the corrected world pose. The driver applies it by premultiplying
+// `worldFromDriver` (the only `DriverPose_t` fields it touches), so vrserver's
+// pose prediction — which runs in the driver-local frame on the untouched local
+// pose and velocities — stays exact.
+//
+// Layout: u32 deviceId, 4 pad, f32 position[3], f32 rotation[4] (xyzw)
+// -> sizeof == 32 on MSVC x86/x64, memcpy'd whole like DevicePose.
+struct PoseOverride
+{
+    std::uint32_t deviceId = 0;
+    float position[3] = {0.0f, 0.0f, 0.0f};
+    float rotation[4] = {0.0f, 0.0f, 0.0f, 1.0f};  // xyzw, identity
+};
+
 // A frame on the wire and in memory: a u32 payload length, a u16 type, then the
 // payload union. The length is the payload length (not the whole frame) and is
 // filled by the sender. The framing layer reads the header, then exactly `size`
-// payload bytes; a `size` larger than the union is a protocol error. Only one
-// payload shape exists today (`DevicePose`); a future type adds a union member.
+// payload bytes; a `size` larger than the union is a protocol error. Two
+// payload shapes exist today (`DevicePose` downstream, `PoseOverride`
+// upstream); a future type adds a union member.
 struct Message
 {
     std::uint32_t size = 0;
@@ -94,6 +119,7 @@ struct Message
     union
     {
         DevicePose pose{};
+        PoseOverride poseOverride;
     };
 };
 } // namespace link

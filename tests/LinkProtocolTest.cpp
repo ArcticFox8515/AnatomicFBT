@@ -101,9 +101,50 @@ TEST(LinkProtocol, MessageTypeValuesArePinned)
     // DeviceMetadata (1) was removed in step 3; DevicePose keeps its wire value
     // so an older driver/app that spoke type 2 still interoperates.
     EXPECT_EQ(static_cast<std::uint16_t>(link::MessageType::DevicePose), 2);
+    EXPECT_EQ(static_cast<std::uint16_t>(link::MessageType::PoseOverride), 3);
 }
 
 // ---- the framing layer keys on sizeof(POD); pin those sizes ---------------
 
 static_assert(sizeof(link::DevicePose) == 68, "pose POD size drifted");
+
+TEST(LinkProtocol, PoseOverrideRoundTripsThroughMemcpy)
+{
+    link::PoseOverride original;
+    original.deviceId = 5;
+    original.position[0] = 0.1f;
+    original.position[1] = -0.2f;
+    original.position[2] = 0.3f;
+    original.rotation[0] = 0.4f;  // x
+    original.rotation[1] = 0.5f;  // y
+    original.rotation[2] = 0.6f;  // z
+    original.rotation[3] = 0.7f;  // w
+
+    std::vector<std::uint8_t> wire(sizeof(link::PoseOverride));
+    std::memcpy(wire.data(), &original, sizeof(link::PoseOverride));
+
+    link::PoseOverride restored;
+    std::memcpy(&restored, wire.data(), sizeof(link::PoseOverride));
+    EXPECT_EQ(restored.deviceId, 5u);
+    EXPECT_FLOAT_EQ(restored.position[0], 0.1f);
+    EXPECT_FLOAT_EQ(restored.position[1], -0.2f);
+    EXPECT_FLOAT_EQ(restored.position[2], 0.3f);
+    EXPECT_FLOAT_EQ(restored.rotation[0], 0.4f);
+    EXPECT_FLOAT_EQ(restored.rotation[1], 0.5f);
+    EXPECT_FLOAT_EQ(restored.rotation[2], 0.6f);
+    EXPECT_FLOAT_EQ(restored.rotation[3], 0.7f);
+}
+
+TEST(LinkProtocol, PoseOverrideDefaultsToIdentityRotation)
+{
+    link::PoseOverride pose;
+    EXPECT_EQ(pose.deviceId, 0u);
+    EXPECT_FLOAT_EQ(pose.position[0], 0.0f);
+    EXPECT_FLOAT_EQ(pose.position[1], 0.0f);
+    EXPECT_FLOAT_EQ(pose.position[2], 0.0f);
+    EXPECT_FLOAT_EQ(pose.rotation[3], 1.0f);  // w
+    EXPECT_FLOAT_EQ(pose.rotation[0], 0.0f);  // x
+}
+
+static_assert(sizeof(link::PoseOverride) == 32, "poseOverride POD size drifted");
 } // namespace

@@ -95,6 +95,7 @@ private:
     Observer& observer_;
     ServerEnvironment& environment_;
     link::MessageChannel& channel_;
+    bool wasConnected_ = false;
 };
 
 class WatchdogEnvironment

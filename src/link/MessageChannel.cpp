@@ -8,10 +8,19 @@ namespace link
 namespace
 {
 inline constexpr std::size_t kMessageHeaderBytes = 8;
-inline constexpr std::size_t kPayloadCap = sizeof(DevicePose);
+
+// The largest payload that fits in the `Message` union. `DevicePose` is the
+// largest member today, so the bound equals its size; if a future member is
+// larger, this tracks it automatically.
+inline constexpr std::size_t kMaxPayloadBytes = sizeof(Message) - kMessageHeaderBytes;
 
 static_assert(sizeof(Message) == kMessageHeaderBytes + sizeof(DevicePose),
-              "Message must be header plus DevicePose");
+              "Message must be header plus DevicePose (the largest union member)");
+
+bool isKnownType(MessageType type)
+{
+    return type == MessageType::DevicePose || type == MessageType::PoseOverride;
+}
 } // namespace
 
 MessageChannel::MessageChannel(Logger& logger, PipeFactoryFn factory)
@@ -241,7 +250,7 @@ void MessageChannel::drainPipe(std::vector<Message>& out)
             }
         }
 
-        if (readOffset_ == kMessageHeaderBytes && readMessage_.size > kPayloadCap)
+        if (readOffset_ == kMessageHeaderBytes && readMessage_.size > kMaxPayloadBytes)
         {
             lastError_ = "payload length exceeds maximum";
             queueLog("size above cap: {}", readMessage_.size);
@@ -251,7 +260,7 @@ void MessageChannel::drainPipe(std::vector<Message>& out)
 
         if (readOffset_ >= readEnd())
         {
-            if (readMessage_.type == MessageType::DevicePose)
+            if (isKnownType(readMessage_.type))
                 out.push_back(readMessage_);
             else
                 queueLog("unexpected type {} skipped", static_cast<unsigned>(readMessage_.type));
@@ -264,7 +273,7 @@ void MessageChannel::unsafeSend(const Message& message)
 {
     if (!pipe_ || connectState_ != ConnectState::Connected)
         return;
-    if (message.size > kPayloadCap)
+    if (message.size > kMaxPayloadBytes)
     {
         queueLog("size above cap: {}", message.size);
         return;

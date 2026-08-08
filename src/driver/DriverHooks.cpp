@@ -61,8 +61,9 @@ void observeTrackedDevicePoseUpdated(DriverHookSet& hooks, Observer& observer,
                                      vr::IVRServerDriverHost* self, uint32_t index,
                                      const vr::DriverPose_t& pose, uint32_t poseStructSize)
 {
-    runGuarded([&] { observer.onPose(index, pose, poseStructSize); });
-    // Forwarded unchanged — this driver never modifies a pose.
-    hooks.poseUpdated.original()(self, index, pose, poseStructSize);
+    vr::DriverPose_t corrected;
+    bool replace = false;
+    runGuarded([&] { replace = observer.onPose(index, pose, poseStructSize, corrected); });
+    hooks.poseUpdated.original()(self, index, replace ? corrected : pose, poseStructSize);
 }
 } // namespace driver

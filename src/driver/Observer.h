@@ -1,5 +1,7 @@
 #pragma once
 
+#include "PoseMath.h"
+
 #include "link/Log.h"
 
 #include "link/MessageChannel.h"
@@ -12,6 +14,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace driver
 {
@@ -38,6 +41,7 @@ public:
 using NowFn = std::function<double()>;
 
 constexpr double kHousekeepingSeconds = 1.0;
+constexpr double kOverrideStaleSeconds = 0.5;
 
 class Observer
 {
@@ -48,8 +52,16 @@ public:
     void setProperties(DeviceProperties* properties);
 
     void onInterfaceRequested(const char* version, void* interfacePtr);
-    void onPose(uint32_t index, const vr::DriverPose_t& pose, uint32_t poseStructSize);
+    // Forwards `pose` upstream as a `DevicePose` frame carrying the raw world
+    // pose (the app derives the correction as `corrected - raw`, so feeding it
+    // our own output would collapse the offset). When an override is active for
+    // `index`, also patches `out` so the caller forwards it to SteamVR instead
+    // of `pose`. Returns whether the caller should forward `out`.
+    bool onPose(uint32_t index, const vr::DriverPose_t& pose, uint32_t poseStructSize,
+                vr::DriverPose_t& out);
     void onRunFrame();
+    void onMessages(const std::vector<link::Message>& messages);
+    void clearOverrides();
 
 private:
     class SeenInterfaces
@@ -83,12 +95,39 @@ private:
         bool refreshedEver_ = false;
     };
 
+    // Per-device correction deltas received from the app. Written from
+    // `onMessages` (RunFrame, vrserver main thread), read from `onPose`
+    // (foreign driver pose threads), so the cache has its own mutex like the
+    // metadata cache. Entries expire after `kOverrideStaleSeconds` so an app
+    // that hangs or crashes stops mangling poses; `clear()` wipes them on a
+    // pipe-drop edge (see Server::runFrame).
+    class OverrideCache
+    {
+    public:
+        struct Entry
+        {
+            bool enabled = false;
+            RigidPose delta;
+            double receivedAt = 0.0;
+        };
+
+        void store(const link::PoseOverride& poseOverride, double now);
+        void expire(double now);
+        void clear();
+        Entry lookup(uint32_t index) const;
+
+    private:
+        mutable std::mutex mutex_;
+        std::array<Entry, vr::k_unMaxTrackedDeviceCount> entries_{};
+    };
+
     link::Logger& log_;
     InterfaceHooks& hooks_;
     NowFn now_;
     link::MessageChannel& channel_;
     SeenInterfaces seen_;
     MetadataCache cache_;
+    OverrideCache overrides_;
     DeviceProperties* properties_ = nullptr;
 };
 } // namespace driver

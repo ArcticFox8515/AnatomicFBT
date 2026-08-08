@@ -3,6 +3,7 @@
 #include "IkRig.h"
 #include "Skeleton.h"
 #include "TrackerCalibration.h"
+#include "TrackedDevice.h"
 
 CorrectionMap buildCorrectionMap(const IkRig& rig, const Skeleton& avatar)
 {
@@ -66,5 +67,25 @@ std::vector<CorrectedPose> correctDevicePoses(const TrackerCalibration& calibrat
         result.push_back({t, *deviceId, boneWorld});
     }
 
+    return result;
+}
+
+std::vector<DeviceOffset> correctionOffsets(const std::vector<CorrectedPose>& corrected,
+                                            const std::vector<TrackedDevice>& devices)
+{
+    std::vector<DeviceOffset> result;
+    for (const CorrectedPose& c : corrected)
+    {
+        const Pose* raw = nullptr;
+        for (const TrackedDevice& d : devices)
+            if (d.id == c.deviceId)
+            {
+                raw = &d.pose;
+                break;
+            }
+        if (!raw)
+            continue;
+        result.push_back({c.deviceId, compose(c.pose, inverse(*raw))});
+    }
     return result;
 }

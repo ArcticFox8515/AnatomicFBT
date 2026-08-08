@@ -70,6 +70,41 @@ Observer::MetadataCache::Entry Observer::MetadataCache::lookup(uint32_t index) c
     return entries_[index];
 }
 
+void Observer::OverrideCache::store(const link::PoseOverride& poseOverride, double now)
+{
+    if (poseOverride.deviceId >= vr::k_unMaxTrackedDeviceCount)
+        return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    Entry& entry = entries_[poseOverride.deviceId];
+    entry.enabled = true;
+    entry.delta.pos = {poseOverride.position[0], poseOverride.position[1],
+                       poseOverride.position[2]};
+    entry.delta.rot = {poseOverride.rotation[3], poseOverride.rotation[0],
+                       poseOverride.rotation[1], poseOverride.rotation[2]};
+    entry.receivedAt = now;
+}
+
+void Observer::OverrideCache::expire(double now)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (Entry& entry : entries_)
+        if (entry.enabled && now - entry.receivedAt > kOverrideStaleSeconds)
+            entry.enabled = false;
+}
+
+void Observer::OverrideCache::clear()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (Entry& entry : entries_)
+        entry.enabled = false;
+}
+
+Observer::OverrideCache::Entry Observer::OverrideCache::lookup(uint32_t index) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return entries_[index];
+}
+
 void Observer::onInterfaceRequested(const char* version, void* interfacePtr)
 {
     const std::string name = version ? version : "(null)";
@@ -99,13 +134,14 @@ void Observer::onInterfaceRequested(const char* version, void* interfacePtr)
     }
 }
 
-void Observer::onPose(uint32_t index, const vr::DriverPose_t& pose, uint32_t poseStructSize)
+bool Observer::onPose(uint32_t index, const vr::DriverPose_t& pose, uint32_t poseStructSize,
+                      vr::DriverPose_t& out)
 {
     if (index >= vr::k_unMaxTrackedDeviceCount)
-        return;
+        return false;
 
     if (poseStructSize < sizeof(vr::DriverPose_t))
-        return;
+        return false;
 
     const MetadataCache::Entry entry = cache_.lookup(index);
 
@@ -135,6 +171,10 @@ void Observer::onPose(uint32_t index, const vr::DriverPose_t& pose, uint32_t pos
                                     pose.qDriverFromHeadRotation.z}};
     const RigidPose world = compose(compose(worldFromDriver, local), driverFromHead);
 
+    // The upstream frame carries the raw world pose. The app derives the
+    // correction as `corrected - raw`; feeding it our own corrected output
+    // would collapse the offset (and, since the app's IK goals track the raw
+    // pose, drift the avatar). Do not touch `wire` with the delta.
     wire.position[0] = static_cast<float>(world.pos.x);
     wire.position[1] = static_cast<float>(world.pos.y);
     wire.position[2] = static_cast<float>(world.pos.z);
@@ -151,10 +191,31 @@ void Observer::onPose(uint32_t index, const vr::DriverPose_t& pose, uint32_t pos
     message.type = link::MessageType::DevicePose;
     message.pose = wire;
     channel_.send(message);
+
+    // Apply the correction to the pose handed to SteamVR. Premultiplying
+    // `worldFromDriver` by the delta yields `world' = delta o world`, and the
+    // local pose plus all velocities stay in their original frame, so vrserver's
+    // pose prediction (which runs in driver-local space) stays exact.
+    const OverrideCache::Entry ov = overrides_.lookup(index);
+    if (!ov.enabled)
+        return false;
+
+    const RigidPose correctedWorldFromDriver = compose(ov.delta, worldFromDriver);
+    out = pose;
+    out.vecWorldFromDriverTranslation[0] = correctedWorldFromDriver.pos.x;
+    out.vecWorldFromDriverTranslation[1] = correctedWorldFromDriver.pos.y;
+    out.vecWorldFromDriverTranslation[2] = correctedWorldFromDriver.pos.z;
+    out.qWorldFromDriverRotation.w = correctedWorldFromDriver.rot.w;
+    out.qWorldFromDriverRotation.x = correctedWorldFromDriver.rot.x;
+    out.qWorldFromDriverRotation.y = correctedWorldFromDriver.rot.y;
+    out.qWorldFromDriverRotation.z = correctedWorldFromDriver.rot.z;
+    return true;
 }
 
 void Observer::onRunFrame()
 {
+    overrides_.expire(now_());
+
     if (!properties_)
         return;
 
@@ -182,5 +243,20 @@ void Observer::onRunFrame()
                       entry.serial.c_str(),
                       static_cast<unsigned long long>(container));
     }
+}
+
+void Observer::onMessages(const std::vector<link::Message>& messages)
+{
+    for (const link::Message& message : messages)
+    {
+        if (message.type != link::MessageType::PoseOverride)
+            continue;
+        overrides_.store(message.poseOverride, now_());
+    }
+}
+
+void Observer::clearOverrides()
+{
+    overrides_.clear();
 }
 } // namespace driver

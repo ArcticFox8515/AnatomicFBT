@@ -596,4 +596,64 @@ TEST(LinkMessageChannel, DropsPipeWhenThirdEventCreationFails)
     const std::size_t oneFrame = kFrameHeaderSize + sizeof(link::DevicePose);
     EXPECT_EQ(fake.written.size(), oneFrame);
 }
+
+// ---- PoseOverride (upstream messages) ---------------------------------------
+
+TEST(LinkMessageChannel, SendsAndReceivesAPoseOverride)
+{
+    link_test::FakePipe pipe;
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(pipe));
+    std::vector<link::Message> dummy;
+    channel.receive(dummy);
+
+    link::Message m;
+    m.size = sizeof(link::PoseOverride);
+    m.type = link::MessageType::PoseOverride;
+    m.poseOverride.deviceId = 7;
+    m.poseOverride.position[0] = 0.5f;
+    m.poseOverride.rotation[3] = 1.0f;
+    channel.send(m);
+
+    pipe.feedRead(pipe.written);
+
+    std::vector<link::Message> messages;
+    EXPECT_EQ(channel.receive(messages), 1u);
+    ASSERT_EQ(messages.size(), 1u);
+    EXPECT_EQ(messages[0].type, link::MessageType::PoseOverride);
+    ASSERT_EQ(messages[0].size, sizeof(link::PoseOverride));
+    EXPECT_EQ(messages[0].poseOverride.deviceId, 7u);
+    EXPECT_FLOAT_EQ(messages[0].poseOverride.position[0], 0.5f);
+    EXPECT_FLOAT_EQ(messages[0].poseOverride.rotation[3], 1.0f);
+}
+
+TEST(LinkMessageChannel, ReceivesMixedDevicePoseAndPoseOverrideInOneRead)
+{
+    link_test::FakePipe pipe;
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(pipe));
+    std::vector<link::Message> dummy;
+    channel.receive(dummy);
+
+    link::DevicePose pose;
+    pose.deviceId = 1;
+    link::PoseOverride ov;
+    ov.deviceId = 2;
+
+    std::vector<std::uint8_t> bytes;
+    const auto poseBytes = frame(link::MessageType::DevicePose,
+                                 reinterpret_cast<const std::uint8_t*>(&pose),
+                                 sizeof(pose));
+    const auto ovBytes = frame(link::MessageType::PoseOverride,
+                               reinterpret_cast<const std::uint8_t*>(&ov),
+                               sizeof(ov));
+    bytes.insert(bytes.end(), poseBytes.begin(), poseBytes.end());
+    bytes.insert(bytes.end(), ovBytes.begin(), ovBytes.end());
+    pipe.feedRead(bytes);
+
+    std::vector<link::Message> messages;
+    EXPECT_EQ(channel.receive(messages), 2u);
+    EXPECT_EQ(messages[0].type, link::MessageType::DevicePose);
+    EXPECT_EQ(messages[0].pose.deviceId, 1u);
+    EXPECT_EQ(messages[1].type, link::MessageType::PoseOverride);
+    EXPECT_EQ(messages[1].poseOverride.deviceId, 2u);
+}
 } // namespace

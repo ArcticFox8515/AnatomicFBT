@@ -377,6 +377,8 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 		scene.setViewport(leftWidth, 0, width - leftWidth, height);
 		scene.renderSkeleton(avatarSkeleton);
 		corrected = correctDevicePoses(controller.calibration(), correctionMap, avatarSkeleton);
+		if (vr.isInitialized())
+			vr.sendOffsets(correctionOffsets(corrected, devices));
 		if (!corrected.empty())
 		{
 			std::vector<Pose> correctedPoses;
