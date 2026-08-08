@@ -66,6 +66,12 @@ public:
     // Device id bound to a target, or std::nullopt (for UI display).
     std::optional<int> boundDevice(size_t targetIndex) const;
 
+    // Pose of the bound device in its bone's local frame (inverse of the stored
+    // offset): boneWorld * deviceInBone == the device pose calibration was
+    // taken from. std::nullopt when unbound. (The current correction drops the
+    // strap offset — see TrackerCorrection — but this stays as a valid accessor.)
+    std::optional<Pose> deviceInBone(size_t targetIndex) const;
+
 private:
     struct Binding
     {

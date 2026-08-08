@@ -151,17 +151,32 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
 - `TrackerCalibration` — device→target binding, OpenVR-free. Proximity assignment
   (user T-poses), `calibrate` stores `offset = inverse(devicePose) * boneWorldPose`,
   `applyDevicePoses` writes raw device poses into targets (what gets rendered),
-  `applyOffsets` produces solver goals on a copy. `updateCalibrationFrame` rests the
+  `applyOffsets` produces solver goals on a copy, `deviceInBone` exposes the tracker's
+  pose in its bone's local frame (inverse of the offset, the constant strap
+  `TrackerCorrection` re-hangs on the avatar). `updateCalibrationFrame` rests the
   skeleton and places the root: in T-pose the midpoint of the two controllers coincides
   with the Chest joint (exact invariant of the rest skeleton), so the root is shifted to
   land FK Chest there, masked in the HMD-yaw frame (height/forward from the hands,
   lateral from the HMD); falls back to plain HMD alignment.
+- `TrackerCorrection` — app-side re-placement of tracker poses onto the
+  avatar skeleton (milestone 4, existing-tracker correction). `buildCorrectionMap`
+  matches each IK target to an avatar joint by name (built once at startup);
+  `correctDevicePoses` places each enabled, mapped, bound target's tracker at
+  the avatar joint's world pose — the bone center, no strap offset (one FK pass
+  over the avatar, called after `retargetPose`). The bone-local offset captured
+  at calibration is deliberately dropped: the reference and avatar skeletons
+  have differently-oriented bone frames (rest rotations / bone roll), so
+  re-hanging in the local frame rotates the tracker wrong. No GL/OpenVR; the app
+  renders the corrected poses as markers in the right viewport. Driver-side
+  application (override `TrackedDevicePoseUpdated` via a reverse app→driver
+  channel) is the next step.
 - `ModeController` — ManualPose/Calibration/Capture/Replay state machine, hardware-free.
   `update(rig, devices, captureGesture)` mutates the rig and returns
   `FramePlan{solve, goals, capturedOffsets}`. Invariant: Capture frames, including the
   calibration→capture transition, always produce goals derived from that same frame.
   Replay reuses the Capture branch verbatim; `calibrateFromFrame` re-runs the live
-  calibration path on a recording's frame 0.
+  calibration path on a recording's frame 0. `calibration()` exposes the owned
+  `TrackerCalibration` for the app's correction pass.
 - `Recording` — binary `.tcrec` capture of the device snapshots fed to `update` (inputs
   only). Magic+version, roster frozen on frame 0, then fixed-size self-contained frames
   (absent device = last known pose). Streamed, randomly seekable; loader throws `Error`
@@ -229,8 +244,9 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
 - `Scene` (`src/view/`) — owns ALL GL resources (RAII: created after GLEW init, destroyed
   before GLFW shutdown — keep the scope in `main.cpp` intact). Orbit camera shared by
   both viewports (`setCameraTarget`/`setCameraYaw` for VR modes), `beginFrame` +
-  `setViewport` per half, `renderSkeleton` (pyramid per bone), `renderTargets`
-  (octahedron per target), two embedded GLSL 330 programs, `viewMatrix`/`projectionMatrix`
+  `setViewport` per half, `renderSkeleton` (pyramid per bone), `renderMarkers`
+  (octahedron per pose; `renderTargets(rig)` delegates to it via `targetPoses`),
+  two embedded GLSL 330 programs, `viewMatrix`/`projectionMatrix`
   for ImGuizmo.
 - `OpenVrTracking` (`src/model/`) — the app's pose source: owns a
   `link::MessageChannel` (client side) and folds `link::DevicePose` frames into
@@ -255,7 +271,9 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   `OpenVrInput`), `ModeController::update`, tear down `OpenVrInput` if no longer in
   Calibration, execute the returned plan, `SessionRecorder::update`, camera follow,
   left viewport (IK skeleton + gizmos in ManualPose), `retargetPose` + right viewport
-  (avatar), ImGui panel, replay timeline. All mode logic lives in the model layer.
+  (avatar), `correctDevicePoses` + corrected tracker markers on the avatar, ImGui
+  panel (with per-target correction checkboxes when calibrated), replay timeline. All
+  mode logic lives in the model layer.
 
 ## Libraries (Conan, see `conanfile.py`)
 

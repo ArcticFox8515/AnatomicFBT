@@ -270,6 +270,27 @@ TEST(TrackerCalibrationClear, DropsAllBindings)
     EXPECT_EQ(calibration.applyDevicePoses({{5, makePose({0.0f, 1.0f, 0.0f})}}, targets), 0u);
 }
 
+TEST(TrackerCalibrationDeviceInBone, ReproducesCalibrationDevicePose)
+{
+    const Pose device = makePose({0.05f, 1.75f, 0.02f}, glm::angleAxis(0.3f, glm::vec3(0, 1, 0)));
+    const Pose bone = makePose({0.0f, 1.7f, 0.0f}, glm::angleAxis(-0.2f, glm::vec3(0, 0, 1)));
+    TrackerCalibration calibration;
+    DeviceAssignment assignment;
+    assignment.deviceIndex = {9};
+    assignment.targetIndex = {0};
+    calibration.calibrate(assignment, {{9, device}}, {bone});
+
+    const std::optional<Pose> deviceInBone = calibration.deviceInBone(0);
+    ASSERT_TRUE(deviceInBone.has_value());
+
+    // boneWorld * deviceInBone == the device pose calibration was taken from.
+    expectPoseNear(compose(bone, *deviceInBone), device, 1e-5f);
+
+    // Unbound and out-of-range targets return nullopt.
+    EXPECT_FALSE(calibration.deviceInBone(1).has_value());
+    EXPECT_FALSE(calibration.deviceInBone(999).has_value());
+}
+
 TEST(CalibrationFrame, NoDevicesResetsPoseAndLeavesEverythingElse)
 {
     IkRig rig = makeRig();

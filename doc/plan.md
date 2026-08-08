@@ -90,6 +90,7 @@ Missing bones (avatar lacks `UpperChest`, extra twist bones, etc.): skip unmatch
 - IPC: named pipe or UDP on localhost; SlimeVR-OpenVR-Driver already implements a protocol, cheapest path is speaking it.
 - Virtual tracker set: hips, chest, feet, knees, elbows from skeleton #2 joint world transforms. Set `Prop_ControllerType_String` etc. so SteamVR treats them as `vive_tracker`-compatible for role binding.
 - Real trackers stay visible; they just remain unassigned in SteamVR tracker roles.
+- **Existing-tracker correction (in progress):** the pose hook installed in phase A is also where existing trackers are placed on the avatar. App-side, `TrackerCorrection` places each bound, enabled target's tracker at the avatar joint's world pose — the bone center, no strap offset. The bone-local offset captured at calibration is deliberately dropped: the reference and avatar skeletons have differently-oriented bone frames (rest rotations / bone roll), so re-hanging in the local frame rotates the tracker wrong. The corrected poses are rendered as markers in the right viewport next to the avatar; per-target on/off is in the ImGui panel. Driver-side application — overriding `TrackedDevicePoseUpdated` through a reverse app→driver channel so SteamVR and VRChat see the corrected poses — is the next step.
 
 **Done when:** VRChat with roles bound to the virtual trackers reproduces poses standing/sitting/kneeling, and knees track correctly on an avatar with proportions clearly different from the tracked body.
 

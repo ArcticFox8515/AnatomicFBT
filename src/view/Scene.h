@@ -2,6 +2,10 @@
 
 #include <glm/glm.hpp>
 
+#include "model/Pose.h"
+
+#include <vector>
+
 class Skeleton;
 class IkRig;
 struct GLFWwindow;
@@ -39,7 +43,14 @@ public:
     // Draws the skeleton: one gray pyramid per bone, base at the parent joint, apex at the joint.
     void renderSkeleton(const Skeleton& skeleton);
 
-    // Draws one small marker per IK target at its world position/rotation.
+    // Draws one small marker per pose at its world position/rotation. The
+    // single marker primitive (orange octahedron) shared by both viewports:
+    // the IK targets in the left half and the corrected tracker poses in the
+    // right half (see TrackerCorrection).
+    void renderMarkers(const std::vector<Pose>& poses);
+
+    // Convenience: draws the rig's IK targets. Equivalent to
+    // renderMarkers(targetPoses(rig.targets)).
     void renderTargets(const IkRig& rig);
 
     // Camera matrices from the last beginFrame(); needed by ImGuizmo.

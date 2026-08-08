@@ -4,6 +4,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <vector>
 
+#include "Pose.h"
 #include "Skeleton.h"
 
 // World-space manipulation handle bound to a joint.
@@ -13,6 +14,18 @@ struct IkTarget
     glm::vec3 position{0.0f, 0.0f, 0.0f};
     glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
 };
+
+// Extracts the world-space poses of a target list — the markers the renderer
+// draws. Mirrors devicePosePairs (TrackedDevice.h) for the same reason: the
+// renderer takes a flat vector, not an IkRig.
+inline std::vector<Pose> targetPoses(const std::vector<IkTarget>& targets)
+{
+    std::vector<Pose> poses;
+    poses.reserve(targets.size());
+    for (const IkTarget& t : targets)
+        poses.push_back({t.position, t.rotation});
+    return poses;
+}
 
 // Per-target solver stages. All write joint localRot values (and rootPosition)
 // into the skeleton; callers recompute WorldTransforms between stages.

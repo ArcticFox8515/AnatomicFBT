@@ -336,7 +336,7 @@ void Scene::renderSkeleton(const Skeleton& skeleton)
     glBindVertexArray(0);
 }
 
-void Scene::renderTargets(const IkRig& rig)
+void Scene::renderMarkers(const std::vector<Pose>& poses)
 {
     glUseProgram(m_meshProgram);
     glUniformMatrix4fv(glGetUniformLocation(m_meshProgram, "uViewProj"), 1, GL_FALSE, &m_viewProj[0][0]);
@@ -344,15 +344,20 @@ void Scene::renderTargets(const IkRig& rig)
     glUniform3fv(glGetUniformLocation(m_meshProgram, "uLightDir"), 1, &m_lightDir[0]);
     glUniform3fv(glGetUniformLocation(m_meshProgram, "uLightColor"), 1, &m_lightColor[0]);
     glBindVertexArray(m_markerVao);
-    for (const IkTarget& target : rig.targets)
+    for (const Pose& pose : poses)
     {
         constexpr float markerRadius = 0.04f;
-        const glm::mat4 model = translate(glm::mat4(1.0f), target.position)
-            * mat4_cast(target.rotation)
+        const glm::mat4 model = translate(glm::mat4(1.0f), pose.position)
+            * mat4_cast(pose.rotation)
             * scale(glm::mat4(1.0f), glm::vec3(markerRadius));
         glUniformMatrix4fv(glGetUniformLocation(m_meshProgram, "uModel"), 1, GL_FALSE, &model[0][0]);
         glDrawArrays(GL_TRIANGLES, 0, m_markerVertexCount);
     }
 
     glBindVertexArray(0);
+}
+
+void Scene::renderTargets(const IkRig& rig)
+{
+    renderMarkers(targetPoses(rig.targets));
 }

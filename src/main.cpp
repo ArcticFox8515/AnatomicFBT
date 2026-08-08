@@ -31,6 +31,7 @@
 #include "model/Skeleton.h"
 #include "model/TrackedDevice.h"
 #include "model/TrackerCalibration.h"
+#include "model/TrackerCorrection.h"
 #include "view/Scene.h"
 #include "vr/OpenVrInput.h"
 #include "link/Log.h"
@@ -159,6 +160,11 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 	// default, like VRChat/Unity avatars).
 	Skeleton avatarSkeleton = loadOrCreate<Skeleton>(kAvatarSkeletonPath, Skeleton::makeDefaultHipRooted);
 	const RetargetMap retargetMap = buildRetargetMap(rig.skeleton, avatarSkeleton);
+	// Per-target correction toggle + avatar-joint map. Built once: the rig
+	// config is loaded once at startup and the avatar skeleton does not
+	// change at runtime. `enabled` is mutated by the ImGui checkboxes below,
+	// so this is not const.
+	CorrectionMap correctionMap = buildCorrectionMap(rig, avatarSkeleton);
 	const std::vector<std::string> unmatched = unmatchedBones(avatarSkeleton, retargetMap);
 	if (!unmatched.empty())
 	{
@@ -300,6 +306,10 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 					captureGesture = input->bothTriggersJustPressed();
 			}
 			const FramePlan plan = controller.update(rig, devices, captureGesture);
+		// Corrected tracker poses for the right viewport + the ImGui
+		// readout; computed after retargetPose runs (below). Empty when
+		// uncalibrated or no target is enabled.
+		std::vector<CorrectedPose> corrected;
 			// Calibration owns the VR_Init/VR_Shutdown session; the moment the
 			// mode is no longer Calibration (manual switch or the automatic
 			// capture transition) the trigger reader is torn down.
@@ -356,10 +366,25 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 			scene.renderSkeleton(rig.skeleton);
 			scene.renderTargets(rig);
 
-			// Right half: the avatar skeleton with the pose retargeted onto it.
-			retargetPose(rig.skeleton, avatarSkeleton, retargetMap);
-			scene.setViewport(leftWidth, 0, width - leftWidth, height);
-			scene.renderSkeleton(avatarSkeleton);
+		// Right half: the avatar skeleton with the pose retargeted onto it,
+		// plus the corrected tracker poses re-hung on its bones. The
+		// correction recomputes each tracker as
+		// avatarBoneWorld * deviceInBone (the tracker's bone-local strap
+		// captured at calibration), so with different proportions the tracker
+		// markers shift by the same delta the avatar's joints shift by —
+		// 10 cm from the reference hips = 10 cm from the avatar hips.
+		retargetPose(rig.skeleton, avatarSkeleton, retargetMap);
+		scene.setViewport(leftWidth, 0, width - leftWidth, height);
+		scene.renderSkeleton(avatarSkeleton);
+		corrected = correctDevicePoses(controller.calibration(), correctionMap, avatarSkeleton);
+		if (!corrected.empty())
+		{
+			std::vector<Pose> correctedPoses;
+			correctedPoses.reserve(corrected.size());
+			for (const CorrectedPose& c : corrected)
+				correctedPoses.push_back(c.pose);
+			scene.renderMarkers(correctedPoses);
+		}
 
 			ImGui::Begin("TrackingCorrector");
 			ImGui::Text("ImGui initialized. %.1f FPS", io.Framerate);
@@ -430,6 +455,45 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 						                  deviceKindName(devices[d].kind), devices[d].id);
 					else
 						ImGui::BulletText("%s <- (no device)", rig.targetName(i).c_str());
+				}
+			}
+			// Tracker correction: per-target on/off + the raw -> corrected
+			// position delta. Only meaningful once calibration froze offsets
+			// (Capture/Replay); the markers themselves are drawn in the right
+			// viewport next to the avatar.
+			if (controller.calibration().isCalibrated())
+			{
+				ImGui::SeparatorText("Correction");
+				const std::vector<std::pair<int, Pose>> devicePoses = devicePosePairs(devices);
+				auto findDevicePose = [&](int id) -> const Pose*
+				{
+					for (const auto& [did, pose] : devicePoses)
+						if (did == id)
+							return &pose;
+					return nullptr;
+				};
+				for (size_t i = 0; i < rig.targets.size(); ++i)
+				{
+					if (!correctionMap.avatarJoint[i])
+						continue; // unmapped (incl. Head, which was skipped at build)
+					ImGui::PushID(static_cast<int>(i));
+					bool enabled = correctionMap.enabled[i];
+					if (ImGui::Checkbox(rig.targetName(i).c_str(), &enabled))
+						correctionMap.enabled[i] = enabled;
+					for (const CorrectedPose& c : corrected)
+					{
+						if (c.targetIndex != i)
+							continue;
+						if (const Pose* raw = findDevicePose(c.deviceId))
+						{
+							const glm::vec3 delta = c.pose.position - raw->position;
+							ImGui::SameLine();
+							ImGui::TextDisabled("(%.1f, %.1f, %.1f) cm",
+							                    delta.x * 100.0f, delta.y * 100.0f, delta.z * 100.0f);
+						}
+						break;
+					}
+					ImGui::PopID();
 				}
 			}
 			if (mode == Mode::Replay)

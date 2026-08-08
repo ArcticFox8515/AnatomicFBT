@@ -47,6 +47,8 @@ add_library(TrackingCorrectorLib STATIC
     src/model/TrackedDevice.h
     src/model/TrackerCalibration.cpp
     src/model/TrackerCalibration.h
+    src/model/TrackerCorrection.cpp
+    src/model/TrackerCorrection.h
     src/view/Scene.cpp
     src/view/Scene.h)
 
@@ -193,7 +195,8 @@ add_executable(TrackingCorrectorTests
     tests/ObserverTest.cpp
     tests/ServerTest.cpp
     tests/TrackedDeviceTest.cpp
-    tests/TrackerCalibrationTest.cpp)
+    tests/TrackerCalibrationTest.cpp
+    tests/TrackerCorrectionTest.cpp)
 
 target_link_libraries(TrackingCorrectorTests
     TrackingCorrectorLib

@@ -135,6 +135,13 @@ std::optional<int> TrackerCalibration::boundDevice(size_t targetIndex) const
     return bindings_[targetIndex]->deviceId;
 }
 
+std::optional<Pose> TrackerCalibration::deviceInBone(size_t targetIndex) const
+{
+    if (targetIndex >= bindings_.size() || !bindings_[targetIndex])
+        return std::nullopt;
+    return inverse(bindings_[targetIndex]->offset);
+}
+
 CalibrationFrame updateCalibrationFrame(IkRig& rig, const std::vector<TrackedDevice>& devices)
 {
     CalibrationFrame frame;

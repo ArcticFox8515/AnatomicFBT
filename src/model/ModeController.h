@@ -83,6 +83,11 @@ public:
     // device indices are positions in the device list passed to update).
     const DeviceAssignment& liveAssignment() const { return liveAssignment_; }
 
+    // The calibration (offsets, bindings) the controller owns. Read by the
+    // app to compute corrected device poses from the retargeted avatar
+    // skeleton (see TrackerCorrection); never written outside update.
+    const TrackerCalibration& calibration() const { return calibration_; }
+
     // Advances the state machine by one frame. `devices` is the latest
     // snapshot list (empty when tracking is unavailable); `captureGesture` is
     // the both-triggers edge (only meaningful in Calibration, ignored
