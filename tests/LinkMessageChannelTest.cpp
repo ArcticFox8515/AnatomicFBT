@@ -407,6 +407,34 @@ TEST(LinkMessageChannel, OversizeLengthDropsThePipe)
     EXPECT_FALSE(channel.lastError().empty());
 }
 
+// ---- connected() -----------------------------------------------------------
+
+TEST(LinkMessageChannel, NotConnectedBeforeFirstReceive)
+{
+    link_test::FakePipe fake;
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(fake));
+    EXPECT_FALSE(channel.connected());
+}
+
+TEST(LinkMessageChannel, ConnectedAfterThePipeConnects)
+{
+    link_test::FakePipe fake;
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(fake));
+    std::vector<link::Message> messages;
+    channel.receive(messages);
+    EXPECT_TRUE(channel.connected());
+}
+
+TEST(LinkMessageChannel, NotConnectedAfterADrop)
+{
+    link_test::FakePipe fake;
+    fake.readEmptyErr = link::errBrokenPipe;
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(fake));
+    std::vector<link::Message> messages;
+    channel.receive(messages);  // creates + connects, then the read fails Closed
+    EXPECT_FALSE(channel.connected());
+}
+
 // ---- reconnect after a drop -----------------------------------------------
 
 TEST(LinkMessageChannel, ReconnectsAfterADrop)

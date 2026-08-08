@@ -19,6 +19,12 @@ MessageChannel::MessageChannel(Logger& logger, PipeFactoryFn factory)
 {
 }
 
+bool MessageChannel::connected() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return connectState_ == ConnectState::Connected && pipe_ != nullptr;
+}
+
 std::string MessageChannel::lastError() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -315,8 +321,10 @@ std::size_t MessageChannel::unsafeReceive(std::vector<Message>& out)
         pipeHandle_ = pipe_->createPipe(pipeBufferSize, pipeBufferSize);
         if (!pipeHandle_ || pipeHandle_ == invalidHandle)
         {
+            // Silent: the client's CreateFileA fails on every retry while the
+            // driver is absent, and that would spam the log once per frame.
+            // lastError_ still carries the win32 code for diagnostics.
             lastError_ = std::to_string(pipe_->lastError());
-            queueLog("createPipe failed ({})", pipe_->lastError());
             pipe_.reset();
             pipeHandle_ = nullptr;
             return 0;

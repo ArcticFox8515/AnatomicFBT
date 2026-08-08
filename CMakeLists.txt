@@ -35,6 +35,8 @@ add_library(TrackingCorrectorLib STATIC
     src/model/Pose.h
     src/model/ModeController.cpp
     src/model/ModeController.h
+    src/model/OpenVrTracking.cpp
+    src/model/OpenVrTracking.h
     src/model/Recording.cpp
     src/model/Recording.h
     src/model/ReplaySession.cpp
@@ -55,13 +57,14 @@ target_link_libraries(TrackingCorrectorLib PUBLIC
     glfw
     glm::glm
     nlohmann_json::nlohmann_json
+    LinkLib
 )
 
 add_executable(${PROJECT_NAME} WIN32
     src/main.cpp
 
-    src/vr/OpenVrTracking.cpp
-    src/vr/OpenVrTracking.h
+    src/vr/OpenVrInput.cpp
+    src/vr/OpenVrInput.h
 
     src/bindings/imgui_impl_glfw.cpp
     src/bindings/imgui_impl_glfw.h
@@ -76,6 +79,7 @@ target_link_libraries(${PROJECT_NAME}
     imguizmo::imguizmo
     spdlog::spdlog
     openvr::openvr
+    PipeLib
 )
 
 enable_testing()
@@ -183,6 +187,7 @@ add_executable(TrackingCorrectorTests
     tests/IkMathTest.cpp
     tests/IkSolversTest.cpp
     tests/ModeControllerTest.cpp
+    tests/OpenVrTrackingTest.cpp
     tests/RecordingTest.cpp
     tests/ReplaySessionTest.cpp
     tests/RetargetTest.cpp

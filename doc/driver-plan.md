@@ -21,6 +21,16 @@ corrections will be applied.
 - **Pose composition** — verified in the step-1 spike against client-side raw poses:
   `world = worldFromDriver ∘ (vecPosition, qRotation) ∘ driverFromHead`. Double precision
   driver-side, `f32` on the wire, glm only in the app.
+- **Pose prediction at the app, not the driver** — the dual-source telemetry run
+  (`doc/pose-prediction-note.md`) found a ~10 ms lead on the OpenVR client path that
+  scales with device speed (up to 10 mm / 19° at 1 m/s on fast controller swings).
+  Cause: `GetDeviceToAbsoluteTrackingPose` extrapolates each pose to *now* using its
+  timestamp + velocities, while `SpikeObserver::onPose` currently ships the raw sample
+  and throws `poseTimeOffset`, `vecVelocity` and `vecAngularVelocity` away. Fix: carry
+  those three fields (plus a pose timestamp) on the wire in `link::DevicePose` and
+  extrapolate at consume time in `OpenVrTracking::applyPose`, so the app reproduces the
+  client path's timing without a client OpenVR session. The extrapolation math is the
+  same one SteamVR uses (linear on position, slerp on rotation, delta = now − poseTime).
 - **Raw driver space**, no chaperone / room-setup data: nothing in solving or calibration
   reads absolute Y or yaw. The skeleton may float relative to the render grid. Accepted.
 - **Transport: one overlapped named pipe**, driver is the server, explicit security
@@ -53,16 +63,25 @@ corrections will be applied.
 3. **Driver-side server** — device table, metadata resolution, publish policy, client
    lifecycle, sanity gates on incoming poses; tested against the in-memory channel, plus
    a written argument for the concurrency of its shared state.
-4. **App-side link** — bytes to device snapshots (kind mapping, validity filter,
-   ordering), disconnect, reconnect. The app's existing device type,
-   recording format, mode/calibration/replay logic and old recordings stay untouched.
+4. **App-side link** — done. `OpenVrTracking` (moved to `src/model/`, links
+   `LinkLib`) owns a `link::MessageChannel` and folds `link::DevicePose` frames
+   into `TrackedDevice` snapshots (kind mapping, `Other`/`Lost` filter,
+   id-ordered); `init()` throws when the driver pipe is absent, reconnect
+   throttled to 1/s. The old client-API poll's trigger half moved to
+   `OpenVrInput` (`src/vr/`, on-demand `VRApplication_Background`, held by
+   main as a `unique_ptr` scoped to Calibration). The recording format,
+   mode/calibration/replay logic and old recordings are untouched.
+   `MessageChannel::connected()` backs `isInitialized()` and the throttle;
+   the client `createPipe`-failure log line is suppressed (CreateFileA retries
+   every second while the driver is absent).
 5. **Real pipe implementation** — the only part not covered by unit tests, kept as thin
    as possible; the `Pipe` seam is 1:1 with the overlapped winapi call pairs
    (`startConnect`/`completeConnect`, `startRead`/`completeRead`,
    `startWrite`/`completeWrite`, `close`) and `MessageChannel` owns all the
    overlapped state (connection state machine, read buffer, stable write buffer,
-   in-flight flags). Server half done (`SpikeDriverPipe.cpp`, driver DLL only);
-   client half + app reconnect outstanding. `classifyIo` (pure, tested) maps
+   in-flight flags). Server half done (`Win32ServerPipe` in `src/pipe/Win32Pipe.cpp`,
+   driver DLL only); client half done (`Win32ClientPipe`); app reconnect done in
+   step 4 (`OpenVrTracking`, 1/s throttle). `classifyIo` (pure, tested) maps
    winapi returns so the DLL forwarder has no decisions.
 6. **Promote the spike into the real driver** — reuse its hook and provider machinery,
    drop the observation-only code and the spike client, point the detours at the transport

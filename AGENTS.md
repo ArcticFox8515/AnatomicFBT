@@ -47,9 +47,9 @@ Conan 2 + Visual Studio 2022. Windows-only (`WIN32` exe, `WinMain` entry).
 
 | Target | Kind | Contents / deps |
 |---|---|---|
-| `TrackingCorrectorLib` | STATIC | `src/model` + `src/view`; glm, json, GLEW, glfw |
+| `TrackingCorrectorLib` | STATIC | `src/model` + `src/view`; glm, json, GLEW, glfw, `LinkLib` (for `OpenVrTracking`) |
 | `LinkLib` | STATIC | `src/link` IPC seam + framing + protocol + `Logger`; std lib only (Win32 error constants as literals) |
-| `TrackingCorrector` | WIN32 exe | `src/main.cpp`, `src/vr`, imgui/imguizmo, spdlog, openvr |
+| `TrackingCorrector` | WIN32 exe | `src/main.cpp`, `src/vr`, imgui/imguizmo, spdlog, openvr, `PipeLib` |
 | `PipeLib` | STATIC | `src/pipe/Win32Pipe.{h,cpp}` server+client `link::Pipe` impls; links `LinkLib`; Win32 only, untested |
 | `SpikeLib` | STATIC | all `src/spike` logic; openvr headers only; links `LinkLib` (step 3 server) |
 | `driver_00trackingcorrector` | SHARED | `src/spike/SpikeDriver.cpp` + SpikeLib, minhook, spdlog, `PipeLib` |
@@ -60,8 +60,16 @@ Conan 2 + Visual Studio 2022. Windows-only (`WIN32` exe, `WinMain` entry).
 
 ```
 src/model/      Pure data + math + JSON. NO OpenGL/OpenVR — unit-testable.
+                `OpenVrTracking` (poses from the driver link) lives here too:
+                it owns a `link::MessageChannel` and folds `link::DevicePose`
+                frames into `TrackedDevice` snapshots, so the lib links
+                `LinkLib` (std-only, no GL).
 src/view/       All OpenGL rendering (Scene).
-src/vr/         OpenVR device tracking (exe-only; the only place openvr.h is included).
+src/vr/         `OpenVrInput` — on-demand OpenVR background client used only in
+                Calibration mode for the both-triggers gesture (no driver-side
+                input source exists). The only place openvr.h is included.
+                main owns it as a `unique_ptr`, created on entering
+                Calibration, destroyed on leaving.
 src/link/       Driver<->app IPC: `Pipe` transport seam (overlapped call pairs —
                 startConnect/completeConnect, startRead/completeRead,
                 startWrite/completeWrite, close — one winapi call per method,
@@ -89,8 +97,9 @@ src/spike/      THROWAWAY step-1 spike of doc/driver-plan.md: observation-only S
 src/driverdll/00trackingcorrector/driver.vrdrivermanifest  — copied next to bin/win64/.
 src/bindings/   Vendored ImGui backends, auto-copied by conanfile.py. Generated.
 tests/          GoogleTest suites mirroring src/model, src/link, src/pipe and src/spike.
-                `FakePipe.h` is the `link::Pipe` mock used by the link suites and
-                the spike server pipe-lifecycle tests (`borrowPipeFactory`).
+                `FakePipe.h` is the `link::Pipe` mock used by the link suites, the
+                spike server pipe-lifecycle tests (`borrowPipeFactory`) and
+                `OpenVrTrackingTest` (app-side pose source over the channel).
                 `LinkPipeIntegrationTest.cpp` is the one real Win32-pipe test.
 unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
 ```
@@ -132,6 +141,14 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
 - `Pose` — header-only `{position, rotation}` + `compose`/`inverse`/`yawOnly`.
 - `TrackedDevice` — hardware-agnostic snapshot: `{id, kind, pose}`, `kind` =
   `hmd|controller|tracker|other`; `id` is an opaque stable id from the provider.
+- `OpenVrTracking` — the app's pose source: owns a `link::MessageChannel`
+  (client side) and folds `link::DevicePose` frames into `TrackedDevice`
+  snapshots. `init()` throws `Error` when the driver pipe is not connected
+  (retryable); `pollPoses()` drains and returns the snapshot (ordered by device
+  id, `Other` skipped, `Lost` removes — same observable filter as the old
+  client-API poll); `isInitialized()` = currently connected. The pipe factory
+  (`Win32ClientPipe` on `kDriverPipeName`) and a clock fn (1/s reconnect
+  throttle) are ctor args injected by the exe.
 - `TrackerCalibration` — device→target binding, OpenVR-free. Proximity assignment
   (user T-poses), `calibrate` stores `offset = inverse(devicePose) * boneWorldPose`,
   `applyDevicePoses` writes raw device poses into targets (what gets rendered),
@@ -216,18 +233,30 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   `setViewport` per half, `renderSkeleton` (pyramid per bone), `renderTargets`
   (octahedron per target), two embedded GLSL 330 programs, `viewMatrix`/`projectionMatrix`
   for ImGuizmo.
-- `OpenVrTracking` (`src/vr/`) — OpenVR-free header; converts OpenVR state into model
-  `TrackedDevice` values (device index doubles as `id`). `init()` uses
-  `VRApplication_Background` (never launches SteamVR), throws `Error`, retryable.
-  `pollPoses()` = connected+valid HMD/controller/tracker poses.
-  `bothTriggersJustPressed()` = calibration gesture edge.
+- `OpenVrTracking` (`src/model/`) — the app's pose source: owns a
+  `link::MessageChannel` (client side) and folds `link::DevicePose` frames into
+  `TrackedDevice` snapshots. The pipe factory (`Win32ClientPipe` on
+  `kDriverPipeName`) and a clock fn (for the 1/s reconnect throttle) are ctor
+  args injected by the exe. `init()` creates the channel and pumps once, throws
+  `Error` when the driver pipe is not connected (retryable). `pollPoses()`
+  drains pending frames and returns the snapshot (ordered by device id,
+  `Other` skipped, `Lost` removes — same observable filter as the old
+  client-API poll). `isInitialized()` = currently connected.
+- `OpenVrInput` (`src/vr/`) — on-demand OpenVR background client for the
+  both-triggers gesture only (no driver-side input source exists). `init()`
+  uses `VRApplication_Background` (never launches SteamVR), throws `Error`.
+  main owns it as a `unique_ptr`, created on entering Calibration, destroyed on
+  leaving (including the automatic Calibration→Capture transition). The only
+  place openvr.h is included.
 - `src/main.cpp` — spdlog → GLFW/GL/GLEW → ImGui + ImGuizmo → load-or-create the three
-  configs → `IkRig` → avatar skeleton + `RetargetMap` → `OpenVrTracking::init` (success:
-  start in Calibration; failure: ManualPose). Per frame: poll poses once, read the
-  trigger edge in Calibration only, `ModeController::update`, execute the returned plan,
-  `SessionRecorder::update`, camera follow, left viewport (IK skeleton + gizmos in
-  ManualPose), `retargetPose` + right viewport (avatar), ImGui panel, replay timeline.
-  All mode logic lives in the model layer.
+  configs → `IkRig` → avatar skeleton + `RetargetMap` → `link::Logger` (sink into
+  spdlog) + `OpenVrTracking` (pipe factory + clock) → `OpenVrTracking::init` + create
+  `OpenVrInput` (success: start in Calibration; failure: ManualPose). Per frame: poll
+  poses once from the driver link, read the trigger edge in Calibration only (from
+  `OpenVrInput`), `ModeController::update`, tear down `OpenVrInput` if no longer in
+  Calibration, execute the returned plan, `SessionRecorder::update`, camera follow,
+  left viewport (IK skeleton + gizmos in ManualPose), `retargetPose` + right viewport
+  (avatar), ImGui panel, replay timeline. All mode logic lives in the model layer.
 
 ## Libraries (Conan, see `conanfile.py`)
 

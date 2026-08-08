@@ -23,6 +23,7 @@
 #include "model/IkRig.h"
 #include "model/IkRigConfig.h"
 #include "model/ModeController.h"
+#include "model/OpenVrTracking.h"
 #include "model/Pose.h"
 #include "model/ReplaySession.h"
 #include "model/Retarget.h"
@@ -31,7 +32,9 @@
 #include "model/TrackedDevice.h"
 #include "model/TrackerCalibration.h"
 #include "view/Scene.h"
-#include "vr/OpenVrTracking.h"
+#include "vr/OpenVrInput.h"
+#include "link/Log.h"
+#include "pipe/Win32Pipe.h"
 
 constexpr char kProportionsPath[] = "user-proportions.json";
 constexpr char kIkRigPath[] = "user-ikrig.json";
@@ -169,19 +172,39 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 		spdlog::info("Avatar bones without a source match (kept at rest): {}", names);
 	}
 
-	// OpenVR: when SteamVR is running, start straight in calibration mode;
-	// otherwise fall back to manual pose (the UI offers a retry).
-	OpenVrTracking vr;
+	// Poses come from the SteamVR driver over a named pipe (doc/driver-plan.md
+	// phase A, step 4); the link logger routes the channel's lines into spdlog.
+	// The pipe factory is the only system-dependent piece (a Win32ClientPipe on
+	// the driver's pipe name); the clock paces reconnect attempts at 1/s while
+	// the driver is absent.
+	link::Logger linkLog;
+	linkLog.setSink([](const char* message) { spdlog::info("driver link: {}", message); });
+	OpenVrTracking vr(linkLog,
+	                  [] { return std::make_shared<link::Win32ClientPipe>(link::kDriverPipeName); },
+	                  [] { return glfwGetTime(); });
+
+	// The trigger reader is on demand: VR_Init/VR_Shutdown follow Calibration
+	// mode (no driver-side input source exists). Held as unique_ptr so the
+	// session ends the moment Calibration is left, including the automatic
+	// Calibration->Capture transition.
+	std::unique_ptr<OpenVrInput> input;
+
+	// OpenVR: when the driver pipe is connected and the trigger session comes
+	// up, start straight in calibration mode; otherwise fall back to manual
+	// pose (the UI offers a retry).
 	Mode initialMode = Mode::ManualPose;
 	try
 	{
 		vr.init();
+		input = std::make_unique<OpenVrInput>();
+		input->init();
 		spdlog::info("OpenVR initialized; starting in calibration mode");
 		initialMode = Mode::Calibration;
 	}
 	catch (const std::exception& e)
 	{
 		spdlog::error("OpenVR unavailable; starting in manual pose mode: {}", e.what());
+		input.reset();
 	}
 
 	// The mode state machine (calibration/capture logic) lives in the model
@@ -259,11 +282,11 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 			// Feed input into the mode state machine. In Replay the devices
 			// come from the loaded recording's current frame (the solver never
 			// knows the difference); otherwise poses are polled exactly once
-			// per frame and the trigger edge is read only in Calibration
-			// (bothTriggersJustPressed is stateful). The returned plan says
-			// what to solve in the left pass — in Capture/Replay its goals are
-			// always fresh from this frame, including the calibration->capture
-			// transition.
+			// per frame from the driver link and the trigger edge is read only
+			// in Calibration (bothTriggersJustPressed is stateful). The returned
+			// plan says what to solve in the left pass — in Capture/Replay its
+			// goals are always fresh from this frame, including the
+			// calibration->capture transition.
 			std::vector<TrackedDevice> devices;
 			bool captureGesture = false;
 			if (controller.mode() == Mode::Replay)
@@ -273,10 +296,15 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 			else if (vr.isInitialized())
 			{
 				devices = vr.pollPoses();
-				if (controller.mode() == Mode::Calibration)
-					captureGesture = vr.bothTriggersJustPressed();
+				if (controller.mode() == Mode::Calibration && input && input->isInitialized())
+					captureGesture = input->bothTriggersJustPressed();
 			}
 			const FramePlan plan = controller.update(rig, devices, captureGesture);
+			// Calibration owns the VR_Init/VR_Shutdown session; the moment the
+			// mode is no longer Calibration (manual switch or the automatic
+			// capture transition) the trigger reader is torn down.
+			if (controller.mode() != Mode::Calibration)
+				input.reset();
 			if (plan.capturedOffsets)
 				spdlog::info("Calibration captured; entering capture mode");
 
@@ -359,7 +387,6 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 					try
 					{
 						vr.init();
-						spdlog::info("OpenVR initialized; entering calibration mode");
 					}
 					catch (const std::exception& e)
 					{
@@ -368,8 +395,25 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 				}
 				if (vr.isInitialized())
 				{
-					controller.switchToCalibration();
-					replay.reset();
+					try
+					{
+						input = std::make_unique<OpenVrInput>();
+						input->init();
+					}
+					catch (const std::exception& e)
+					{
+						spdlog::error("OpenVR trigger input unavailable: {}", e.what());
+						input.reset();
+					}
+					// Calibration needs both the driver link (vr) and the
+					// trigger session (input); abort the switch if either is
+					// missing so the mode stays put.
+					if (input && input->isInitialized())
+					{
+						spdlog::info("OpenVR initialized; entering calibration mode");
+						controller.switchToCalibration();
+						replay.reset();
+					}
 				}
 			}
 			if (mode != Mode::Replay && ImGui::Button("Switch to replay"))

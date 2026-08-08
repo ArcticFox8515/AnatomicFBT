@@ -17,6 +17,11 @@ class MessageChannel
 public:
     explicit MessageChannel(Logger& logger, PipeFactoryFn factory);
 
+    // Currently connected to the peer (a client connected for the server, the
+    // pipe opened for the client). False before connect, after a drop, and
+    // until the next successful reconnect attempt.
+    bool connected() const;
+
     std::string lastError() const;
 
     void send(const Message& message);

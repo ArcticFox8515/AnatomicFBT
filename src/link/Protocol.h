@@ -3,7 +3,7 @@
 // Wire types for the driver link (doc/driver-plan.md phase A, step 3).
 //
 // A single message — `DevicePose` — covers everything the app consumes from the
-// tracking provider today (see OpenVrTracking.cpp pollPoses): the device's kind
+// tracking provider today (see OpenVrTracking pollPoses): the device's kind
 // and serial (the only things the app knows a device by besides its id) and the
 // per-device pose (id + position + rotation + the one validity predicate). The
 // separate metadata message was folded into the pose in step 3 so the channel
@@ -44,7 +44,7 @@ enum class DeviceKind : std::uint8_t
 };
 
 // `tracking` field of DevicePose, collapsed from the two booleans the app
-// currently ANDs (OpenVrTracking.cpp: `bPoseIsValid && bDeviceIsConnected`).
+// currently ANDs (the old client-API poll: `bPoseIsValid && bDeviceIsConnected`).
 // Zero means "drop this device from the snapshot this frame"; the app treats
 // a missing device as holding its last pose (Recording.h), so a vanishing
 // tracker freezes its target rather than snapping it.
