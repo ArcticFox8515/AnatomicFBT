@@ -1,8 +1,8 @@
-#include "SpikeObserver.h"
+#include "Observer.h"
 
-#include "SpikeInterfaces.h"
-#include "SpikeNames.h"
-#include "SpikePoseMath.h"
+#include "Interfaces.h"
+#include "Names.h"
+#include "PoseMath.h"
 
 #include "link/MessageChannel.h"
 #include "link/Protocol.h"
@@ -11,7 +11,7 @@
 #include <cstring>
 #include <utility>
 
-namespace spike
+namespace driver
 {
 namespace
 {
@@ -27,24 +27,24 @@ link::DeviceKind deviceClassToKind(int deviceClass)
 }
 } // namespace
 
-SpikeObserver::SpikeObserver(Logger& logger, InterfaceHooks& hooks, NowFn now,
-                             link::MessageChannel& channel)
+Observer::Observer(link::Logger& logger, InterfaceHooks& hooks, NowFn now,
+                   link::MessageChannel& channel)
     : log_(logger), hooks_(hooks), now_(std::move(now)), channel_(channel)
 {
 }
 
-void SpikeObserver::setProperties(DeviceProperties* properties)
+void Observer::setProperties(DeviceProperties* properties)
 {
     properties_ = properties;
 }
 
-bool SpikeObserver::SeenInterfaces::firstTime(const std::string& name)
+bool Observer::SeenInterfaces::firstTime(const std::string& name)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     return names_.insert(name).second;
 }
 
-bool SpikeObserver::MetadataCache::beginRefresh(double now)
+bool Observer::MetadataCache::beginRefresh(double now)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     if (refreshedEver_ && now - refreshedAt_ < kHousekeepingSeconds)
@@ -54,7 +54,7 @@ bool SpikeObserver::MetadataCache::beginRefresh(double now)
     return true;
 }
 
-bool SpikeObserver::MetadataCache::store(uint32_t index, const Entry& entry)
+bool Observer::MetadataCache::store(uint32_t index, const Entry& entry)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     Entry& current = entries_[index];
@@ -64,13 +64,13 @@ bool SpikeObserver::MetadataCache::store(uint32_t index, const Entry& entry)
     return true;
 }
 
-SpikeObserver::MetadataCache::Entry SpikeObserver::MetadataCache::lookup(uint32_t index) const
+Observer::MetadataCache::Entry Observer::MetadataCache::lookup(uint32_t index) const
 {
     std::lock_guard<std::mutex> lock(mutex_);
     return entries_[index];
 }
 
-void SpikeObserver::onInterfaceRequested(const char* version, void* interfacePtr)
+void Observer::onInterfaceRequested(const char* version, void* interfacePtr)
 {
     const std::string name = version ? version : "(null)";
     if (!seen_.firstTime(name))
@@ -99,7 +99,7 @@ void SpikeObserver::onInterfaceRequested(const char* version, void* interfacePtr
     }
 }
 
-void SpikeObserver::onPose(uint32_t index, const vr::DriverPose_t& pose, uint32_t poseStructSize)
+void Observer::onPose(uint32_t index, const vr::DriverPose_t& pose, uint32_t poseStructSize)
 {
     if (index >= vr::k_unMaxTrackedDeviceCount)
         return;
@@ -153,7 +153,7 @@ void SpikeObserver::onPose(uint32_t index, const vr::DriverPose_t& pose, uint32_
     channel_.send(message);
 }
 
-void SpikeObserver::onRunFrame()
+void Observer::onRunFrame()
 {
     if (!properties_)
         return;
@@ -183,4 +183,4 @@ void SpikeObserver::onRunFrame()
                       static_cast<unsigned long long>(container));
     }
 }
-} // namespace spike
+} // namespace driver

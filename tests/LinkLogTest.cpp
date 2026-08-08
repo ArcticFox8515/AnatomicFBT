@@ -1,4 +1,4 @@
-// Tests for the throwaway step-1 spike's logging (doc/driver-plan.md, §5.3).
+// Tests for the link layer's logging (doc/driver-plan.md).
 //
 // Logger does one thing: hand a formatted line to a sink. No file, no
 // timestamp, no flush, no mutex — spdlog (installed by the adapter) owns all
@@ -6,7 +6,7 @@
 // printf-style line and dispatch it, and drop it silently when no sink is
 // installed.
 
-#include "spike/SpikeLog.h"
+#include "link/Log.h"
 
 #include <gtest/gtest.h>
 
@@ -15,10 +15,10 @@
 
 namespace
 {
-TEST(SpikeLogger, LogfFormatsAndDispatchesTheBareMessage)
+TEST(LinkLogger, LogfFormatsAndDispatchesTheBareMessage)
 {
     std::vector<std::string> lines;
-    spike::Logger logger;
+    link::Logger logger;
     logger.setSink([&](const char* message) { lines.emplace_back(message); });
 
     logger.logf("device %u %s", 3u, "tracker");
@@ -26,10 +26,10 @@ TEST(SpikeLogger, LogfFormatsAndDispatchesTheBareMessage)
     EXPECT_EQ(lines[0], "device 3 tracker");
 }
 
-TEST(SpikeLogger, WriteDispatchesTheBareMessage)
+TEST(LinkLogger, WriteDispatchesTheBareMessage)
 {
     std::vector<std::string> lines;
-    spike::Logger logger;
+    link::Logger logger;
     logger.setSink([&](const char* message) { lines.emplace_back(message); });
 
     logger.write("hello");
@@ -37,20 +37,20 @@ TEST(SpikeLogger, WriteDispatchesTheBareMessage)
     EXPECT_EQ(lines[0], "hello");
 }
 
-TEST(SpikeLogger, LinesAreDroppedWhenNoSinkIsInstalled)
+TEST(LinkLogger, LinesAreDroppedWhenNoSinkIsInstalled)
 {
     // Logging before the adapter wires spdlog in (or after a test clears the sink)
     // must be a silent no-op, never a crash.
-    spike::Logger logger;
+    link::Logger logger;
     logger.logf("dropped %d", 1);
     logger.write("dropped too");
 }
 
-TEST(SpikeLogger, SetSinkReplacesThePreviousSink)
+TEST(LinkLogger, SetSinkReplacesThePreviousSink)
 {
     // Tests reassign the sink; production installs it once (header invariant).
     std::vector<std::string> first;
-    spike::Logger logger;
+    link::Logger logger;
     logger.setSink([&](const char* message) { first.emplace_back(message); });
     logger.write("first");
 
@@ -64,20 +64,20 @@ TEST(SpikeLogger, SetSinkReplacesThePreviousSink)
     EXPECT_EQ(second[0], "second");
 }
 
-TEST(SpikeLogger, ProcessWideLoggerIsASingleInstance)
+TEST(LinkLogger, ProcessWideLoggerIsASingleInstance)
 {
-    EXPECT_EQ(&spike::log(), &spike::log());
+    EXPECT_EQ(&link::log(), &link::log());
 }
 
 // ---------------------------------------------------------- sink composition ----
 
-TEST(SpikeCompositeSink, FansEveryLineOutToBothSinksInOrder)
+TEST(CompositeSink, FansEveryLineOutToBothSinksInOrder)
 {
     // What routeLogToDriverLog installs: the spdlog file sink plus IVRDriverLog, so the
-    // spike's output lands in our file *and* in SteamVR's vrserver.txt.
+    // driver's output lands in our file *and* in SteamVR's vrserver.txt.
     std::vector<std::string> order;
-    const spike::LogSink sink =
-        spike::compositeSink([&](const char* message) { order.emplace_back(std::string("a:") + message); },
+    const link::LogSink sink =
+        link::compositeSink([&](const char* message) { order.emplace_back(std::string("a:") + message); },
                              [&](const char* message) { order.emplace_back(std::string("b:") + message); });
 
     sink("hello");
@@ -87,15 +87,15 @@ TEST(SpikeCompositeSink, FansEveryLineOutToBothSinksInOrder)
     EXPECT_EQ(order[1], "b:hello");
 }
 
-TEST(SpikeCompositeSink, AnEmptySinkIsSkippedRatherThanCalled)
+TEST(CompositeSink, AnEmptySinkIsSkippedRatherThanCalled)
 {
     // Calling an empty std::function throws std::bad_function_call — inside a detour, on
     // a vrserver thread.
     std::vector<std::string> lines;
-    const spike::LogSink withEmptyFirst =
-        spike::compositeSink({}, [&](const char* message) { lines.emplace_back(message); });
-    const spike::LogSink withEmptySecond =
-        spike::compositeSink([&](const char* message) { lines.emplace_back(message); }, {});
+    const link::LogSink withEmptyFirst =
+        link::compositeSink({}, [&](const char* message) { lines.emplace_back(message); });
+    const link::LogSink withEmptySecond =
+        link::compositeSink([&](const char* message) { lines.emplace_back(message); }, {});
 
     withEmptyFirst("first");
     withEmptySecond("second");
@@ -105,21 +105,21 @@ TEST(SpikeCompositeSink, AnEmptySinkIsSkippedRatherThanCalled)
     EXPECT_EQ(lines[1], "second");
 }
 
-TEST(SpikeCompositeSink, TwoEmptySinksDropTheLine)
+TEST(CompositeSink, TwoEmptySinksDropTheLine)
 {
-    const spike::LogSink sink = spike::compositeSink({}, {});
+    const link::LogSink sink = link::compositeSink({}, {});
     sink("dropped");
 }
 
 // ------------------------------------------------------------- install once ----
 
-TEST(SpikeLoggingTo, InstallsTheSinkOnALoggerThatHasNone)
+TEST(LoggingTo, InstallsTheSinkOnALoggerThatHasNone)
 {
     std::vector<std::string> lines;
-    spike::Logger logger;
+    link::Logger logger;
     EXPECT_FALSE(logger.hasSink());
 
-    spike::Logger& returned = spike::loggingTo(logger, [&](const char* m) { lines.emplace_back(m); });
+    link::Logger& returned = link::loggingTo(logger, [&](const char* m) { lines.emplace_back(m); });
     returned.write("hello");
 
     EXPECT_EQ(&returned, &logger);
@@ -128,17 +128,17 @@ TEST(SpikeLoggingTo, InstallsTheSinkOnALoggerThatHasNone)
     EXPECT_EQ(lines[0], "hello");
 }
 
-TEST(SpikeLoggingTo, KeepsTheSinkAlreadyInstalled)
+TEST(LoggingTo, KeepsTheSinkAlreadyInstalled)
 {
     // The driver's providers and HmdDriverFactory all funnel through this. By the time
     // the second one runs, routeLogToDriverLog has replaced the plain file sink with the
     // composite that also feeds IVRDriverLog — re-installing would drop SteamVR's copy.
     std::vector<std::string> installed;
     std::vector<std::string> late;
-    spike::Logger logger;
+    link::Logger logger;
     logger.setSink([&](const char* message) { installed.emplace_back(message); });
 
-    spike::loggingTo(logger, [&](const char* message) { late.emplace_back(message); }).write("hello");
+    link::loggingTo(logger, [&](const char* message) { late.emplace_back(message); }).write("hello");
 
     ASSERT_EQ(installed.size(), 1u);
     EXPECT_EQ(installed[0], "hello");

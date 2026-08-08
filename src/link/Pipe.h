@@ -3,7 +3,7 @@
 // IPC transport seam for the driver link (doc/driver-plan.md phase A, step 5).
 //
 // A `Pipe` is a named-pipe instance. The real implementation
-// (src/spike/SpikeDriverPipe.cpp, driver DLL only) is a pure wrapper over winapi:
+// (src/pipe/Win32Pipe.cpp, driver DLL + tests) is a pure wrapper over winapi:
 // no logic, no constants, no state, no decisions. Every method is exactly one
 // winapi call. All decisions live in `MessageChannel` (this layer, unit-tested).
 //

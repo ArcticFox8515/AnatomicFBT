@@ -38,5 +38,5 @@ echo Registering "%DRIVER%"
 "%VRPATHREG%" show
 echo.
 echo Restart SteamVR to load the driver. Log:
-echo   %LOCALAPPDATA%\TrackingCorrector\driver-spike-vrserver.log
+echo   %LOCALAPPDATA%\TrackingCorrector\driver-vrserver.log
 pause

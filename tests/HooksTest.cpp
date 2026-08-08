@@ -1,12 +1,12 @@
-// Tests for the throwaway step-1 spike's vtable detour helper (doc/driver-plan.md).
+// Tests for the driver's vtable detour helper (doc/driver-plan.md).
 //
 // MinHook is replaced by a fake here, so this file drives the state machine —
 // including the failure branches a live SteamVR session would never show us — without
 // patching a single byte of code in the test process. That the *real* MinHook lands
-// on the vtable slots the plan hardcodes is proved separately, in SpikeDriverTest.
+// on the vtable slots the plan hardcodes is proved separately, in DriverTest.
 
-#include "spike/SpikeHooks.h"
-#include "spike/SpikeLog.h"
+#include "driver/Hooks.h"
+#include "link/Log.h"
 
 #include <gtest/gtest.h>
 
@@ -39,7 +39,7 @@ constexpr int kFakeAlreadyInitialized = 1;
 // returns. Only the loser of a concurrent install ever sees it.
 constexpr int kFakeAlreadyCreated = 2;
 
-class FakeHookApi : public spike::HookApi
+class FakeHookApi : public driver::HookApi
 {
 public:
     struct Call
@@ -67,7 +67,7 @@ public:
         // winner of a race has already published its `original` by the time the loser
         // runs its rollback. Ordering the fake the same way is what makes the loser's
         // damage visible.
-        if (status == spike::kHookOk)
+        if (status == driver::kHookOk)
             *original = trampoline;
         // The re-entry seam: a second install() lands here, inside the first one's
         // create, which is exactly where a second thread sits — after the `installed()`
@@ -90,7 +90,7 @@ public:
     int remove(void* target) override
     {
         calls.push_back({"remove", target});
-        return spike::kHookOk;
+        return driver::kHookOk;
     }
 
     const char* statusName(int status) override
@@ -101,16 +101,16 @@ public:
 
     std::vector<Call> calls;
     std::vector<void*> detours;
-    int createStatus = spike::kHookOk;
+    int createStatus = driver::kHookOk;
     // Per-call statuses, for the cases where the same function is created twice and the
     // two calls must answer differently. Falls back to createStatus when exhausted.
     std::vector<int> createStatusQueue;
     std::function<void()> onCreate;
-    int enableStatus = spike::kHookOk;
-    int initializeStatus = spike::kHookOk;
+    int enableStatus = driver::kHookOk;
+    int initializeStatus = driver::kHookOk;
     int initializeCalls = 0;
     int shutdownCalls = 0;
-    int lastStatusNameQuery = spike::kHookOk;
+    int lastStatusNameQuery = driver::kHookOk;
     void* trampoline = reinterpret_cast<void*>(&slotTwo);
 
 private:
@@ -124,7 +124,7 @@ private:
     }
 };
 
-class SpikeHooksTest : public ::testing::Test
+class HooksTest : public ::testing::Test
 {
 protected:
     void SetUp() override
@@ -147,13 +147,13 @@ protected:
     FakeInterface object_{vtable_};
 
     std::vector<std::string> lines_;
-    spike::Logger logger_;
+    link::Logger logger_;
     FakeHookApi api_;
 };
 
-using VoidHook = spike::VTableHook<void (*)()>;
+using VoidHook = driver::VTableHook<void (*)()>;
 
-TEST_F(SpikeHooksTest, InstallPatchesTheFunctionTheRequestedSlotPointsAt)
+TEST_F(HooksTest, InstallPatchesTheFunctionTheRequestedSlotPointsAt)
 {
     // The whole point of hooking the *function*, not the vtable: it is shared by every
     // instance of vrserver's concrete class, which is how other drivers' devices become
@@ -174,7 +174,7 @@ TEST_F(SpikeHooksTest, InstallPatchesTheFunctionTheRequestedSlotPointsAt)
     EXPECT_TRUE(logged("hook Fake::SlotOne: installed (vtable index 1"));
 }
 
-TEST_F(SpikeHooksTest, InstallingTwiceIsANoOp)
+TEST_F(HooksTest, InstallingTwiceIsANoOp)
 {
     // vrserver hands the same interface to every driver, and Init hooks eagerly on top
     // of that: a second install must not create a second hook on the same function.
@@ -189,7 +189,7 @@ TEST_F(SpikeHooksTest, InstallingTwiceIsANoOp)
 // ---- two callers, one hook object ------------------------------------------------
 //
 // The sequential double install above is the easy half. The live run showed the other
-// half in driver-spike-vrserver.log: the eager install from SpikeServer::init ("hook
+// half in driver-vrserver.log: the eager install from Server::init ("hook
 // IVRServerDriverHost::TrackedDeviceAdded: installed", 18:25:43.854) and a second
 // install driven by another caller's GetGenericInterface ("interface
 // \"IVRServerDriverHost_006\": hooking", 18:25:43.958) — two callers on one hook
@@ -200,12 +200,12 @@ TEST_F(SpikeHooksTest, InstallingTwiceIsANoOp)
 // hooked. Reproduced without threads: the fake re-enters install() from inside the
 // first call's create, which is the exact point a second thread occupies.
 
-TEST_F(SpikeHooksTest, AnInstallReenteredDuringCreateKeepsAnOriginalToCallThrough)
+TEST_F(HooksTest, AnInstallReenteredDuringCreateKeepsAnOriginalToCallThrough)
 {
     // First caller wins MH_CreateHook and gets the trampoline; the second gets
     // MH_ERROR_ALREADY_CREATED and runs the rollback branch, which clears original_.
     VoidHook hook(api_, logger_);
-    api_.createStatusQueue = {spike::kHookOk, kFakeAlreadyCreated};
+    api_.createStatusQueue = {driver::kHookOk, kFakeAlreadyCreated};
     api_.onCreate = [&] { hook.install("Fake::SlotZero", &object_, 0, &detour); };
 
     ASSERT_TRUE(hook.install("Fake::SlotZero", &object_, 0, &detour));
@@ -218,7 +218,7 @@ TEST_F(SpikeHooksTest, AnInstallReenteredDuringCreateKeepsAnOriginalToCallThroug
     EXPECT_NE(hook.original(), nullptr);
 }
 
-TEST_F(SpikeHooksTest, AnInstallReenteredDuringCreateHooksTheFunctionOnlyOnce)
+TEST_F(HooksTest, AnInstallReenteredDuringCreateHooksTheFunctionOnlyOnce)
 {
     // Same interleaving, the case where MinHook would accept both creates: two
     // create/enable pairs on one function chain a hook onto a hook, so every call is
@@ -233,7 +233,7 @@ TEST_F(SpikeHooksTest, AnInstallReenteredDuringCreateHooksTheFunctionOnlyOnce)
     EXPECT_EQ(api_.calls[1].what, "enable");
 }
 
-TEST_F(SpikeHooksTest, NullObjectIsReportedAndNotHooked)
+TEST_F(HooksTest, NullObjectIsReportedAndNotHooked)
 {
     // vrserver returning no interface must never be dereferenced.
     VoidHook hook(api_, logger_);
@@ -244,7 +244,7 @@ TEST_F(SpikeHooksTest, NullObjectIsReportedAndNotHooked)
     EXPECT_TRUE(logged("hook Fake::Missing: NOT installed, null object"));
 }
 
-TEST_F(SpikeHooksTest, CreateFailureLeavesNoHookAndNoOriginal)
+TEST_F(HooksTest, CreateFailureLeavesNoHookAndNoOriginal)
 {
     api_.createStatus = -1;
     VoidHook hook(api_, logger_);
@@ -258,7 +258,7 @@ TEST_F(SpikeHooksTest, CreateFailureLeavesNoHookAndNoOriginal)
     EXPECT_TRUE(logged("hook Fake::SlotZero: MH_CreateHook failed (MH_ERROR_FAKE)"));
 }
 
-TEST_F(SpikeHooksTest, EnableFailureRollsTheCreatedHookBack)
+TEST_F(HooksTest, EnableFailureRollsTheCreatedHookBack)
 {
     // The dangerous case: the hook exists but is not enabled. Leaving it behind would
     // strand a trampoline inside vrserver, and keeping `original` would make the detour
@@ -276,7 +276,7 @@ TEST_F(SpikeHooksTest, EnableFailureRollsTheCreatedHookBack)
     EXPECT_TRUE(logged("hook Fake::SlotTwo: MH_EnableHook failed (MH_ERROR_FAKE)"));
 }
 
-TEST_F(SpikeHooksTest, RemoveUnhooksOnceAndIsSafeWhenNotInstalled)
+TEST_F(HooksTest, RemoveUnhooksOnceAndIsSafeWhenNotInstalled)
 {
     VoidHook hook(api_, logger_);
     ASSERT_TRUE(hook.install("Fake::SlotOne", &object_, 1, &detour));
@@ -294,7 +294,7 @@ TEST_F(SpikeHooksTest, RemoveUnhooksOnceAndIsSafeWhenNotInstalled)
     EXPECT_EQ(api_.calls.size(), 1u);
 }
 
-TEST_F(SpikeHooksTest, ReinstallAfterRemoveWorks)
+TEST_F(HooksTest, ReinstallAfterRemoveWorks)
 {
     // vrwatchdog / vrserver can load and unload us repeatedly within one Steam session.
     VoidHook hook(api_, logger_);
@@ -307,25 +307,25 @@ TEST_F(SpikeHooksTest, ReinstallAfterRemoveWorks)
 
 // ------------------------------------------------- hook library initialization ----
 
-TEST_F(SpikeHooksTest, HookLibraryInitializationSucceeds)
+TEST_F(HooksTest, HookLibraryInitializationSucceeds)
 {
-    EXPECT_EQ(spike::initializeHookLibrary(api_), nullptr);
+    EXPECT_EQ(driver::initializeHookLibrary(api_), nullptr);
     EXPECT_EQ(api_.initializeCalls, 1);
 }
 
-TEST_F(SpikeHooksTest, HookLibraryAlreadyInitializedIsNotAnError)
+TEST_F(HooksTest, HookLibraryAlreadyInitializedIsNotAnError)
 {
     // Another driver in the same vrserver called MH_Initialize before us. Treating that
     // as a failure would abort our Init for no reason.
     api_.initializeStatus = kFakeAlreadyInitialized;
-    EXPECT_EQ(spike::initializeHookLibrary(api_), nullptr);
+    EXPECT_EQ(driver::initializeHookLibrary(api_), nullptr);
 }
 
-TEST_F(SpikeHooksTest, HookLibraryFailureReportsTheStatusText)
+TEST_F(HooksTest, HookLibraryFailureReportsTheStatusText)
 {
     // The branch a live SteamVR run essentially never takes.
     api_.initializeStatus = -1;
-    EXPECT_STREQ(spike::initializeHookLibrary(api_), "MH_ERROR_FAKE");
+    EXPECT_STREQ(driver::initializeHookLibrary(api_), "MH_ERROR_FAKE");
     EXPECT_EQ(api_.lastStatusNameQuery, -1);
 }
 } // namespace

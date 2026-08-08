@@ -1,10 +1,10 @@
-// Tests for the throwaway step-1 spike (doc/driver-plan.md).
+// Tests for the driver (doc/driver-plan.md).
 //
 // This file is the DLL-boundary *integration* proof, and nothing else: the logic it
-// drives is unit-tested against fakes in SpikeObserverTest / SpikeServerTest /
-// SpikeHooksTest / SpikeLogTest / SpikeClientReportTest, where every branch is
-// reachable. Here the real DLL is loaded and driven through a fake vrserver, because
-// three things can only be shown with the real binary in the loop.
+// drives is unit-tested against fakes in ObserverTest / ServerTest /
+// HooksTest / LinkLogTest, where every branch is reachable. Here the real DLL is
+// loaded and driven through a fake vrserver, because three things can only be shown
+// with the real binary in the loop.
 //
 // What this file can and cannot prove:
 //   CAN  — the hook mechanism end to end without SteamVR: the driver DLL loads, its
@@ -18,10 +18,10 @@
 //   CANNOT — anything only SteamVR knows: which composition formula matches the
 //          client-side raw pose, real device classes / cadence / component paths, and
 //          whether other drivers' interfaces route through the same vrserver code.
-//          That is the live run the spike exists for.
+//          That is the live run the driver exists for.
 
-#include "spike/SpikeInterfaces.h"
-#include "spike/SpikePoseMath.h"
+#include "driver/Interfaces.h"
+#include "driver/PoseMath.h"
 
 #include <windows.h>
 
@@ -204,7 +204,7 @@ private:
     {
         read.unTag = vr::k_unInt32PropertyTag;
         read.unRequiredBufferSize = sizeof(int32_t);
-        if (!read.pvBuffer || read.unBufferSize < sizeof(int32_t))
+        if (!read.pvBuffer || read.unBufferSize < read.unRequiredBufferSize)
         {
             read.eError = vr::TrackedProp_BufferTooSmall;
             return;
@@ -356,13 +356,13 @@ T* throughVtable(T* pointer)
 // The DLL keeps global state (the device table, the "already logged" interface set)
 // and its providers are function statics, so the driver lifecycle is exercised once,
 // in order, in a single test.
-class SpikeDriverLifecycle : public ::testing::Test
+class DriverLifecycle : public ::testing::Test
 {
 protected:
     static void SetUpTestSuite()
     {
-        module_ = LoadLibraryA(SPIKE_DRIVER_DLL);
-        ASSERT_NE(module_, nullptr) << "LoadLibrary(" << SPIKE_DRIVER_DLL
+        module_ = LoadLibraryA(DRIVER_DLL);
+        ASSERT_NE(module_, nullptr) << "LoadLibrary(" << DRIVER_DLL
                                     << ") failed, GetLastError=" << GetLastError();
         factory_ = reinterpret_cast<HmdDriverFactoryFn>(
             GetProcAddress(module_, "HmdDriverFactory"));
@@ -381,10 +381,10 @@ protected:
     static HmdDriverFactoryFn factory_;
 };
 
-HMODULE SpikeDriverLifecycle::module_ = nullptr;
-HmdDriverFactoryFn SpikeDriverLifecycle::factory_ = nullptr;
+HMODULE DriverLifecycle::module_ = nullptr;
+HmdDriverFactoryFn DriverLifecycle::factory_ = nullptr;
 
-TEST_F(SpikeDriverLifecycle, FactoryServesBothProvidersAndRejectsUnknownInterfaces)
+TEST_F(DriverLifecycle, FactoryServesBothProvidersAndRejectsUnknownInterfaces)
 {
     int code = 0;
     EXPECT_NE(factory_(vr::IServerTrackedDeviceProvider_Version, &code), nullptr);
@@ -404,7 +404,7 @@ TEST_F(SpikeDriverLifecycle, FactoryServesBothProvidersAndRejectsUnknownInterfac
     EXPECT_EQ(factory_("IDoesNotExist_001", nullptr), nullptr);
 }
 
-TEST_F(SpikeDriverLifecycle, HooksObserveAndForwardTheWholeDriverSurface)
+TEST_F(DriverLifecycle, HooksObserveAndForwardTheWholeDriverSurface)
 {
     auto* server = static_cast<vr::IServerTrackedDeviceProvider*>(
         factory_(vr::IServerTrackedDeviceProvider_Version, nullptr));
@@ -520,68 +520,67 @@ TEST_F(SpikeDriverLifecycle, HooksObserveAndForwardTheWholeDriverSurface)
 // The detour's decision table, tested directly: which version strings we hook, which
 // ones must be reported as unsupported, and which are none of our business.
 
-TEST(SpikeInterfaceClassification, ExactVersionWeBuildAgainstIsHooked)
+TEST(InterfaceClassification, ExactVersionWeBuildAgainstIsHooked)
 {
-    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost_006", "IVRServerDriverHost_006"),
-              spike::InterfaceAction::HookServerDriverHost);
+    EXPECT_EQ(driver::classifyInterface("IVRServerDriverHost_006", "IVRServerDriverHost_006"),
+              driver::InterfaceAction::HookServerDriverHost);
 }
 
-TEST(SpikeInterfaceClassification, OtherVersionsOfTheSameInterfaceAreUnsupportedNotIgnored)
+TEST(InterfaceClassification, OtherVersionsOfTheSameInterfaceAreUnsupportedNotIgnored)
 {
     // Older and newer alike: the vtable layout is not guaranteed, so we refuse to hook
     // and say so — silence here would mean invisible devices.
-    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost_005", "IVRServerDriverHost_006"),
-              spike::InterfaceAction::UnsupportedVersion);
-    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost_008", "IVRServerDriverHost_006"),
-              spike::InterfaceAction::UnsupportedVersion);
+    EXPECT_EQ(driver::classifyInterface("IVRServerDriverHost_005", "IVRServerDriverHost_006"),
+              driver::InterfaceAction::UnsupportedVersion);
+    EXPECT_EQ(driver::classifyInterface("IVRServerDriverHost_008", "IVRServerDriverHost_006"),
+              driver::InterfaceAction::UnsupportedVersion);
 }
 
-TEST(SpikeInterfaceClassification, UnrelatedInterfacesAreNotNeeded)
+TEST(InterfaceClassification, UnrelatedInterfacesAreNotNeeded)
 {
-    // IVRDriverInput is not hooked (doc/driver-spike-handover.md §5.1): input capture
-    // moved out of the driver DLL to a separate background client app, so the input
-    // interface is none of our business.
+    // IVRDriverInput is not hooked: input capture moved out of the driver DLL to a
+    // separate background client app, so the input interface is none of our business.
     for (const char* version : {"IVRSettings_003", "IVRProperties_001", "IVRDriverLog_001",
                                 "IVRResources_001", "IVRDriverInput_003", "IVRIOBuffer_002",
                                 "(null)", ""})
-        EXPECT_EQ(spike::classifyInterface(version, "IVRServerDriverHost_006"),
-                  spike::InterfaceAction::NotNeeded)
+        EXPECT_EQ(driver::classifyInterface(version, "IVRServerDriverHost_006"),
+                  driver::InterfaceAction::NotNeeded)
             << version;
 }
 
-TEST(SpikeInterfaceClassification, FamilyMatchingIsExactNotAPrefixMatch)
+TEST(InterfaceClassification, FamilyMatchingIsExactNotAPrefixMatch)
 {
     // Names that merely start like ours must not be mistaken for our interfaces.
-    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHostExtras_001",
+    EXPECT_EQ(driver::classifyInterface("IVRServerDriverHostExtras_001",
                                        "IVRServerDriverHost_006"),
-              spike::InterfaceAction::NotNeeded);
-    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost", "IVRServerDriverHost_006"),
-              spike::InterfaceAction::NotNeeded);
+              driver::InterfaceAction::NotNeeded);
+    EXPECT_EQ(driver::classifyInterface("IVRServerDriverHost", "IVRServerDriverHost_006"),
+              driver::InterfaceAction::NotNeeded);
 }
 
-TEST(SpikeInterfaceClassification, ClassificationFollowsTheVersionWeAreBuiltAgainst)
+TEST(InterfaceClassification, ClassificationFollowsTheVersionWeAreBuiltAgainst)
 {
     // Same input, different build-time version: what counts as hookable moves with us.
-    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost_008", "IVRServerDriverHost_008"),
-              spike::InterfaceAction::HookServerDriverHost);
-    EXPECT_EQ(spike::classifyInterface("IVRServerDriverHost_006", "IVRServerDriverHost_008"),
-              spike::InterfaceAction::UnsupportedVersion);
+    EXPECT_EQ(driver::classifyInterface("IVRServerDriverHost_008", "IVRServerDriverHost_008"),
+              driver::InterfaceAction::HookServerDriverHost);
+    EXPECT_EQ(driver::classifyInterface("IVRServerDriverHost_006", "IVRServerDriverHost_008"),
+              driver::InterfaceAction::UnsupportedVersion);
 }
 
-TEST(SpikeInterfaceClassification, FamilyIsTheNameUpToTheLastUnderscore)
+TEST(InterfaceClassification, FamilyIsTheNameUpToTheLastUnderscore)
 {
-    EXPECT_EQ(spike::interfaceFamily("IVRServerDriverHost_006"), "IVRServerDriverHost_");
-    EXPECT_EQ(spike::interfaceFamily("IVRDriverInput_003"), "IVRDriverInput_");
-    EXPECT_EQ(spike::interfaceFamily("NoUnderscore"), "NoUnderscore");
-    EXPECT_EQ(spike::interfaceFamily(""), "");
+    EXPECT_EQ(driver::interfaceFamily("IVRServerDriverHost_006"), "IVRServerDriverHost_");
+    EXPECT_EQ(driver::interfaceFamily("IVRDriverInput_003"), "IVRDriverInput_");
+    EXPECT_EQ(driver::interfaceFamily("NoUnderscore"), "NoUnderscore");
+    EXPECT_EQ(driver::interfaceFamily(""), "");
 }
 
 // ---------------------------------------------------------- composition math ----
 
 constexpr double kTolerance = 1e-12;
 
-void expectPoseNear(const spike::RigidPose& actual, const spike::V3& position,
-                    const spike::Q& rotation)
+void expectPoseNear(const driver::RigidPose& actual, const driver::V3& position,
+                    const driver::Q& rotation)
 {
     EXPECT_NEAR(actual.pos.x, position.x, kTolerance);
     EXPECT_NEAR(actual.pos.y, position.y, kTolerance);
@@ -592,53 +591,53 @@ void expectPoseNear(const spike::RigidPose& actual, const spike::V3& position,
     EXPECT_NEAR(actual.rot.z, rotation.z, kTolerance);
 }
 
-TEST(SpikePoseMath, IdentityComposesToTheOtherOperand)
+TEST(PoseMath, IdentityComposesToTheOtherOperand)
 {
-    const spike::RigidPose identity{};
-    const spike::RigidPose pose{{1.0, 2.0, 3.0}, {0.5, 0.5, 0.5, 0.5}};
-    expectPoseNear(spike::compose(identity, pose), pose.pos, pose.rot);
-    expectPoseNear(spike::compose(pose, identity), pose.pos, pose.rot);
+    const driver::RigidPose identity{};
+    const driver::RigidPose pose{{1.0, 2.0, 3.0}, {0.5, 0.5, 0.5, 0.5}};
+    expectPoseNear(driver::compose(identity, pose), pose.pos, pose.rot);
+    expectPoseNear(driver::compose(pose, identity), pose.pos, pose.rot);
 }
 
-TEST(SpikePoseMath, RotateMatchesRightHandedYUpConvention)
+TEST(PoseMath, RotateMatchesRightHandedYUpConvention)
 {
     // +90 deg about Y takes +X to -Z in a right-handed Y-up space.
     const double s = std::sqrt(0.5);
-    const spike::Q yaw90{s, 0.0, s, 0.0};
-    const spike::V3 rotated = spike::rotate(yaw90, {1.0, 0.0, 0.0});
+    const driver::Q yaw90{s, 0.0, s, 0.0};
+    const driver::V3 rotated = driver::rotate(yaw90, {1.0, 0.0, 0.0});
     EXPECT_NEAR(rotated.x, 0.0, kTolerance);
     EXPECT_NEAR(rotated.y, 0.0, kTolerance);
     EXPECT_NEAR(rotated.z, -1.0, kTolerance);
 }
 
-TEST(SpikePoseMath, ComposeAppliesTheSecondOperandFirst)
+TEST(PoseMath, ComposeAppliesTheSecondOperandFirst)
 {
     const double s = std::sqrt(0.5);
-    const spike::RigidPose outer{{0.0, 1.0, 0.0}, {s, 0.0, s, 0.0}}; // +90 deg yaw, up 1 m
-    const spike::RigidPose inner{{1.0, 0.0, 0.0}, {}};               // 1 m along +X
+    const driver::RigidPose outer{{0.0, 1.0, 0.0}, {s, 0.0, s, 0.0}}; // +90 deg yaw, up 1 m
+    const driver::RigidPose inner{{1.0, 0.0, 0.0}, {}};               // 1 m along +X
 
     // outer o inner: inner's offset is rotated by outer, then translated.
-    expectPoseNear(spike::compose(outer, inner), {0.0, 1.0, -1.0}, outer.rot);
+    expectPoseNear(driver::compose(outer, inner), {0.0, 1.0, -1.0}, outer.rot);
     // The other order must differ — this asymmetry is what makes the DriverPose_t
     // composition order a real question rather than a formality.
-    expectPoseNear(spike::compose(inner, outer), {1.0, 1.0, 0.0}, outer.rot);
+    expectPoseNear(driver::compose(inner, outer), {1.0, 1.0, 0.0}, outer.rot);
 }
 
-TEST(SpikePoseMath, DriverPoseCompositionMatchesTheAnalyticCase)
+TEST(PoseMath, DriverPoseCompositionMatchesTheAnalyticCase)
 {
     // WorldFromDriver: 180 deg about Y, 10 m along +X.
-    const spike::RigidPose worldFromDriver{{10.0, 0.0, 0.0}, {0.0, 0.0, 1.0, 0.0}};
+    const driver::RigidPose worldFromDriver{{10.0, 0.0, 0.0}, {0.0, 0.0, 1.0, 0.0}};
     // Driver-local pose: (1, 2, 3), also 180 deg about Y.
-    const spike::RigidPose local{{1.0, 2.0, 3.0}, {0.0, 0.0, 1.0, 0.0}};
+    const driver::RigidPose local{{1.0, 2.0, 3.0}, {0.0, 0.0, 1.0, 0.0}};
     // DriverFromHead: 0.5 m up, no rotation.
-    const spike::RigidPose driverFromHead{{0.0, 0.5, 0.0}, {}};
+    const driver::RigidPose driverFromHead{{0.0, 0.5, 0.0}, {}};
 
     // 180 deg about Y negates x and z: (1,2,3) -> (-1,2,-3); plus (10,0,0).
-    const spike::RigidPose a = spike::compose(worldFromDriver, local);
+    const driver::RigidPose a = driver::compose(worldFromDriver, local);
     expectPoseNear(a, {9.0, 2.0, -3.0}, {-1.0, 0.0, 0.0, 0.0});
 
     // A's rotation is a full turn, so the head offset stays +Y.
-    const spike::RigidPose b = spike::compose(a, driverFromHead);
+    const driver::RigidPose b = driver::compose(a, driverFromHead);
     expectPoseNear(b, {9.0, 2.5, -3.0}, {-1.0, 0.0, 0.0, 0.0});
 }
 } // namespace

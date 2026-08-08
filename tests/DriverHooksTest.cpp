@@ -1,9 +1,8 @@
-// Tests for the throwaway step-1 spike's hook table and detour bodies
-// (doc/driver-plan.md, doc/driver-spike-handover.md §2.1).
+// Tests for the driver's hook table and detour bodies (doc/driver-plan.md).
 //
-// Everything here used to live in SpikeDriver.cpp, where it was unreachable: that file
+// Everything here used to live in Driver.cpp, where it was unreachable: that file
 // is compiled only into the driver DLL, so the only thing that ever ran it was
-// SpikeDriverTest through LoadLibrary — an integration test, and therefore no evidence
+// DriverTest through LoadLibrary — an integration test, and therefore no evidence
 // about these decisions at all. What is proved here, with MinHook replaced by a fake and
 // no DLL in sight:
 //
@@ -17,8 +16,8 @@
 //   * that a failed component creation is not recorded (there is no handle, and *handle
 //     would be uninitialized memory).
 
-#include "spike/SpikeDriverHooks.h"
-#include "spike/SpikeLog.h"
+#include "driver/DriverHooks.h"
+#include "link/Log.h"
 
 #include "link/MessageChannel.h"
 
@@ -43,7 +42,7 @@ void slotZero() {}
 void slotOne() {}
 void slotTwo() {}
 
-class FakeHookApi : public spike::HookApi
+class FakeHookApi : public driver::HookApi
 {
 public:
     struct Call
@@ -53,7 +52,7 @@ public:
         void* detour;
     };
 
-    int initialize() override { return spike::kHookOk; }
+    int initialize() override { return driver::kHookOk; }
     void shutdown() override {}
     // Unused here (this suite never calls initializeHookLibrary); any value that is not
     // kHookOk will do.
@@ -63,19 +62,19 @@ public:
     {
         calls.push_back({"create", target, detour});
         *original = trampoline;
-        return spike::kHookOk;
+        return driver::kHookOk;
     }
 
     int enable(void* target) override
     {
         calls.push_back({"enable", target, nullptr});
-        return spike::kHookOk;
+        return driver::kHookOk;
     }
 
     int remove(void* target) override
     {
         calls.push_back({"remove", target, nullptr});
-        return spike::kHookOk;
+        return driver::kHookOk;
     }
 
     const char* statusName(int) override { return "MH_ERROR_FAKE"; }
@@ -186,7 +185,7 @@ void detourA() {}
 void detourB() {}
 void detourC() {}
 
-class SpikeDriverHooksTest : public ::testing::Test
+class DriverHooksTest : public ::testing::Test
 {
 protected:
     void SetUp() override
@@ -227,31 +226,31 @@ protected:
     FakeInterface object_{vtable_};
 
     std::shared_ptr<std::ostringstream> stream_ = std::make_shared<std::ostringstream>();
-    spike::Logger logger_;
+    link::Logger logger_;
     FakeHookApi api_;
 
-    spike::DriverDetours detours_{reinterpret_cast<void*>(&detourA),
+    driver::DriverDetours detours_{reinterpret_cast<void*>(&detourA),
                                   reinterpret_cast<void*>(&detourB),
                                   reinterpret_cast<void*>(&detourC)};
-    spike::DriverHookSet hooks_{api_, logger_, detours_};
+    driver::DriverHookSet hooks_{api_, logger_, detours_};
 
     link::MessageChannel channel_{logger_, [] { return nullptr; }};
-    spike::SpikeObserver observer_{logger_, hooks_, [] { return 0.0; }, channel_};
+    driver::Observer observer_{logger_, hooks_, [] { return 0.0; }, channel_};
 };
 
 // ---------------------------------------------------------- the index table ----
 
-TEST_F(SpikeDriverHooksTest, VtableIndicesAreThePlansTable)
+TEST_F(DriverHooksTest, VtableIndicesAreThePlansTable)
 {
     // Declaration order in openvr_driver.h, i.e. the ABI. If a future openvr version
     // reorders these interfaces, this is the assertion that has to change — and the
     // reason the numbers are named constants instead of literals inside the DLL.
-    EXPECT_EQ(spike::kDriverContextGetGenericInterfaceIndex, 0);
-    EXPECT_EQ(spike::kServerDriverHostTrackedDeviceAddedIndex, 0);
-    EXPECT_EQ(spike::kServerDriverHostTrackedDevicePoseUpdatedIndex, 1);
+    EXPECT_EQ(driver::kDriverContextGetGenericInterfaceIndex, 0);
+    EXPECT_EQ(driver::kServerDriverHostTrackedDeviceAddedIndex, 0);
+    EXPECT_EQ(driver::kServerDriverHostTrackedDevicePoseUpdatedIndex, 1);
 }
 
-TEST_F(SpikeDriverHooksTest, DriverContextHookGoesIntoSlotZeroWithTheContextDetour)
+TEST_F(DriverHooksTest, DriverContextHookGoesIntoSlotZeroWithTheContextDetour)
 {
     hooks_.hookDriverContext(reinterpret_cast<vr::IVRDriverContext*>(&object_));
 
@@ -259,10 +258,10 @@ TEST_F(SpikeDriverHooksTest, DriverContextHookGoesIntoSlotZeroWithTheContextDeto
     ASSERT_EQ(created.size(), 1u);
     EXPECT_EQ(created[0].target, slot(0));
     EXPECT_EQ(created[0].detour, detours_.getGenericInterface);
-    EXPECT_TRUE(logged(std::string("hook ") + spike::kGetGenericInterfaceHookName + ": installed"));
+    EXPECT_TRUE(logged(std::string("hook ") + driver::kGetGenericInterfaceHookName + ": installed"));
 }
 
-TEST_F(SpikeDriverHooksTest, ServerDriverHostHookGoesIntoTheTwoPlannedSlots)
+TEST_F(DriverHooksTest, ServerDriverHostHookGoesIntoTheTwoPlannedSlots)
 {
     hooks_.hookServerDriverHost(&object_);
 
@@ -272,11 +271,11 @@ TEST_F(SpikeDriverHooksTest, ServerDriverHostHookGoesIntoTheTwoPlannedSlots)
     EXPECT_EQ(created[0].detour, detours_.trackedDeviceAdded);
     EXPECT_EQ(created[1].target, slot(1));
     EXPECT_EQ(created[1].detour, detours_.poseUpdated);
-    EXPECT_TRUE(logged(std::string("hook ") + spike::kTrackedDeviceAddedHookName + ": installed"));
-    EXPECT_TRUE(logged(std::string("hook ") + spike::kPoseUpdatedHookName + ": installed"));
+    EXPECT_TRUE(logged(std::string("hook ") + driver::kTrackedDeviceAddedHookName + ": installed"));
+    EXPECT_TRUE(logged(std::string("hook ") + driver::kPoseUpdatedHookName + ": installed"));
 }
 
-TEST_F(SpikeDriverHooksTest, RemoveAllUnhooksInReverseInstallOrder)
+TEST_F(DriverHooksTest, RemoveAllUnhooksInReverseInstallOrder)
 {
     // The context hook is what discovers the interfaces, so it must be the last one
     // removed: a GetGenericInterface call in flight may still install an interface hook.
@@ -289,10 +288,10 @@ TEST_F(SpikeDriverHooksTest, RemoveAllUnhooksInReverseInstallOrder)
     // Slot identity is all the fake object can distinguish, so the order is checked
     // through the log labels, which name the hook.
     const std::string text = logText();
-    const size_t pose = text.find(std::string(spike::kPoseUpdatedHookName) + ": removed");
-    const size_t added = text.find(std::string(spike::kTrackedDeviceAddedHookName) + ": removed");
+    const size_t pose = text.find(std::string(driver::kPoseUpdatedHookName) + ": removed");
+    const size_t added = text.find(std::string(driver::kTrackedDeviceAddedHookName) + ": removed");
     const size_t context =
-        text.find(std::string(spike::kGetGenericInterfaceHookName) + ": removed");
+        text.find(std::string(driver::kGetGenericInterfaceHookName) + ": removed");
 
     ASSERT_NE(context, std::string::npos);
     EXPECT_LT(pose, added);
@@ -302,7 +301,7 @@ TEST_F(SpikeDriverHooksTest, RemoveAllUnhooksInReverseInstallOrder)
 
 // ------------------------------------------------------- the detour bodies ----
 
-TEST_F(SpikeDriverHooksTest, GetGenericInterfaceForwardsUnchangedAndObservesAfterwards)
+TEST_F(DriverHooksTest, GetGenericInterfaceForwardsUnchangedAndObservesAfterwards)
 {
     installWith(hooks_.getGenericInterface, reinterpret_cast<void*>(&stubGetGenericInterface), 0);
     int interfaceObject = 0;
@@ -311,7 +310,7 @@ TEST_F(SpikeDriverHooksTest, GetGenericInterfaceForwardsUnchangedAndObservesAfte
     vr::IVRDriverContext* const context = reinterpret_cast<vr::IVRDriverContext*>(&object_);
     vr::EVRInitError error = vr::VRInitError_None;
     void* const result =
-        spike::observeGetGenericInterface(hooks_, observer_, context, "IVRSettings_007", &error);
+        driver::observeGetGenericInterface(hooks_, observer_, context, "IVRSettings_007", &error);
 
     EXPECT_EQ(result, &interfaceObject);
     EXPECT_EQ(g_stub.calls, 1);
@@ -324,7 +323,7 @@ TEST_F(SpikeDriverHooksTest, GetGenericInterfaceForwardsUnchangedAndObservesAfte
     EXPECT_TRUE(logged("interface \"IVRSettings_007\""));
 }
 
-TEST_F(SpikeDriverHooksTest, TrackedDeviceAddedIsForwardedBeforeItIsObserved)
+TEST_F(DriverHooksTest, TrackedDeviceAddedIsForwardedBeforeItIsObserved)
 {
     installWith(hooks_.trackedDeviceAdded, reinterpret_cast<void*>(&stubTrackedDeviceAdded), 0);
     g_returnedAdded = true;
@@ -333,7 +332,7 @@ TEST_F(SpikeDriverHooksTest, TrackedDeviceAddedIsForwardedBeforeItIsObserved)
     vr::ITrackedDeviceServerDriver* const driver =
         reinterpret_cast<vr::ITrackedDeviceServerDriver*>(&api_);
 
-    EXPECT_TRUE(spike::observeTrackedDeviceAdded(hooks_, observer_, host, "LHR-TEST",
+    EXPECT_TRUE(driver::observeTrackedDeviceAdded(hooks_, observer_, host, "LHR-TEST",
                                                  vr::TrackedDeviceClass_GenericTracker, driver));
 
     EXPECT_EQ(g_stub.calls, 1);
@@ -343,19 +342,19 @@ TEST_F(SpikeDriverHooksTest, TrackedDeviceAddedIsForwardedBeforeItIsObserved)
     EXPECT_EQ(g_stub.driver, driver);
 }
 
-TEST_F(SpikeDriverHooksTest, FalseFromVrserverIsReturnedUnchanged)
+TEST_F(DriverHooksTest, FalseFromVrserverIsReturnedUnchanged)
 {
     installWith(hooks_.trackedDeviceAdded, reinterpret_cast<void*>(&stubTrackedDeviceAdded), 0);
     g_returnedAdded = false;
 
-    EXPECT_FALSE(spike::observeTrackedDeviceAdded(
+    EXPECT_FALSE(driver::observeTrackedDeviceAdded(
         hooks_, observer_, reinterpret_cast<vr::IVRServerDriverHost*>(&object_), "LHR-TEST",
         vr::TrackedDeviceClass_Controller, nullptr));
 }
 
-TEST_F(SpikeDriverHooksTest, PoseUpdateIsForwardedByReferenceAndUnmodified)
+TEST_F(DriverHooksTest, PoseUpdateIsForwardedByReferenceAndUnmodified)
 {
-    // The spike must not perturb the driver it watches: same object, same values, same
+    // The driver must not perturb the driver it watches: same object, same values, same
     // struct size.
     installWith(hooks_.poseUpdated, reinterpret_cast<void*>(&stubTrackedDevicePoseUpdated), 1);
 
@@ -367,7 +366,7 @@ TEST_F(SpikeDriverHooksTest, PoseUpdateIsForwardedByReferenceAndUnmodified)
     pose.qWorldFromDriverRotation = {1.0, 0.0, 0.0, 0.0};
     pose.qDriverFromHeadRotation = {1.0, 0.0, 0.0, 0.0};
 
-    spike::observeTrackedDevicePoseUpdated(hooks_, observer_,
+    driver::observeTrackedDevicePoseUpdated(hooks_, observer_,
                                            reinterpret_cast<vr::IVRServerDriverHost*>(&object_), 7,
                                            pose, sizeof(vr::DriverPose_t));
 

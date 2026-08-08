@@ -1,28 +1,26 @@
 #pragma once
 
-// Throwaway step-1 spike (doc/driver-plan.md): where the spike's log file goes.
+// Where the driver's log file goes.
 //
-// This used to be a lambda inside SpikeDriver.cpp (and a copy of it inside
-// SpikeClient.cpp), i.e. in the two files no unit test can execute — with a basename
-// scan, an extension strip, an empty-name fallback and a "%LOCALAPPDATA% unset"
-// fallback in it, none of which ran anywhere (doc/driver-spike-handover.md §2.1a).
-// It is here instead, with the only two things that cannot be faked — the
-// environment block and the running executable's path — injected as `ProcessApi`.
+// This used to be a lambda inside Driver.cpp, i.e. in the file no unit test can
+// execute — with a basename scan, an extension strip, an empty-name fallback and a
+// "%LOCALAPPDATA% unset" fallback in it, none of which ran anywhere. It is here
+// instead, with the only two things that cannot be faked — the environment block and
+// the running executable's path — injected as `ProcessApi`.
 //
 // Nothing here touches the filesystem: the path is computed, and spdlog's file sink
 // (created by the adapter) creates the directory tree when it opens the file.
 
 #include <string>
 
-namespace spike
+namespace driver
 {
 // MAX_PATH, so this header needs no windows.h.
 constexpr unsigned long kMaxLogPath = 260;
 
 // One file per loading process, so vrserver / vrwatchdog / the test executable do not
-// interleave (doc/driver-spike-handover.md §8).
-inline constexpr const char* kDriverLogPrefix = "driver-spike-";
-inline constexpr const char* kClientLogPrefix = "client-spike-";
+// interleave.
+inline constexpr const char* kDriverLogPrefix = "driver-";
 
 // The name the log file is reported as when the executable cannot be identified.
 inline constexpr const char* kUnknownProcessName = "unknown";
@@ -44,7 +42,7 @@ public:
 };
 
 // "C:\Program Files\Steam\...\vrserver.exe" -> "vrserver". Empty or nameless paths
-// answer kUnknownProcessName, because "driver-spike-.log" would silently be one shared
+// answer kUnknownProcessName, because "driver-.log" would silently be one shared
 // file for every process that failed the lookup.
 std::string processNameFromPath(const std::string& executablePath);
 
@@ -55,4 +53,4 @@ std::string logDirectory(ProcessApi& api);
 // <log directory><prefix><process name>.log — the whole path the adapter hands to
 // spdlog, and the entire body of the adapter's path helper.
 std::string processLogPath(ProcessApi& api, const char* prefix);
-} // namespace spike
+} // namespace driver

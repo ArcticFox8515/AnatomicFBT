@@ -1,11 +1,11 @@
-#include "SpikeDriverHooks.h"
+#include "DriverHooks.h"
 
-#include "SpikeGuard.h"
-#include "SpikeServer.h"
+#include "Guard.h"
+#include "Server.h"
 
-namespace spike
+namespace driver
 {
-DriverHookSet::DriverHookSet(HookApi& api, Logger& logger, const DriverDetours& detours)
+DriverHookSet::DriverHookSet(HookApi& api, link::Logger& logger, const DriverDetours& detours)
     : getGenericInterface(api, logger),
       trackedDeviceAdded(api, logger),
       poseUpdated(api, logger),
@@ -38,7 +38,7 @@ void DriverHookSet::removeAll()
 
 // ---- the detour bodies ------------------------------------------------------------
 
-void* observeGetGenericInterface(DriverHookSet& hooks, SpikeObserver& observer,
+void* observeGetGenericInterface(DriverHookSet& hooks, Observer& observer,
                                  vr::IVRDriverContext* self, const char* version,
                                  vr::EVRInitError* error)
 {
@@ -49,7 +49,7 @@ void* observeGetGenericInterface(DriverHookSet& hooks, SpikeObserver& observer,
     return result;
 }
 
-bool observeTrackedDeviceAdded(DriverHookSet& hooks, SpikeObserver& observer,
+bool observeTrackedDeviceAdded(DriverHookSet& hooks, Observer& observer,
                                vr::IVRServerDriverHost* self, const char* serial,
                                vr::ETrackedDeviceClass deviceClass,
                                vr::ITrackedDeviceServerDriver* driver)
@@ -57,12 +57,12 @@ bool observeTrackedDeviceAdded(DriverHookSet& hooks, SpikeObserver& observer,
     return hooks.trackedDeviceAdded.original()(self, serial, deviceClass, driver);
 }
 
-void observeTrackedDevicePoseUpdated(DriverHookSet& hooks, SpikeObserver& observer,
+void observeTrackedDevicePoseUpdated(DriverHookSet& hooks, Observer& observer,
                                      vr::IVRServerDriverHost* self, uint32_t index,
                                      const vr::DriverPose_t& pose, uint32_t poseStructSize)
 {
     runGuarded([&] { observer.onPose(index, pose, poseStructSize); });
-    // Forwarded unchanged — this spike never modifies a pose.
+    // Forwarded unchanged — this driver never modifies a pose.
     hooks.poseUpdated.original()(self, index, pose, poseStructSize);
 }
-} // namespace spike
+} // namespace driver

@@ -1,14 +1,14 @@
 #pragma once
 
 // Logger for the link layer: format a line and hand it to a sink. No file, no
-// timestamp, no flush, no mutex — spdlog (installed by the adapter, SpikeDriver.cpp
-// / SpikeClient.cpp) owns destinations, timestamps, buffering and flushing. LinkLib
+// timestamp, no flush, no mutex — spdlog (installed by the adapter, Driver.cpp)
+// owns destinations, timestamps, buffering and flushing. LinkLib
 // stays spdlog-free so the test binary and PipeLib do not link it; the spdlog logger is
 // created in the adapter side and wired in via setSink before any hook is installed.
 //
 // Production invariant: the sink is installed once and never cleared. A hook thread
 // reads `sink_` on every detour entry; the adapter writes it before installing hooks
-// (SpikeServer::init wires logging, then hooks), so the read is sequenced after the
+// (Server::init wires logging, then hooks), so the read is sequenced after the
 // write with no lock. setSink is only callable more than once from tests, which are
 // single-threaded.
 
@@ -37,7 +37,7 @@ public:
 
     // printf-style; the message is handed to the sink verbatim. If no sink is
     // installed, the line is dropped. A throw from the sink propagates — every
-    // caller is inside runGuarded (SpikeServer / the detour forwarders).
+    // caller is inside runGuarded (Server / the detour forwarders).
     void logf(const char* format, ...);
 
     // The bare-message dispatch logf uses; exposed so tests can send a line

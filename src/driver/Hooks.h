@@ -1,15 +1,15 @@
 #pragma once
 
-// Throwaway step-1 spike (doc/driver-plan.md): vtable detour helper.
+// Vtable detour helper (doc/driver-plan.md).
 //
 // MinHook itself sits behind the `HookApi` seam: the DLL supplies the real
-// implementation (SpikeDriver.cpp), the tests a fake, so the install/remove state
+// implementation (Driver.cpp), the tests a fake, so the install/remove state
 // machine — including every failure branch — runs in a unit test without patching
 // code inside the test process.
 
-#include "SpikeLog.h"
+#include "link/Log.h"
 
-namespace spike
+namespace driver
 {
 // MH_OK. Kept as a plain int so this header needs no MinHook.
 constexpr int kHookOk = 0;
@@ -27,8 +27,7 @@ public:
     // MH_ERROR_ALREADY_INITIALIZED, which happens whenever a second driver in the
     // same vrserver got there first and is not an error for us. The seam reports the
     // *value* rather than answering a question, so the DLL's implementation is a bare
-    // `return MH_ERROR_ALREADY_INITIALIZED;` with no comparison in it
-    // (doc/driver-spike-handover.md §2.1a).
+    // `return MH_ERROR_ALREADY_INITIALIZED;` with no comparison in it.
     virtual int alreadyInitializedStatus() = 0;
 
     virtual int create(void* target, void* detour, void** original) = 0;
@@ -48,7 +47,7 @@ const char* initializeHookLibrary(HookApi& api);
 class VTableHookBase
 {
 public:
-    VTableHookBase(HookApi& api, Logger& logger) : api_(api), log_(logger) {}
+    VTableHookBase(HookApi& api, link::Logger& logger) : api_(api), log_(logger) {}
 
     bool install(const char* name, void* object, int vtableIndex, void* detour);
     void remove();
@@ -60,12 +59,12 @@ protected:
 
 private:
     HookApi& api_;
-    Logger& log_;
+    link::Logger& log_;
     void* target_ = nullptr;
     void* original_ = nullptr;
     const char* name_ = "";
     // Reentrancy guard: a second install() on this hook object that lands while the
-    // first is still inside MH_CreateHook (the live double-install race, §5.2) must
+    // first is still inside MH_CreateHook (the live double-install race) must
     // not walk into a second create. Serialized via the hook object, not the version
     // string: vrserver hands the same interface to every driver, and Init hooks
     // eagerly on top of that — two callers, one hook object.
@@ -81,4 +80,4 @@ public:
 
     FuncPtr original() const { return reinterpret_cast<FuncPtr>(originalFunction()); }
 };
-} // namespace spike
+} // namespace driver

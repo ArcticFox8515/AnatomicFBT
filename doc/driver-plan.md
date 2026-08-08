@@ -18,14 +18,14 @@ corrections will be applied.
   instance inside vrserver is intercepted — other drivers' devices included.
 - **Device metadata via `IVRProperties`** (`TrackedDeviceToPropertyContainer` +
   `ReadPropertyBatch`), which works for devices we do not own.
-- **Pose composition** — verified in the step-1 spike against client-side raw poses:
+- **Pose composition** — verified against client-side raw poses:
   `world = worldFromDriver ∘ (vecPosition, qRotation) ∘ driverFromHead`. Double precision
   driver-side, `f32` on the wire, glm only in the app.
 - **Pose prediction at the app, not the driver** — the dual-source telemetry run
   (`doc/pose-prediction-note.md`) found a ~10 ms lead on the OpenVR client path that
   scales with device speed (up to 10 mm / 19° at 1 m/s on fast controller swings).
   Cause: `GetDeviceToAbsoluteTrackingPose` extrapolates each pose to *now* using its
-  timestamp + velocities, while `SpikeObserver::onPose` currently ships the raw sample
+  timestamp + velocities, while `Observer::onPose` currently ships the raw sample
   and throws `poseTimeOffset`, `vecVelocity` and `vecAngularVelocity` away. Fix: carry
   those three fields (plus a pose timestamp) on the wire in `link::DevicePose` and
   extrapolate at consume time in `OpenVrTracking::applyPose`, so the app reproduces the
@@ -52,7 +52,8 @@ corrections will be applied.
 
 1. **Spike DLL** — done. Established the composition formula, cross-driver hook coverage,
    metadata by device index, pose / `RunFrame` rates, and that buttons are unavailable
-   driver-side.
+   driver-side. Promoted into the real driver in step 6 (the observation-only spike
+   client and report code were discarded).
 2. **IPC layer** — `Pipe` transport seam (one method per Win32 named-pipe file
    handle op: `write`/`read`/`close`, poll-based, never blocks), length-prefixed
    framing + reassembly (`MessageChannel`) over it, and the wire protocol's two
@@ -83,11 +84,11 @@ corrections will be applied.
    driver DLL only); client half done (`Win32ClientPipe`); app reconnect done in
    step 4 (`OpenVrTracking`, 1/s throttle). `classifyIo` (pure, tested) maps
    winapi returns so the DLL forwarder has no decisions.
-6. **Promote the spike into the real driver** — reuse its hook and provider machinery,
-   drop the observation-only code and the spike client, point the detours at the transport
-   layer, close the two known concurrency defects (unsynchronized publication of the
-   trampoline pointer, and clearing it during teardown while pose threads run). Live
-   SteamVR run; `ctest -C Release` as well as Debug.
+6. **Promote the spike into the real driver** — done. Reused its hook and provider
+   machinery, dropped the observation-only code and the spike client, pointed the
+   detours at the transport layer, closed the two known concurrency defects
+   (unsynchronized publication of the trampoline pointer, and clearing it during
+   teardown while pose threads run). `ctest -C Release` as well as Debug.
 7. **App migration** — poses from the driver link, trigger gesture from the background
    session, connection status in the UI, docs updated.
 

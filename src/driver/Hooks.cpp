@@ -1,6 +1,6 @@
-#include "SpikeHooks.h"
+#include "Hooks.h"
 
-namespace spike
+namespace driver
 {
 const char* initializeHookLibrary(HookApi& api)
 {
@@ -15,7 +15,7 @@ bool VTableHookBase::install(const char* name, void* object, int vtableIndex, vo
     if (installed())
         return true;
     // A second caller re-entering install() from inside the first's MH_CreateHook
-    // (the race §5.2 reproduces single-threaded via the fake's `onCreate` seam) would
+    // (the race reproduces single-threaded via the fake's `onCreate` seam) would
     // otherwise issue a second create on the same function — chaining a hook onto a
     // hook, or losing and clearing the winner's trampoline. Dedupe by hook object: the
     // first caller publishes, the second sees the claim and lets the first win.
@@ -73,4 +73,4 @@ void VTableHookBase::remove()
     target_ = nullptr;
     original_ = nullptr;
 }
-} // namespace spike
+} // namespace driver

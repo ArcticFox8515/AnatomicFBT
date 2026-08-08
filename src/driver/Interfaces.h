@@ -1,8 +1,8 @@
 #pragma once
 
-// Throwaway step-1 spike (doc/driver-plan.md): the decision behind the
-// GetGenericInterface detour, as a pure function so it is directly unit-testable
-// (tests/SpikeDriverTest.cpp) instead of only reachable through a loaded DLL.
+// The decision behind the GetGenericInterface detour, as a pure function so it is
+// directly unit-testable (tests/DriverTest.cpp) instead of only reachable through a
+// loaded DLL.
 //
 // The version we build against is a parameter rather than a hardcoded literal: the
 // interesting case is precisely "vrserver offers a version other than ours", and a
@@ -10,7 +10,7 @@
 
 #include <string>
 
-namespace spike
+namespace driver
 {
 enum class InterfaceAction
 {
@@ -39,4 +39,4 @@ inline InterfaceAction classifyInterface(const std::string& version,
 
     return InterfaceAction::NotNeeded;
 }
-} // namespace spike
+} // namespace driver

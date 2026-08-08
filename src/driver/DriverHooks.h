@@ -1,13 +1,11 @@
 #pragma once
 
-// Throwaway step-1 spike (doc/driver-plan.md): the driver's three hooks, as data plus
-// behaviour, in SpikeLib rather than in the DLL.
+// The driver's three hooks, as data plus behaviour, in DriverLib rather than in the DLL.
 //
-// Everything here used to live in SpikeDriver.cpp, where no unit test can reach it:
+// Everything here used to live in Driver.cpp, where no unit test can reach it:
 // that file is compiled only into driver_00trackingcorrector, so the only thing that
-// ever executed it was SpikeDriverTest via LoadLibrary — an integration test, and
-// therefore no evidence at all under the bar in doc/driver-spike-handover.md §2.1.
-// What moved:
+// ever executed it was DriverTest via LoadLibrary — an integration test, and
+// therefore no evidence at all. What moved:
 //
 //   * the vtable index table (which slot of which interface each hook patches),
 //   * the install order and the reverse removal order,
@@ -15,24 +13,23 @@
 //
 // The DLL keeps only three one-line detour functions whose address MinHook needs.
 //
-// Buttons / input are NOT captured by this driver (doc/driver-spike-handover.md §5.1,
-// doc/driver-plan.md "Buttons"): the live run showed zero calls on the hooked
-// IVRDriverInput_003, and PollNextEvent proved unreliable as a substitute. Input is
-// captured by a separate background client app instead, so there is no event polling
-// here — no detour and no PollNextEvent call.
+// Buttons / input are NOT captured by this driver: the live run showed zero calls on
+// the hooked IVRDriverInput_003, and PollNextEvent proved unreliable as a substitute.
+// Input is captured by a separate background client app instead, so there is no event
+// polling here — no detour and no PollNextEvent call.
 //
 // openvr_driver.h is included for its types and its interface *layout*; nothing here
 // calls into vrserver.
 
-#include "SpikeHooks.h"
-#include "SpikeLog.h"
-#include "SpikeObserver.h"
+#include "Hooks.h"
+#include "link/Log.h"
+#include "Observer.h"
 
 #include <openvr_driver.h>
 
 #include <cstdint>
 
-namespace spike
+namespace driver
 {
 // ---- the hooked functions, as callable types --------------------------------------
 
@@ -48,7 +45,7 @@ using TrackedDevicePoseUpdatedFn = void(*)(vr::IVRServerDriverHost*, uint32_t,
 // constants so a unit test can assert the table the plan fixed, instead of the numbers
 // only existing as literals at the install call sites inside the DLL. That the real
 // MinHook lands on the function these slots point at is a separate claim, proved by
-// SpikeDriverTest against a fake vrserver.
+// DriverTest against a fake vrserver.
 
 constexpr int kDriverContextGetGenericInterfaceIndex = 0;
 constexpr int kServerDriverHostTrackedDeviceAddedIndex = 0;
@@ -74,7 +71,7 @@ struct DriverDetours
 class DriverHookSet final : public InterfaceHooks
 {
 public:
-    DriverHookSet(HookApi& api, Logger& logger, const DriverDetours& detours);
+    DriverHookSet(HookApi& api, link::Logger& logger, const DriverDetours& detours);
 
     // IVRDriverContext, hooked from Init with the context vrserver passed us.
     void hookDriverContext(vr::IVRDriverContext* context);
@@ -99,20 +96,20 @@ private:
 // vrserver returned. The observer call is guarded (runGuarded) because an exception
 // escaping a detour lands inside vrserver.exe and kills SteamVR.
 //
-// Argument order and forwarding order are part of what is being proved: the spike must
-// not perturb the driver whose calls it watches, so the pose hook forwards the *same*
-// reference it was given and never modifies it.
+// Argument order and forwarding order are part of what is being proved: the driver
+// must not perturb the driver whose calls it watches, so the pose hook forwards the
+// *same* reference it was given and never modifies it.
 
-void* observeGetGenericInterface(DriverHookSet& hooks, SpikeObserver& observer,
+void* observeGetGenericInterface(DriverHookSet& hooks, Observer& observer,
                                  vr::IVRDriverContext* self, const char* version,
                                  vr::EVRInitError* error);
 
-bool observeTrackedDeviceAdded(DriverHookSet& hooks, SpikeObserver& observer,
+bool observeTrackedDeviceAdded(DriverHookSet& hooks, Observer& observer,
                                vr::IVRServerDriverHost* self, const char* serial,
                                vr::ETrackedDeviceClass deviceClass,
                                vr::ITrackedDeviceServerDriver* driver);
 
-void observeTrackedDevicePoseUpdated(DriverHookSet& hooks, SpikeObserver& observer,
+void observeTrackedDevicePoseUpdated(DriverHookSet& hooks, Observer& observer,
                                      vr::IVRServerDriverHost* self, uint32_t index,
                                      const vr::DriverPose_t& pose, uint32_t poseStructSize);
-} // namespace spike
+} // namespace driver

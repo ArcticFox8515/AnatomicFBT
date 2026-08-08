@@ -1,20 +1,20 @@
-// Tests for the throwaway step-1 spike's observation logic (doc/driver-plan.md).
+// Tests for the driver's observation logic (doc/driver-plan.md).
 //
-// SpikeObserver is the whole decision surface of the spike, and it is driven here
+// Observer is the whole decision surface of the driver, and it is driven here
 // directly: no DLL, no MinHook, no vrserver, no clock, no filesystem. Its four
 // dependencies (logger, hook installer, property reader, clock) are fakes, so every
 // branch — including the ones a live SteamVR session would only show us by accident
 // (a truncated pose struct, a device whose serial changed, an unhookable interface
 // version) — is reachable and deterministic.
 //
-// Button/input capture is NOT part of the driver DLL (doc/driver-spike-handover.md
-// §5.1): a separate background client app handles input, so this observer never polls
-// VR events and there is no EventPoller seam to fake here.
+// Button/input capture is NOT part of the driver DLL: a separate background client
+// app handles input, so this observer never polls VR events and there is no
+// EventPoller seam to fake here.
 
-#include "spike/SpikeGuard.h"
-#include "spike/SpikeLog.h"
-#include "spike/SpikeNames.h"
-#include "spike/SpikeObserver.h"
+#include "driver/Guard.h"
+#include "link/Log.h"
+#include "driver/Names.h"
+#include "driver/Observer.h"
 
 #include "FakePipe.h"
 #include "link/MessageChannel.h"
@@ -33,7 +33,7 @@ namespace
 constexpr vr::PropertyContainerHandle_t kContainerBase = 5000;
 constexpr uint32_t kTracker = 3;
 
-class FakeInterfaceHooks : public spike::InterfaceHooks
+class FakeInterfaceHooks : public driver::InterfaceHooks
 {
 public:
     void hookServerDriverHost(void* host) override { hostHooks.push_back(host); }
@@ -41,7 +41,7 @@ public:
     std::vector<void*> hostHooks;
 };
 
-class FakeProperties : public spike::DeviceProperties
+class FakeProperties : public driver::DeviceProperties
 {
 public:
     struct Device
@@ -122,10 +122,10 @@ vr::DriverPose_t makePose(double x = 1.0)
     return pose;
 }
 
-class SpikeObserverTest : public ::testing::Test
+class ObserverTest : public ::testing::Test
 {
 protected:
-    SpikeObserverTest() : observer_(logger_, hooks_, [this] { return now_; }, channel_)
+    ObserverTest() : observer_(logger_, hooks_, [this] { return now_; }, channel_)
     {
         logger_.setSink([this](const char* message) { lines_.emplace_back(message); });
     }
@@ -150,17 +150,17 @@ protected:
 
     double now_ = 100.0;
     std::vector<std::string> lines_;
-    spike::Logger logger_;
+    link::Logger logger_;
     FakeInterfaceHooks hooks_;
     FakeProperties properties_;
     link_test::FakePipe pipe_;
     link::MessageChannel channel_{logger_, link_test::borrowPipeFactory(pipe_)};
-    spike::SpikeObserver observer_{logger_, hooks_, [this] { return now_; }, channel_};
+    driver::Observer observer_{logger_, hooks_, [this] { return now_; }, channel_};
 };
 
 // ------------------------------------------------- GetGenericInterface dispatch ----
 
-TEST_F(SpikeObserverTest, TheInterfacesWeBuildAgainstAreHooked)
+TEST_F(ObserverTest, TheInterfacesWeBuildAgainstAreHooked)
 {
     int host = 0;
     observer_.onInterfaceRequested(vr::IVRServerDriverHost_Version, &host);
@@ -170,7 +170,7 @@ TEST_F(SpikeObserverTest, TheInterfacesWeBuildAgainstAreHooked)
                        + "\": hooking"));
 }
 
-TEST_F(SpikeObserverTest, AnUnhookableVersionOfAnInterfaceWeNeedIsReportedLoudlyAndNotHooked)
+TEST_F(ObserverTest, AnUnhookableVersionOfAnInterfaceWeNeedIsReportedLoudlyAndNotHooked)
 {
     // The dangerous silent case: a version we cannot hook means every device behind it
     // is invisible to us, and the pointer must not be touched (its vtable layout is
@@ -182,13 +182,13 @@ TEST_F(SpikeObserverTest, AnUnhookableVersionOfAnInterfaceWeNeedIsReportedLoudly
     EXPECT_TRUE(logged("interface \"IVRServerDriverHost_005\": NOT HOOKED"));
 }
 
-TEST_F(SpikeObserverTest, InterfacesWeDoNotNeedAndNullResultsAreJustRecorded)
+TEST_F(ObserverTest, InterfacesWeDoNotNeedAndNullResultsAreJustRecorded)
 {
     int dummy = 0;
     observer_.onInterfaceRequested(vr::IVRResources_Version, &dummy);
-    // IVRDriverInput is not hooked (doc/driver-spike-handover.md §5.1): input capture
-    // moved out of the driver DLL to a separate background client app, so the input
-    // interface is "not needed" like IVRResources.
+    // IVRDriverInput is not hooked: input capture moved out of the driver DLL to a
+    // separate background client app, so the input interface is "not needed" like
+    // IVRResources.
     observer_.onInterfaceRequested(vr::IVRDriverInput_Version, &dummy);
     observer_.onInterfaceRequested("IVRCameraComponent_004", nullptr);
     observer_.onInterfaceRequested(nullptr, nullptr);
@@ -201,7 +201,7 @@ TEST_F(SpikeObserverTest, InterfacesWeDoNotNeedAndNullResultsAreJustRecorded)
     EXPECT_TRUE(hooks_.hostHooks.empty());
 }
 
-TEST_F(SpikeObserverTest, EachVersionStringIsReportedOnce)
+TEST_F(ObserverTest, EachVersionStringIsReportedOnce)
 {
     // Every driver in the session asks for the same interfaces; the log has to stay
     // readable, and the hook must not be reinstalled per request.
@@ -218,7 +218,7 @@ TEST_F(SpikeObserverTest, EachVersionStringIsReportedOnce)
 
 // ------------------------------------------------------------ device / pose ----
 
-TEST_F(SpikeObserverTest, PosesForImpossibleDeviceIndicesAreDropped)
+TEST_F(ObserverTest, PosesForImpossibleDeviceIndicesAreDropped)
 {
     observer_.onPose(vr::k_unMaxTrackedDeviceCount, makePose(), sizeof(vr::DriverPose_t));
     observer_.onPose(vr::k_unMaxTrackedDeviceCount + 7, makePose(), sizeof(vr::DriverPose_t));
@@ -227,7 +227,7 @@ TEST_F(SpikeObserverTest, PosesForImpossibleDeviceIndicesAreDropped)
 
 // ---------------------------------------------------- RunFrame housekeeping ----
 
-TEST_F(SpikeObserverTest, HousekeepingRunsOnTheFirstFrameThenOncePerSecond)
+TEST_F(ObserverTest, HousekeepingRunsOnTheFirstFrameThenOncePerSecond)
 {
     properties_.add(kTracker, {"LHR-TESTTRACKER", "Vive Tracker", "lighthouse",
                                vr::TrackedDeviceClass_GenericTracker,
@@ -238,16 +238,16 @@ TEST_F(SpikeObserverTest, HousekeepingRunsOnTheFirstFrameThenOncePerSecond)
     EXPECT_TRUE(logged("device 3: class=tracker(3) serial=\"LHR-TESTTRACKER\" container=5003"));
 
     const uint32_t lookupsAfterFirst = properties_.containerLookups;
-    now_ += spike::kHousekeepingSeconds / 2.0;
+    now_ += driver::kHousekeepingSeconds / 2.0;
     observer_.onRunFrame();
     EXPECT_EQ(properties_.containerLookups, lookupsAfterFirst);
 
-    now_ += spike::kHousekeepingSeconds;
+    now_ += driver::kHousekeepingSeconds;
     observer_.onRunFrame();
     EXPECT_GT(properties_.containerLookups, lookupsAfterFirst);
 }
 
-TEST_F(SpikeObserverTest, WithoutAPropertyReaderNothingIsEnumerated)
+TEST_F(ObserverTest, WithoutAPropertyReaderNothingIsEnumerated)
 {
     observer_.setProperties(nullptr);
     observer_.onRunFrame();
@@ -255,7 +255,7 @@ TEST_F(SpikeObserverTest, WithoutAPropertyReaderNothingIsEnumerated)
     EXPECT_FALSE(logged("device 3:"));
 }
 
-TEST_F(SpikeObserverTest, ContainersWithoutADeviceAreSkipped)
+TEST_F(ObserverTest, ContainersWithoutADeviceAreSkipped)
 {
     properties_.add(1, {"", "", "", vr::TrackedDeviceClass_Invalid,
                         vr::TrackedControllerRole_Invalid, /*readable=*/false});
@@ -266,18 +266,18 @@ TEST_F(SpikeObserverTest, ContainersWithoutADeviceAreSkipped)
     EXPECT_FALSE(logged("device 1:"));
 }
 
-TEST_F(SpikeObserverTest, MetadataIsReReadOnlyWhenTheSerialChanges)
+TEST_F(ObserverTest, MetadataIsReReadOnlyWhenTheSerialChanges)
 {
     bringUpTracker();
     lines_.clear();
 
-    now_ += spike::kHousekeepingSeconds;
+    now_ += driver::kHousekeepingSeconds;
     observer_.onRunFrame();
     EXPECT_FALSE(logged("device 3: class="));
 
     properties_.devices[kTracker].serial = "LHR-OTHER";
     properties_.devices[kTracker].deviceClass = vr::TrackedDeviceClass_Controller;
-    now_ += spike::kHousekeepingSeconds;
+    now_ += driver::kHousekeepingSeconds;
     observer_.onRunFrame();
     EXPECT_TRUE(logged("device 3: class=controller(2) serial=\"LHR-OTHER\""));
 }
@@ -295,7 +295,7 @@ link::DevicePose parseFirstPose(const std::vector<std::uint8_t>& written)
     return restored;
 }
 
-TEST_F(SpikeObserverTest, ForwardsAPoseAsTheBCompositionWithClassAndSerial)
+TEST_F(ObserverTest, ForwardsAPoseAsTheBCompositionWithClassAndSerial)
 {
     bringUpTracker();  // metadata known: tracker, "LHR-TESTTRACKER"; pose stored
     lines_.clear();
@@ -325,7 +325,7 @@ TEST_F(SpikeObserverTest, ForwardsAPoseAsTheBCompositionWithClassAndSerial)
     EXPECT_FLOAT_EQ(wire.rotation[3], -1.0f); // w
 }
 
-TEST_F(SpikeObserverTest, ForwardsAnInvalidPoseAsTrackingLost)
+TEST_F(ObserverTest, ForwardsAnInvalidPoseAsTrackingLost)
 {
     // No pose validation: an invalid pose is still forwarded, but with
     // tracking=Lost so the app drops the device this frame.
@@ -344,7 +344,7 @@ TEST_F(SpikeObserverTest, ForwardsAnInvalidPoseAsTrackingLost)
     EXPECT_EQ(wire.deviceKind, link::DeviceKind::Tracker);
 }
 
-TEST_F(SpikeObserverTest, ATruncatedPoseIsNotForwarded)
+TEST_F(ObserverTest, ATruncatedPoseIsNotForwarded)
 {
     bringUpTracker();
     lines_.clear();
@@ -358,47 +358,47 @@ TEST_F(SpikeObserverTest, ATruncatedPoseIsNotForwarded)
 
 // -------------------------------------------------------- names and guards ----
 
-TEST(SpikeNames, EveryDeviceClassHasALabel)
+TEST(Names, EveryDeviceClassHasALabel)
 {
-    EXPECT_STREQ(spike::deviceClassName(vr::TrackedDeviceClass_Invalid), "invalid");
-    EXPECT_STREQ(spike::deviceClassName(vr::TrackedDeviceClass_HMD), "hmd");
-    EXPECT_STREQ(spike::deviceClassName(vr::TrackedDeviceClass_Controller), "controller");
-    EXPECT_STREQ(spike::deviceClassName(vr::TrackedDeviceClass_GenericTracker), "tracker");
-    EXPECT_STREQ(spike::deviceClassName(vr::TrackedDeviceClass_TrackingReference), "reference");
-    EXPECT_STREQ(spike::deviceClassName(vr::TrackedDeviceClass_DisplayRedirect),
+    EXPECT_STREQ(driver::deviceClassName(vr::TrackedDeviceClass_Invalid), "invalid");
+    EXPECT_STREQ(driver::deviceClassName(vr::TrackedDeviceClass_HMD), "hmd");
+    EXPECT_STREQ(driver::deviceClassName(vr::TrackedDeviceClass_Controller), "controller");
+    EXPECT_STREQ(driver::deviceClassName(vr::TrackedDeviceClass_GenericTracker), "tracker");
+    EXPECT_STREQ(driver::deviceClassName(vr::TrackedDeviceClass_TrackingReference), "reference");
+    EXPECT_STREQ(driver::deviceClassName(vr::TrackedDeviceClass_DisplayRedirect),
                  "display_redirect");
-    EXPECT_STREQ(spike::deviceClassName(9999), "unknown");
+    EXPECT_STREQ(driver::deviceClassName(9999), "unknown");
 }
 
-TEST(SpikeNames, EveryControllerRoleHasALabel)
+TEST(Names, EveryControllerRoleHasALabel)
 {
-    EXPECT_STREQ(spike::roleHintName(vr::TrackedControllerRole_Invalid), "invalid");
-    EXPECT_STREQ(spike::roleHintName(vr::TrackedControllerRole_LeftHand), "left_hand");
-    EXPECT_STREQ(spike::roleHintName(vr::TrackedControllerRole_RightHand), "right_hand");
-    EXPECT_STREQ(spike::roleHintName(vr::TrackedControllerRole_OptOut), "opt_out");
-    EXPECT_STREQ(spike::roleHintName(vr::TrackedControllerRole_Treadmill), "treadmill");
-    EXPECT_STREQ(spike::roleHintName(vr::TrackedControllerRole_Stylus), "stylus");
-    EXPECT_STREQ(spike::roleHintName(9999), "unknown");
+    EXPECT_STREQ(driver::roleHintName(vr::TrackedControllerRole_Invalid), "invalid");
+    EXPECT_STREQ(driver::roleHintName(vr::TrackedControllerRole_LeftHand), "left_hand");
+    EXPECT_STREQ(driver::roleHintName(vr::TrackedControllerRole_RightHand), "right_hand");
+    EXPECT_STREQ(driver::roleHintName(vr::TrackedControllerRole_OptOut), "opt_out");
+    EXPECT_STREQ(driver::roleHintName(vr::TrackedControllerRole_Treadmill), "treadmill");
+    EXPECT_STREQ(driver::roleHintName(vr::TrackedControllerRole_Stylus), "stylus");
+    EXPECT_STREQ(driver::roleHintName(9999), "unknown");
 }
 
-TEST(SpikeGuard, ExceptionsNeverLeaveAHookBoundary)
+TEST(Guard, ExceptionsNeverLeaveAHookBoundary)
 {
     // An exception escaping a detour kills SteamVR outright, so this is the one thing
-    // the spike must get right even when everything else is broken.
+    // the driver must get right even when everything else is broken.
     bool ran = false;
-    spike::runGuarded([&] { ran = true; });
+    driver::runGuarded([&] { ran = true; });
     EXPECT_TRUE(ran);
 
-    spike::runGuarded([] { throw std::runtime_error("inside a hook thread"); });
-    spike::runGuarded([] { throw 42; });
+    driver::runGuarded([] { throw std::runtime_error("inside a hook thread"); });
+    driver::runGuarded([] { throw 42; });
 }
 
-TEST_F(SpikeObserverTest, AThrowingPropertyReaderCannotEscapeTheGuard)
+TEST_F(ObserverTest, AThrowingPropertyReaderCannotEscapeTheGuard)
 {
     // The realistic version of the above: vrserver's property reader failing while we
     // enumerate, on the RunFrame thread.
     properties_.throwOnRead = true;
     observer_.setProperties(&properties_);
-    spike::runGuarded([&] { observer_.onRunFrame(); });
+    driver::runGuarded([&] { observer_.onRunFrame(); });
 }
 } // namespace

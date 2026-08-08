@@ -1,10 +1,10 @@
-#include "SpikeServer.h"
+#include "Server.h"
 
-#include "SpikeGuard.h"
+#include "Guard.h"
 
 #include <cstring>
 
-namespace spike
+namespace driver
 {
 FactoryRequest classifyFactoryRequest(const char* interfaceName)
 {
@@ -17,7 +17,7 @@ FactoryRequest classifyFactoryRequest(const char* interfaceName)
     return FactoryRequest::Unknown;
 }
 
-void* serveFactoryRequest(Logger& logger, const char* interfaceName, int* returnCode,
+void* serveFactoryRequest(link::Logger& logger, const char* interfaceName, int* returnCode,
                           const FactoryProviders& providers)
 {
     logger.logf("HmdDriverFactory(\"%s\")", interfaceName ? interfaceName : "(null)");
@@ -36,13 +36,13 @@ void* serveFactoryRequest(Logger& logger, const char* interfaceName, int* return
     return nullptr;
 }
 
-SpikeServer::SpikeServer(Logger& logger, SpikeObserver& observer, ServerEnvironment& environment,
-                         link::MessageChannel& channel)
+Server::Server(link::Logger& logger, Observer& observer, ServerEnvironment& environment,
+               link::MessageChannel& channel)
     : log_(logger), observer_(observer), environment_(environment), channel_(channel)
 {
 }
 
-vr::EVRInitError SpikeServer::init(vr::IVRDriverContext* context)
+vr::EVRInitError Server::init(vr::IVRDriverContext* context)
 {
     // Note: InitServerDriverContext itself fetches IVRServerDriverHost / IVRSettings /
     // IVRProperties / IVRDriverLog through GetGenericInterface and caches them, i.e.
@@ -59,7 +59,7 @@ vr::EVRInitError SpikeServer::init(vr::IVRDriverContext* context)
     {
         environment_.routeLogToDriverLog();
 
-        log_.logf("=== TrackingCorrector spike driver: server Init ===");
+        log_.logf("=== TrackingCorrector driver: server Init ===");
         log_.logf("module: %s pid=%lu sizeof(DriverPose_t)=%zu",
                   environment_.modulePath().c_str(), environment_.processId(),
                   sizeof(vr::DriverPose_t));
@@ -91,10 +91,10 @@ vr::EVRInitError SpikeServer::init(vr::IVRDriverContext* context)
     }
 }
 
-void SpikeServer::cleanup()
+void Server::cleanup()
 {
     runGuarded([&] {
-        log_.logf("=== TrackingCorrector spike driver: Cleanup ===");
+        log_.logf("=== TrackingCorrector driver: Cleanup ===");
         observer_.setProperties(nullptr);
         environment_.removeHooks();
         environment_.shutdownHookLibrary();
@@ -102,7 +102,7 @@ void SpikeServer::cleanup()
     environment_.cleanupContext();
 }
 
-void SpikeServer::runFrame()
+void Server::runFrame()
 {
     runGuarded([&] {
         observer_.onRunFrame();
@@ -112,27 +112,27 @@ void SpikeServer::runFrame()
     });
 }
 
-void SpikeServer::enterStandby()
+void Server::enterStandby()
 {
     runGuarded([&] { log_.logf("EnterStandby"); });
 }
 
-void SpikeServer::leaveStandby()
+void Server::leaveStandby()
 {
     runGuarded([&] { log_.logf("LeaveStandby"); });
 }
 
-bool SpikeServer::shouldBlockStandbyMode() const
+bool Server::shouldBlockStandbyMode() const
 {
     return false;
 }
 
-SpikeWatchdog::SpikeWatchdog(Logger& logger, WatchdogEnvironment& environment)
+Watchdog::Watchdog(link::Logger& logger, WatchdogEnvironment& environment)
     : log_(logger), environment_(environment)
 {
 }
 
-vr::EVRInitError SpikeWatchdog::init(vr::IVRDriverContext* context)
+vr::EVRInitError Watchdog::init(vr::IVRDriverContext* context)
 {
     const vr::EVRInitError contextError = environment_.initContext(context);
     if (contextError != vr::VRInitError_None)
@@ -145,9 +145,9 @@ vr::EVRInitError SpikeWatchdog::init(vr::IVRDriverContext* context)
     return vr::VRInitError_None;
 }
 
-void SpikeWatchdog::cleanup()
+void Watchdog::cleanup()
 {
     log_.logf("watchdog Cleanup");
     environment_.cleanupContext();
 }
-} // namespace spike
+} // namespace driver

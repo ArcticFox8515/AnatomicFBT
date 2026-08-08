@@ -1,6 +1,6 @@
-#include "SpikeLogFile.h"
+#include "LogFile.h"
 
-namespace spike
+namespace driver
 {
 namespace
 {
@@ -44,8 +44,8 @@ std::string processNameFromPath(const std::string& executablePath)
         name = name.substr(slash + 1);
     if (const size_t dot = name.find_last_of('.'); dot != std::string::npos)
         name = name.substr(0, dot);
-    // "driver-spike-.log" would be one shared file for every process whose executable
-    // could not be identified — and the spike's whole point is knowing which process
+    // "driver-.log" would be one shared file for every process whose executable
+    // could not be identified — and the whole point is knowing which process
     // wrote which line.
     if (name.empty())
         return kUnknownProcessName;
@@ -66,4 +66,4 @@ std::string processLogPath(ProcessApi& api, const char* prefix)
 {
     return logDirectory(api) + prefix + executableName(api) + ".log";
 }
-} // namespace spike
+} // namespace driver

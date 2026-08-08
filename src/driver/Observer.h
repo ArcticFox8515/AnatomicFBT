@@ -1,6 +1,6 @@
 #pragma once
 
-#include "SpikeLog.h"
+#include "link/Log.h"
 
 #include "link/MessageChannel.h"
 
@@ -13,7 +13,7 @@
 #include <set>
 #include <string>
 
-namespace spike
+namespace driver
 {
 class DeviceProperties
 {
@@ -39,11 +39,11 @@ using NowFn = std::function<double()>;
 
 constexpr double kHousekeepingSeconds = 1.0;
 
-class SpikeObserver
+class Observer
 {
 public:
-    SpikeObserver(Logger& logger, InterfaceHooks& hooks, NowFn now,
-                  link::MessageChannel& channel);
+    Observer(link::Logger& logger, InterfaceHooks& hooks, NowFn now,
+             link::MessageChannel& channel);
 
     void setProperties(DeviceProperties* properties);
 
@@ -83,7 +83,7 @@ private:
         bool refreshedEver_ = false;
     };
 
-    Logger& log_;
+    link::Logger& log_;
     InterfaceHooks& hooks_;
     NowFn now_;
     link::MessageChannel& channel_;
@@ -91,4 +91,4 @@ private:
     MetadataCache cache_;
     DeviceProperties* properties_ = nullptr;
 };
-} // namespace spike
+} // namespace driver

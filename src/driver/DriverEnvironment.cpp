@@ -1,6 +1,6 @@
-#include "SpikeDriverEnvironment.h"
+#include "DriverEnvironment.h"
 
-namespace spike
+namespace driver
 {
 // ---- device metadata --------------------------------------------------------------
 
@@ -17,7 +17,7 @@ vr::PropertyContainerHandle_t OpenVrProperties::container(uint32_t deviceIndex)
 }
 
 bool OpenVrProperties::stringProperty(vr::PropertyContainerHandle_t container,
-                                     vr::ETrackedDeviceProperty property, std::string& value)
+                                      vr::ETrackedDeviceProperty property, std::string& value)
 {
     if (!helpers_())
         return false;
@@ -30,7 +30,7 @@ bool OpenVrProperties::stringProperty(vr::PropertyContainerHandle_t container,
 }
 
 int32_t OpenVrProperties::int32Property(vr::PropertyContainerHandle_t container,
-                                       vr::ETrackedDeviceProperty property)
+                                        vr::ETrackedDeviceProperty property)
 {
     if (!helpers_())
         return 0;
@@ -39,7 +39,7 @@ int32_t OpenVrProperties::int32Property(vr::PropertyContainerHandle_t container,
 
 // ---- log routing ------------------------------------------------------------------
 
-LogSink driverLogSink(DriverLogFn driverLog)
+link::LogSink driverLogSink(DriverLogFn driverLog)
 {
     return [driverLog](const char* message) {
         if (vr::IVRDriverLog* log = driverLog())
@@ -64,4 +64,4 @@ std::string modulePathOfAddress(ModuleApi& api, void* address)
     path.resize(written);
     return path;
 }
-} // namespace spike
+} // namespace driver

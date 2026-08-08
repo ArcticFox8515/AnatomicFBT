@@ -1,16 +1,16 @@
 #pragma once
 
-// Throwaway step-1 spike (doc/driver-plan.md): the provider lifecycle.
+// The provider lifecycle (doc/driver-plan.md).
 //
 // The two IServerTrackedDeviceProvider / IVRWatchdogProvider implementations in
-// SpikeDriver.cpp are pure forwarders into these classes, and everything they need
+// Driver.cpp are pure forwarders into these classes, and everything they need
 // from vrserver, MinHook or Win32 goes through `ServerEnvironment` /
 // `WatchdogEnvironment`. That is what makes the failure paths (context init failed,
 // MinHook init failed, Init threw) reachable from a unit test instead of only from a
 // live SteamVR session.
 
-#include "SpikeLog.h"
-#include "SpikeObserver.h"
+#include "link/Log.h"
+#include "Observer.h"
 
 #include "link/MessageChannel.h"
 
@@ -18,7 +18,7 @@
 
 #include <string>
 
-namespace spike
+namespace driver
 {
 // Which provider HmdDriverFactory was asked for. Pure decision, tested directly —
 // including the nullptr name SteamVR is not supposed to pass but might.
@@ -43,7 +43,7 @@ struct FactoryProviders
 // HmdDriverFactory's whole body: log the request, answer with the matching provider, and
 // on an unrecognized interface report VRInitError_Init_InterfaceNotFound through
 // returnCode (which SteamVR is allowed to pass as nullptr).
-void* serveFactoryRequest(Logger& logger, const char* interfaceName, int* returnCode,
+void* serveFactoryRequest(link::Logger& logger, const char* interfaceName, int* returnCode,
                           const FactoryProviders& providers);
 
 class ServerEnvironment
@@ -55,9 +55,9 @@ public:
     virtual vr::EVRInitError initContext(vr::IVRDriverContext* context) = 0;
     virtual void cleanupContext() = 0;
 
-    // Adds IVRDriverLog (SteamVR's vrserver.txt) as a second destination for the spike
-    // logger's sink, alongside the spdlog file destination the adapter installed. Runs
-    // after initContext so vr::VRDriverLog() is valid when the sink calls it.
+    // Adds IVRDriverLog (SteamVR's vrserver.txt) as a second destination for the
+    // driver logger's sink, alongside the spdlog file destination the adapter installed.
+    // Runs after initContext so vr::VRDriverLog() is valid when the sink calls it.
     virtual void routeLogToDriverLog() = 0;
 
     // MH_Initialize: nullptr on success, else the status text for the log.
@@ -75,11 +75,11 @@ public:
     virtual void removeHooks() = 0;
 };
 
-class SpikeServer
+class Server
 {
 public:
-    SpikeServer(Logger& logger, SpikeObserver& observer, ServerEnvironment& environment,
-                link::MessageChannel& channel);
+    Server(link::Logger& logger, Observer& observer, ServerEnvironment& environment,
+           link::MessageChannel& channel);
 
     vr::EVRInitError init(vr::IVRDriverContext* context);
     void cleanup();
@@ -91,8 +91,8 @@ public:
     bool shouldBlockStandbyMode() const;
 
 private:
-    Logger& log_;
-    SpikeObserver& observer_;
+    link::Logger& log_;
+    Observer& observer_;
     ServerEnvironment& environment_;
     link::MessageChannel& channel_;
 };
@@ -108,16 +108,16 @@ public:
 
 // vrwatchdog.exe loads the same DLL. It installs no hooks — it exists to prove which
 // processes load us.
-class SpikeWatchdog
+class Watchdog
 {
 public:
-    SpikeWatchdog(Logger& logger, WatchdogEnvironment& environment);
+    Watchdog(link::Logger& logger, WatchdogEnvironment& environment);
 
     vr::EVRInitError init(vr::IVRDriverContext* context);
     void cleanup();
 
 private:
-    Logger& log_;
+    link::Logger& log_;
     WatchdogEnvironment& environment_;
 };
-} // namespace spike
+} // namespace driver

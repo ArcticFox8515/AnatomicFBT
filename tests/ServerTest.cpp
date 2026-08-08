@@ -1,15 +1,15 @@
-// Tests for the throwaway step-1 spike's provider lifecycle (doc/driver-plan.md).
+// Tests for the driver's provider lifecycle (doc/driver-plan.md).
 //
-// SpikeServer / SpikeWatchdog are what SteamVR's Init / Cleanup / RunFrame / standby
+// Server / Watchdog are what SteamVR's Init / Cleanup / RunFrame / standby
 // calls actually run, and every failure they have to survive lives here rather than
 // in a live session: the driver context refusing to initialize, MinHook refusing to
 // initialize, and anything at all throwing on the way through. A throw reaching
 // vrserver.exe kills the user's whole VR session, so "it did not throw" is asserted,
 // not assumed.
 
-#include "spike/SpikeLog.h"
-#include "spike/SpikeObserver.h"
-#include "spike/SpikeServer.h"
+#include "link/Log.h"
+#include "driver/Observer.h"
+#include "driver/Server.h"
 
 #include "FakePipe.h"
 #include "link/MessageChannel.h"
@@ -45,13 +45,13 @@ std::vector<std::uint8_t> frame(link::MessageType type, const std::uint8_t* payl
     return out;
 }
 
-class NoInterfaceHooks : public spike::InterfaceHooks
+class NoInterfaceHooks : public driver::InterfaceHooks
 {
 public:
     void hookServerDriverHost(void*) override {}
 };
 
-class FakeServerEnvironment : public spike::ServerEnvironment
+class FakeServerEnvironment : public driver::ServerEnvironment
 {
 public:
     vr::EVRInitError initContext(vr::IVRDriverContext* context) override
@@ -81,7 +81,7 @@ public:
 
     unsigned long processId() override { return 4242; }
 
-    spike::DeviceProperties* properties() override { return nullptr; }
+    driver::DeviceProperties* properties() override { return nullptr; }
 
     void hookDriverContext(vr::IVRDriverContext*) override
     {
@@ -99,7 +99,7 @@ public:
     std::vector<std::string> steps;
 };
 
-class FakeWatchdogEnvironment : public spike::WatchdogEnvironment
+class FakeWatchdogEnvironment : public driver::WatchdogEnvironment
 {
 public:
     vr::EVRInitError initContext(vr::IVRDriverContext*) override
@@ -115,10 +115,10 @@ public:
     int contextCleanups = 0;
 };
 
-class SpikeServerTest : public ::testing::Test
+class ServerTest : public ::testing::Test
 {
 protected:
-    SpikeServerTest() : observer_(logger_, hooks_, [] { return 0.0; }, channel_)
+    ServerTest() : observer_(logger_, hooks_, [] { return 0.0; }, channel_)
     {
         logger_.setSink([this](const char* message) { lines_.emplace_back(message); });
     }
@@ -132,15 +132,15 @@ protected:
     }
 
     std::vector<std::string> lines_;
-    spike::Logger logger_;
+    link::Logger logger_;
     NoInterfaceHooks hooks_;
     link::MessageChannel channel_{logger_, [] { return nullptr; }};
-    spike::SpikeObserver observer_{logger_, hooks_, [] { return 0.0; }, channel_};
+    driver::Observer observer_{logger_, hooks_, [] { return 0.0; }, channel_};
     FakeServerEnvironment environment_;
-    spike::SpikeServer server_{logger_, observer_, environment_, channel_};
+    driver::Server server_{logger_, observer_, environment_, channel_};
 };
 
-TEST_F(SpikeServerTest, InitHooksInTheOrderTheContextForcesOnUs)
+TEST_F(ServerTest, InitHooksInTheOrderTheContextForcesOnUs)
 {
     vr::IVRDriverContext* const context = reinterpret_cast<vr::IVRDriverContext*>(0x1234);
     EXPECT_EQ(server_.init(context), vr::VRInitError_None);
@@ -154,13 +154,13 @@ TEST_F(SpikeServerTest, InitHooksInTheOrderTheContextForcesOnUs)
     const std::vector<std::string> expected{"routeLog", "initHooks", "hookContext", "hookHost"};
     EXPECT_EQ(environment_.steps, expected);
 
-    EXPECT_TRUE(logged("=== TrackingCorrector spike driver: server Init ==="));
+    EXPECT_TRUE(logged("=== TrackingCorrector driver: server Init ==="));
     EXPECT_TRUE(logged("module: C:\\build\\driver_00trackingcorrector.dll pid=4242 "
                        "sizeof(DriverPose_t)="));
     EXPECT_TRUE(logged("Init complete"));
 }
 
-TEST_F(SpikeServerTest, AFailedDriverContextIsReportedAndNothingIsHooked)
+TEST_F(ServerTest, AFailedDriverContextIsReportedAndNothingIsHooked)
 {
     // SteamVR's own error is passed back unchanged: it is the only thing that says why.
     environment_.contextError = vr::VRInitError_Init_InterfaceNotFound;
@@ -169,7 +169,7 @@ TEST_F(SpikeServerTest, AFailedDriverContextIsReportedAndNothingIsHooked)
     EXPECT_TRUE(logged("InitServerDriverContext failed (105)"));
 }
 
-TEST_F(SpikeServerTest, WithoutMinHookTheDriverFailsToLoadRatherThanRunBlind)
+TEST_F(ServerTest, WithoutMinHookTheDriverFailsToLoadRatherThanRunBlind)
 {
     // Running with no hooks would look like a working driver that reports nothing.
     environment_.hookLibraryError = "MH_ERROR_MEMORY_ALLOC";
@@ -181,7 +181,7 @@ TEST_F(SpikeServerTest, WithoutMinHookTheDriverFailsToLoadRatherThanRunBlind)
     EXPECT_FALSE(logged("Init complete"));
 }
 
-TEST_F(SpikeServerTest, AThrowDuringInitFailsTheLoadInsteadOfReachingVrserver)
+TEST_F(ServerTest, AThrowDuringInitFailsTheLoadInsteadOfReachingVrserver)
 {
     environment_.throwOnRouteLog = true;
     EXPECT_EQ(server_.init(nullptr), vr::VRInitError_Driver_Failed);
@@ -189,7 +189,7 @@ TEST_F(SpikeServerTest, AThrowDuringInitFailsTheLoadInsteadOfReachingVrserver)
     EXPECT_FALSE(logged("Init complete"));
 }
 
-TEST_F(SpikeServerTest, CleanupUnhooksBeforeTearingDownMinHookAndTheContext)
+TEST_F(ServerTest, CleanupUnhooksBeforeTearingDownMinHookAndTheContext)
 {
     ASSERT_EQ(server_.init(nullptr), vr::VRInitError_None);
     environment_.steps.clear();
@@ -201,10 +201,10 @@ TEST_F(SpikeServerTest, CleanupUnhooksBeforeTearingDownMinHookAndTheContext)
     // outlive both.
     const std::vector<std::string> expected{"removeHooks", "shutdownHooks", "cleanupContext"};
     EXPECT_EQ(environment_.steps, expected);
-    EXPECT_TRUE(logged("=== TrackingCorrector spike driver: Cleanup ==="));
+    EXPECT_TRUE(logged("=== TrackingCorrector driver: Cleanup ==="));
 }
 
-TEST_F(SpikeServerTest, CleanupStillTearsDownTheContextIfObservationThrows)
+TEST_F(ServerTest, CleanupStillTearsDownTheContextIfObservationThrows)
 {
     // Whatever went wrong, vrserver's context must be released and no exception may
     // leave Cleanup.
@@ -217,7 +217,7 @@ TEST_F(SpikeServerTest, CleanupStillTearsDownTheContextIfObservationThrows)
     EXPECT_EQ(environment_.steps, expected);
 }
 
-TEST_F(SpikeServerTest, RunFrameAndStandbyAreObservedAndCannotThrow)
+TEST_F(ServerTest, RunFrameAndStandbyAreObservedAndCannotThrow)
 {
     ASSERT_EQ(server_.init(nullptr), vr::VRInitError_None);
     lines_.clear();
@@ -237,7 +237,7 @@ TEST_F(SpikeServerTest, RunFrameAndStandbyAreObservedAndCannotThrow)
     server_.leaveStandby();
 }
 
-TEST_F(SpikeServerTest, StandbyIsNeverBlocked)
+TEST_F(ServerTest, StandbyIsNeverBlocked)
 {
     // An observation-only driver has no reason to keep the user's headset awake; the
     // answer SteamVR gets is the provider's, not a constant inside the DLL.
@@ -246,26 +246,26 @@ TEST_F(SpikeServerTest, StandbyIsNeverBlocked)
 
 // ---------------------------------------------------------- channel wiring ----
 
-class SpikeServerPipeTest : public ::testing::Test
+class ServerPipeTest : public ::testing::Test
 {
 protected:
-    SpikeServerPipeTest() : observer_(logger_, hooks_, [] { return 0.0; }, channel_),
+    ServerPipeTest() : observer_(logger_, hooks_, [] { return 0.0; }, channel_),
                             server_(logger_, observer_, environment_, channel_)
     {
         logger_.setSink([this](const char* message) { lines_.emplace_back(message); });
     }
 
     std::vector<std::string> lines_;
-    spike::Logger logger_;
+    link::Logger logger_;
     NoInterfaceHooks hooks_;
     link_test::FakePipe pipe_;
     link::MessageChannel channel_{logger_, link_test::borrowPipeFactory(pipe_)};
-    spike::SpikeObserver observer_{logger_, hooks_, [] { return 0.0; }, channel_};
+    driver::Observer observer_{logger_, hooks_, [] { return 0.0; }, channel_};
     FakeServerEnvironment environment_;
-    spike::SpikeServer server_{logger_, observer_, environment_, channel_};
+    driver::Server server_{logger_, observer_, environment_, channel_};
 };
 
-TEST_F(SpikeServerPipeTest, OnPoseForwardsThroughTheChannelAfterInit)
+TEST_F(ServerPipeTest, OnPoseForwardsThroughTheChannelAfterInit)
 {
     ASSERT_EQ(server_.init(nullptr), vr::VRInitError_None);
 
@@ -283,10 +283,10 @@ TEST_F(SpikeServerPipeTest, OnPoseForwardsThroughTheChannelAfterInit)
 
 // --------------------------------------------------------------- watchdog ----
 
-class SpikeWatchdogTest : public ::testing::Test
+class WatchdogTest : public ::testing::Test
 {
 protected:
-    SpikeWatchdogTest()
+    WatchdogTest()
     {
         logger_.setSink([this](const char* message) { lines_.emplace_back(message); });
     }
@@ -300,14 +300,14 @@ protected:
     }
 
     std::vector<std::string> lines_;
-    spike::Logger logger_;
+    link::Logger logger_;
     FakeWatchdogEnvironment environment_;
-    spike::SpikeWatchdog watchdog_{logger_, environment_};
+    driver::Watchdog watchdog_{logger_, environment_};
 };
 
-TEST_F(SpikeWatchdogTest, WatchdogInitInstallsNothing)
+TEST_F(WatchdogTest, WatchdogInitInstallsNothing)
 {
-    // vrwatchdog.exe loads the same DLL; the spike only wants to know that it does.
+    // vrwatchdog.exe loads the same DLL; the driver only wants to know that it does.
     EXPECT_EQ(watchdog_.init(nullptr), vr::VRInitError_None);
     EXPECT_EQ(environment_.contextInits, 1);
     EXPECT_TRUE(logged("watchdog Init (this process installs no hooks)"));
@@ -317,7 +317,7 @@ TEST_F(SpikeWatchdogTest, WatchdogInitInstallsNothing)
     EXPECT_TRUE(logged("watchdog Cleanup"));
 }
 
-TEST_F(SpikeWatchdogTest, AFailedWatchdogContextIsPassedBack)
+TEST_F(WatchdogTest, AFailedWatchdogContextIsPassedBack)
 {
     environment_.contextError = vr::VRInitError_Init_InterfaceNotFound;
     EXPECT_EQ(watchdog_.init(nullptr), vr::VRInitError_Init_InterfaceNotFound);
@@ -326,30 +326,30 @@ TEST_F(SpikeWatchdogTest, AFailedWatchdogContextIsPassedBack)
 
 // ---------------------------------------------------------------- factory ----
 
-TEST(SpikeFactory, TheTwoProvidersSteamVrAsksForAreRecognized)
+TEST(Factory, TheTwoProvidersSteamVrAsksForAreRecognized)
 {
-    EXPECT_EQ(spike::classifyFactoryRequest(vr::IServerTrackedDeviceProvider_Version),
-              spike::FactoryRequest::Server);
-    EXPECT_EQ(spike::classifyFactoryRequest(vr::IVRWatchdogProvider_Version),
-              spike::FactoryRequest::Watchdog);
+    EXPECT_EQ(driver::classifyFactoryRequest(vr::IServerTrackedDeviceProvider_Version),
+              driver::FactoryRequest::Server);
+    EXPECT_EQ(driver::classifyFactoryRequest(vr::IVRWatchdogProvider_Version),
+              driver::FactoryRequest::Watchdog);
 }
 
-TEST(SpikeFactory, AnythingElseIncludingNullIsUnknown)
+TEST(Factory, AnythingElseIncludingNullIsUnknown)
 {
     // nullptr is not supposed to happen; dereferencing it would take vrserver down
     // during load, before any log exists to say why.
-    EXPECT_EQ(spike::classifyFactoryRequest(nullptr), spike::FactoryRequest::Unknown);
-    EXPECT_EQ(spike::classifyFactoryRequest(""), spike::FactoryRequest::Unknown);
-    EXPECT_EQ(spike::classifyFactoryRequest("IVRWatchdogProvider_002"),
-              spike::FactoryRequest::Unknown);
-    EXPECT_EQ(spike::classifyFactoryRequest("IDoesNotExist_001"),
-              spike::FactoryRequest::Unknown);
+    EXPECT_EQ(driver::classifyFactoryRequest(nullptr), driver::FactoryRequest::Unknown);
+    EXPECT_EQ(driver::classifyFactoryRequest(""), driver::FactoryRequest::Unknown);
+    EXPECT_EQ(driver::classifyFactoryRequest("IVRWatchdogProvider_002"),
+              driver::FactoryRequest::Unknown);
+    EXPECT_EQ(driver::classifyFactoryRequest("IDoesNotExist_001"),
+              driver::FactoryRequest::Unknown);
 }
 
 // HmdDriverFactory's body. It lives here rather than in the DLL because the DLL is
-// compiled into no test binary — SpikeDriverTest reaches it only through LoadLibrary,
+// compiled into no test binary — DriverTest reaches it only through LoadLibrary,
 // which proves the export works, not that these decisions are right.
-class SpikeServeFactoryRequest : public ::testing::Test
+class ServeFactoryRequest : public ::testing::Test
 {
 protected:
     void SetUp() override
@@ -367,16 +367,16 @@ protected:
 
     int serverObject_ = 0;
     int watchdogObject_ = 0;
-    spike::FactoryProviders providers_{&serverObject_, &watchdogObject_};
+    driver::FactoryProviders providers_{&serverObject_, &watchdogObject_};
 
     std::vector<std::string> lines_;
-    spike::Logger logger_;
+    link::Logger logger_;
 };
 
-TEST_F(SpikeServeFactoryRequest, ServesTheServerProvider)
+TEST_F(ServeFactoryRequest, ServesTheServerProvider)
 {
     int code = 12345;
-    EXPECT_EQ(spike::serveFactoryRequest(logger_, vr::IServerTrackedDeviceProvider_Version, &code,
+    EXPECT_EQ(driver::serveFactoryRequest(logger_, vr::IServerTrackedDeviceProvider_Version, &code,
                                          providers_),
               &serverObject_);
     // A recognized interface must leave the return code alone.
@@ -384,30 +384,30 @@ TEST_F(SpikeServeFactoryRequest, ServesTheServerProvider)
     EXPECT_TRUE(logged("HmdDriverFactory(\"IServerTrackedDeviceProvider_"));
 }
 
-TEST_F(SpikeServeFactoryRequest, ServesTheWatchdogProvider)
+TEST_F(ServeFactoryRequest, ServesTheWatchdogProvider)
 {
     int code = 12345;
     EXPECT_EQ(
-        spike::serveFactoryRequest(logger_, vr::IVRWatchdogProvider_Version, &code, providers_),
+        driver::serveFactoryRequest(logger_, vr::IVRWatchdogProvider_Version, &code, providers_),
         &watchdogObject_);
     EXPECT_EQ(code, 12345);
 }
 
-TEST_F(SpikeServeFactoryRequest, RejectsAnUnknownInterfaceThroughTheReturnCode)
+TEST_F(ServeFactoryRequest, RejectsAnUnknownInterfaceThroughTheReturnCode)
 {
     int code = 0;
-    EXPECT_EQ(spike::serveFactoryRequest(logger_, "IDoesNotExist_001", &code, providers_), nullptr);
+    EXPECT_EQ(driver::serveFactoryRequest(logger_, "IDoesNotExist_001", &code, providers_), nullptr);
     EXPECT_EQ(code, vr::VRInitError_Init_InterfaceNotFound);
     EXPECT_TRUE(logged("HmdDriverFactory(\"IDoesNotExist_001\")"));
 }
 
-TEST_F(SpikeServeFactoryRequest, SurvivesANullInterfaceNameAndANullReturnCode)
+TEST_F(ServeFactoryRequest, SurvivesANullInterfaceNameAndANullReturnCode)
 {
     // Neither is supposed to happen; either one dereferenced would take vrserver down
     // during load, before there is a log to say why.
-    EXPECT_EQ(spike::serveFactoryRequest(logger_, nullptr, nullptr, providers_), nullptr);
+    EXPECT_EQ(driver::serveFactoryRequest(logger_, nullptr, nullptr, providers_), nullptr);
     EXPECT_TRUE(logged("HmdDriverFactory(\"(null)\")"));
-    EXPECT_EQ(spike::serveFactoryRequest(logger_, "IDoesNotExist_001", nullptr, providers_),
+    EXPECT_EQ(driver::serveFactoryRequest(logger_, "IDoesNotExist_001", nullptr, providers_),
               nullptr);
 }
 } // namespace

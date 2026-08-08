@@ -1,17 +1,16 @@
 #pragma once
 
-// Throwaway step-1 spike (doc/driver-plan.md): the DriverPose_t -> world pose
-// composition, kept openvr-free and header-only so it can be unit-tested without
-// SteamVR (tests/SpikeDriverTest.cpp).
+// The DriverPose_t -> world pose composition, kept openvr-free and header-only so it
+// can be unit-tested without SteamVR (tests/DriverTest.cpp).
 //
 // Doubles throughout: DriverPose_t is double-precision and this math is the one
-// thing in the spike that must be provably exact.
+// thing in the driver that must be provably exact.
 
 #include <cmath>
 #include <cstdio>
 #include <string>
 
-namespace spike
+namespace driver
 {
 struct V3
 {
@@ -104,4 +103,4 @@ inline std::string formatPose(const RigidPose& p)
                   p.pos.z, p.rot.w, p.rot.x, p.rot.y, p.rot.z);
     return buffer;
 }
-} // namespace spike
+} // namespace driver

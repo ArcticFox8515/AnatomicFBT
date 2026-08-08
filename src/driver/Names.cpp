@@ -1,8 +1,8 @@
-#include "SpikeNames.h"
+#include "Names.h"
 
 #include <openvr_driver.h>
 
-namespace spike
+namespace driver
 {
 const char* deviceClassName(int deviceClass)
 {
@@ -31,4 +31,4 @@ const char* roleHintName(int role)
     default: return "unknown";
     }
 }
-} // namespace spike
+} // namespace driver

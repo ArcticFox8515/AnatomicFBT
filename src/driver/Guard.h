@@ -1,13 +1,13 @@
 #pragma once
 
-// Throwaway step-1 spike (doc/driver-plan.md).
+// The driver's exception guard (doc/driver-plan.md).
 //
 // Hard rule: no exception may leave a hook or a provider entry point — an exception
 // escaping into vrserver.exe kills SteamVR. Every such boundary funnels through this
 // one helper instead of spelling out a try/catch, so the swallow is written (and
 // tested) once and the detours stay pass-through.
 
-namespace spike
+namespace driver
 {
 template <class Action>
 void runGuarded(Action&& action) noexcept
@@ -22,4 +22,4 @@ void runGuarded(Action&& action) noexcept
         // state in which logging is least trustworthy, and vrserver must not notice.
     }
 }
-} // namespace spike
+} // namespace driver

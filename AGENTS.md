@@ -37,7 +37,7 @@ Conan 2 + Visual Studio 2022. Windows-only (`WIN32` exe, `WinMain` entry).
   the build tree. Restart SteamVR after (un)installing.
 - **Close Steam itself, not just SteamVR, before a Release driver build**: `steam.exe`
   loads the watchdog provider and holds the DLL open, so the link fails with `LNK1104`.
-- Driver logs: `%LOCALAPPDATA%\TrackingCorrector\driver-spike-<process>.log` (one per
+- Driver logs: `%LOCALAPPDATA%\TrackingCorrector\driver-<process>.log` (one per
   loading process: `vrserver`, `vrwatchdog`, `TrackingCorrectorTests`), plus the same
   lines in SteamVR's `vrserver.txt` via `IVRDriverLog`.
 - Directory name, manifest `name` and DLL name must agree (`00trackingcorrector` /
@@ -51,9 +51,8 @@ Conan 2 + Visual Studio 2022. Windows-only (`WIN32` exe, `WinMain` entry).
 | `LinkLib` | STATIC | `src/link` IPC seam + framing + protocol + `Logger`; std lib only (Win32 error constants as literals) |
 | `TrackingCorrector` | WIN32 exe | `src/main.cpp`, `src/vr`, imgui/imguizmo, spdlog, openvr, `PipeLib` |
 | `PipeLib` | STATIC | `src/pipe/Win32Pipe.{h,cpp}` server+client `link::Pipe` impls; links `LinkLib`; Win32 only, untested |
-| `SpikeLib` | STATIC | all `src/spike` logic; openvr headers only; links `LinkLib` (step 3 server) |
-| `driver_00trackingcorrector` | SHARED | `src/spike/SpikeDriver.cpp` + SpikeLib, minhook, spdlog, `PipeLib` |
-| `spike_client` | exe | `src/spike/SpikeClient.cpp` + SpikeLib, openvr |
+| `DriverLib` | STATIC | all `src/driver` logic; openvr headers only; links `LinkLib` (step 3 server) |
+| `driver_00trackingcorrector` | SHARED | `src/driver/Driver.cpp` + DriverLib, minhook, spdlog, `PipeLib` |
 | `TrackingCorrectorTests` | exe | `tests/`, gtest; add new suites here |
 
 ## Directory map
@@ -77,28 +76,28 @@ src/link/       Driver<->app IPC: `Pipe` transport seam (overlapped call pairs �
                 framing/reassembly over it (owns the connection state machine,
                 a `Message` per direction, in-flight flags, a `std::mutex`),
                 the wire protocol's `Message`/`DevicePose` (memcpy'd POD), and
-                the `Logger`/`log()` moved here from the spike. `classifyIo`
+                the `Logger`/`log()` used by the driver. `classifyIo`
                 maps winapi returns to `IoStatus` (literals, no windows.h).
                 Standard library only — no model, no glm, no openvr, no
-                spdlog — so the driver DLL links no model code. `SpikeLog.h`
-                is now a shim of using-declarations over `link::Log.h`.
+                spdlog — so the driver DLL links no model code. Driver code
+                uses `link::` symbols directly.
 src/pipe/       Win32 named-pipe implementations of `link::Pipe` (`Win32ServerPipe`,
                 `Win32ClientPipe`), each taking its pipe name as a constructor
                 argument. Linked by the driver DLL and the tests; the only part
                 of the link layer not covered by unit tests.
-src/spike/      THROWAWAY step-1 spike of doc/driver-plan.md: observation-only SteamVR
-                driver that hooks GetGenericInterface / TrackedDeviceAdded /
-                TrackedDevicePoseUpdated and logs. Step 3: onPose forwards each pose
-                to a `link::MessageChannel` (driver-side server) so the app can
-                consume driver-side poses. All logic in SpikeLib; SpikeDriver.cpp
-                and SpikeClient.cpp are pure adapters. Input
+src/driver/     The SteamVR driver (doc/driver-plan.md): hooks
+                GetGenericInterface / TrackedDeviceAdded /
+                TrackedDevicePoseUpdated, reads device metadata via IVRProperties,
+                and on each pose forwards it to a `link::MessageChannel`
+                (driver-side server) so the app can consume driver-side poses.
+                All logic in DriverLib; Driver.cpp is a pure adapter. Input
                 capture is NOT part of it (neither IVRDriverInput hooks nor
                 PollNextEvent deliver buttons).
 src/driverdll/00trackingcorrector/driver.vrdrivermanifest  — copied next to bin/win64/.
 src/bindings/   Vendored ImGui backends, auto-copied by conanfile.py. Generated.
-tests/          GoogleTest suites mirroring src/model, src/link, src/pipe and src/spike.
+tests/          GoogleTest suites mirroring src/model, src/link, src/pipe and src/driver.
                 `FakePipe.h` is the `link::Pipe` mock used by the link suites, the
-                spike server pipe-lifecycle tests (`borrowPipeFactory`) and
+                driver server pipe-lifecycle tests (`borrowPipeFactory`) and
                 `OpenVrTrackingTest` (app-side pose source over the channel).
                 `LinkPipeIntegrationTest.cpp` is the one real Win32-pipe test.
 unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
@@ -203,9 +202,9 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   `TrackedDeviceKind`. `tracking` collapses the two booleans the app ANDs in
   `OpenVrTracking::pollPoses`; zero = drop the device this frame (it then holds its
   last pose).
-- `Logger` — `LogSink`, `compositeSink`, `Logger`, `log()`, `loggingTo()` moved here
-  from the spike (`namespace link`); `SpikeLog.h` is a shim of using-declarations in
-  `namespace spike`. `MessageChannel` takes `Logger&` and logs five lines: pipe
+- `Logger` — `LogSink`, `compositeSink`, `Logger`, `log()`, `loggingTo()` (in
+  `namespace link`). Driver code uses these `link::` symbols directly.
+  `MessageChannel` takes `Logger&` and logs five lines: pipe
   create/`createEvent` failure with the win32 code, client connected, pipe dropped with
   reason and code, size above the cap, frame of an unexpected type skipped.
 - `MessageChannel` — length-prefixed framing (u32 length, u16 type, payload)
@@ -278,12 +277,12 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
 - **Separation**: model layer stays GL-free (tests link only `TrackingCorrectorLib` and
   create no GL context); view/app depend on model, never the reverse.
 - Coordinates: right-handed, **Y-up, meters**, left side of the body at +X.
-- Driver code (`src/spike`, later `src/driver*`) runs inside `vrserver.exe`: every
+- Driver code (`src/driver`) runs inside `vrserver.exe`: every
   function is either unit-tested or a pure one-instruction forwarder, no exception may
   escape a hook or provider entry point, and unit tests must not touch the filesystem,
   wall clock, environment or real threads — dependencies are injected as seams
   (`HookApi`, `DeviceProperties`, `LogSink`, clock fn). Files compiled only into the DLL
-  (`SpikeDriver.cpp`, `SpikeClient.cpp`) hold no branch, loop, comparison or arithmetic.
+  (`Driver.cpp`) hold no branch, loop, comparison or arithmetic.
 - Error handling: throw `Error` (never from constructors — use `loadConfig`-style
   functions when validation must throw). Catch blocks live at the app boundary
   (`main.cpp`) and just log `e.what()`. JSON shape errors are left to nlohmann
@@ -291,7 +290,7 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   at the call site so the log says which call failed. No `catch (...)` outside the
   driver boundary.
 - Keep log strings ASCII (MSVC is not given `/utf-8`).
-- Indentation: 4 spaces in `src/model`, `src/view`, `src/spike`, `tests`; tabs in
+- Indentation: 4 spaces in `src/model`, `src/view`, `src/driver`, `tests`; tabs in
   `src/main.cpp`. Match the file you are editing.
 - Edit sources with the edit/write tools only, never shell text munging (regex escapes
   and PowerShell re-encoding have corrupted files here before).

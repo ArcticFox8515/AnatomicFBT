@@ -103,8 +103,8 @@ target_include_directories(LinkLib PUBLIC src)
 
 # --- Win32 named-pipe implementations of link::Pipe (doc/messagechannel-rework-plan.md §5) ---
 # Server + client pipes, each taking its name as a constructor argument. Linked by
-# the driver DLL and the tests; spike_client is untouched. The only part of the
-# link layer not covered by unit tests.
+# the driver DLL and the tests. The only part of the link layer not covered by unit
+# tests.
 
 add_library(PipeLib STATIC
     src/pipe/Win32Pipe.h
@@ -113,52 +113,47 @@ add_library(PipeLib STATIC
 target_include_directories(PipeLib PUBLIC src)
 target_link_libraries(PipeLib PUBLIC LinkLib)
 
-# --- Step-1 spike of doc/driver-plan.md: throwaway, observation-only ---------
-# Everything under src/spike is deleted once the real driver exists.
-
-# All spike logic lives in this static library, linked by the driver DLL, the spike
-# client and the tests alike, so every branch can be driven from a unit test with the
-# openvr / MinHook / Win32 dependencies injected as seams. SpikeDriver.cpp and
-# SpikeClient.cpp are the only files left outside it, and they are pure adapters.
+# --- The SteamVR driver (doc/driver-plan.md) ---------------------------------
+# All driver logic lives in this static library, linked by the driver DLL and the
+# tests alike, so every branch can be driven from a unit test with the openvr /
+# MinHook / Win32 dependencies injected as seams. Driver.cpp is the only file left
+# outside it, and it is a pure adapter.
 # openvr_driver.h is used for its types only — no openvr_api link.
-add_library(SpikeLib STATIC
-    src/spike/SpikeClientReport.cpp
-    src/spike/SpikeClientReport.h
-    src/spike/SpikeDriverEnvironment.cpp
-    src/spike/SpikeDriverEnvironment.h
-    src/spike/SpikeDriverHooks.cpp
-    src/spike/SpikeDriverHooks.h
-    src/spike/SpikeGuard.h
-    src/spike/SpikeHooks.cpp
-    src/spike/SpikeHooks.h
-    src/spike/SpikeInterfaces.h
-    src/spike/SpikeLog.h
-    src/spike/SpikeLogFile.cpp
-    src/spike/SpikeLogFile.h
-    src/spike/SpikeNames.cpp
-    src/spike/SpikeNames.h
-    src/spike/SpikeObserver.cpp
-    src/spike/SpikeObserver.h
-    src/spike/SpikePoseMath.h
-    src/spike/SpikeServer.cpp
-    src/spike/SpikeServer.h)
+add_library(DriverLib STATIC
+    src/driver/DriverEnvironment.cpp
+    src/driver/DriverEnvironment.h
+    src/driver/DriverHooks.cpp
+    src/driver/DriverHooks.h
+    src/driver/Guard.h
+    src/driver/Hooks.cpp
+    src/driver/Hooks.h
+    src/driver/Interfaces.h
+    src/driver/LogFile.cpp
+    src/driver/LogFile.h
+    src/driver/Names.cpp
+    src/driver/Names.h
+    src/driver/Observer.cpp
+    src/driver/Observer.h
+    src/driver/PoseMath.h
+    src/driver/Server.cpp
+    src/driver/Server.h)
 
-target_include_directories(SpikeLib PUBLIC src)
-target_include_directories(SpikeLib PUBLIC
+target_include_directories(DriverLib PUBLIC src)
+target_include_directories(DriverLib PUBLIC
     $<TARGET_PROPERTY:openvr::openvr,INTERFACE_INCLUDE_DIRECTORIES>)
 
-# SpikeLib uses the link layer (MessageChannel, PipeFactoryFn) for the
-# driver-side server (doc/driver-plan.md step 3). PUBLIC so the driver DLL,
-# spike_client and tests all get LinkLib transitively.
-target_link_libraries(SpikeLib PUBLIC LinkLib)
+# DriverLib uses the link layer (MessageChannel, PipeFactoryFn) for the
+# driver-side server (doc/driver-plan.md step 3). PUBLIC so the driver DLL and
+# tests all get LinkLib transitively.
+target_link_libraries(DriverLib PUBLIC LinkLib)
 
 # The driver DLL links NO openvr_api: openvr_driver.h is header-only for drivers
 # (vrserver.exe supplies the implementations through the vtables it hands to Init),
 # so only the include dirs are taken from the conan target.
 add_library(driver_00trackingcorrector SHARED
-    src/spike/SpikeDriver.cpp)
+    src/driver/Driver.cpp)
 
-target_link_libraries(driver_00trackingcorrector PRIVATE SpikeLib minhook::minhook spdlog::spdlog PipeLib)
+target_link_libraries(driver_00trackingcorrector PRIVATE DriverLib minhook::minhook spdlog::spdlog PipeLib)
 
 # SteamVR layout: <driver dir>/driver.vrdrivermanifest + bin/win64/driver_<name>.dll,
 # where <name> must match the manifest name and the directory name. Only the Release
@@ -173,12 +168,6 @@ add_custom_command(TARGET driver_00trackingcorrector POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_CURRENT_SOURCE_DIR}/src/driverdll/00trackingcorrector/driver.vrdrivermanifest
         ${DRIVER_STAGE_DIR}/driver.vrdrivermanifest)
-
-# Console tool printing client-side raw poses, for the composition proof.
-add_executable(spike_client
-    src/spike/SpikeClient.cpp)
-
-target_link_libraries(spike_client PRIVATE SpikeLib openvr::openvr spdlog::spdlog)
 
 add_executable(TrackingCorrectorTests
     tests/SkeletonTest.cpp
@@ -195,31 +184,30 @@ add_executable(TrackingCorrectorTests
     tests/LinkProtocolTest.cpp
     tests/LinkMessageChannelTest.cpp
     tests/LinkPipeIntegrationTest.cpp
-    tests/SpikeClientReportTest.cpp
-    tests/SpikeDriverEnvironmentTest.cpp
-    tests/SpikeDriverHooksTest.cpp
-    tests/SpikeDriverTest.cpp
-    tests/SpikeHooksTest.cpp
-    tests/SpikeLogFileTest.cpp
-    tests/SpikeLogTest.cpp
-    tests/SpikeObserverTest.cpp
-    tests/SpikeServerTest.cpp
+    tests/LinkLogTest.cpp
+    tests/DriverEnvironmentTest.cpp
+    tests/DriverHooksTest.cpp
+    tests/DriverTest.cpp
+    tests/HooksTest.cpp
+    tests/LogFileTest.cpp
+    tests/ObserverTest.cpp
+    tests/ServerTest.cpp
     tests/TrackedDeviceTest.cpp
     tests/TrackerCalibrationTest.cpp)
 
 target_link_libraries(TrackingCorrectorTests
     TrackingCorrectorLib
-    SpikeLib
+    DriverLib
     LinkLib
     PipeLib
     GTest::gtest
     GTest::gtest_main
 )
 
-# SpikeDriverTest loads the spike driver DLL and drives it through a fake vrserver,
-# so it needs the DLL of its own config (the driver headers come with SpikeLib).
+# DriverTest loads the driver DLL and drives it through a fake vrserver,
+# so it needs the DLL of its own config (the driver headers come with DriverLib).
 target_compile_definitions(TrackingCorrectorTests PRIVATE
-    SPIKE_DRIVER_DLL="$<TARGET_FILE:driver_00trackingcorrector>")
+    DRIVER_DLL="$<TARGET_FILE:driver_00trackingcorrector>")
 add_dependencies(TrackingCorrectorTests driver_00trackingcorrector)
 
 include(GoogleTest)

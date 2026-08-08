@@ -1,14 +1,13 @@
 #pragma once
 
-// Throwaway step-1 spike (doc/driver-plan.md): the vrserver / Win32 glue the server
-// provider needs, as testable code.
+// The vrserver / Win32 glue the server provider needs, as testable code.
 //
-// These three things used to be spelled out inside SpikeDriver.cpp — which no unit test
-// can reach, because that file is compiled only into the driver DLL (see
-// doc/driver-spike-handover.md §2.1). Each of them had a branch that consequently ran in
-// no test at all: "does vrserver have IVRProperties", "does it have IVRDriverLog", "did
-// the property read succeed". They are here instead, with the one thing that genuinely
-// cannot be faked — the global accessor, the Win32 call — injected:
+// These three things used to be spelled out inside Driver.cpp — which no unit test
+// can reach, because that file is compiled only into the driver DLL. Each of them had
+// a branch that consequently ran in no test at all: "does vrserver have IVRProperties",
+// "does it have IVRDriverLog", "did the property read succeed". They are here instead,
+// with the one thing that genuinely cannot be faked — the global accessor, the Win32
+// call — injected:
 //
 //   * OpenVrProperties      — DeviceProperties over vr::VRProperties(), which is a
 //                             CVRPropertyHelpers* that may be null before the context
@@ -20,15 +19,15 @@
 //                             seam so the composition is tested and the DLL keeps only
 //                             two argument-marshalling calls.
 
-#include "SpikeLog.h"
-#include "SpikeObserver.h"
+#include "link/Log.h"
+#include "Observer.h"
 
 #include <openvr_driver.h>
 
 #include <cstdint>
 #include <string>
 
-namespace spike
+namespace driver
 {
 // ---- device metadata --------------------------------------------------------------
 
@@ -61,10 +60,10 @@ private:
 // vr::VRDriverLog(). Null in vrwatchdog, and null before the context is initialized.
 using DriverLogFn = vr::IVRDriverLog*(*)();
 
-// A sink that copies every line to IVRDriverLog (so the spike's output also lands in
+// A sink that copies every line to IVRDriverLog (so the driver's output also lands in
 // SteamVR's vrserver.txt) and silently drops it when there is no driver log. The seam
 // is read on every line because IVRDriverLog appears and disappears with the context.
-LogSink driverLogSink(DriverLogFn driverLog);
+link::LogSink driverLogSink(DriverLogFn driverLog);
 
 // ---- module path ------------------------------------------------------------------
 
@@ -90,4 +89,4 @@ public:
 // Which DLL file are we running from — logged at Init so a live session proves *which*
 // build SteamVR loaded. Empty when the module cannot be identified.
 std::string modulePathOfAddress(ModuleApi& api, void* address);
-} // namespace spike
+} // namespace driver
