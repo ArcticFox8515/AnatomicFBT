@@ -66,3 +66,26 @@ WorldTransforms computeWorldTransforms(const Skeleton& skeleton);
 
 // Convenience wrapper: positions only.
 std::vector<glm::vec3> computeWorldPositions(const Skeleton& skeleton);
+
+// Rest-pose world positions: restOffsets accumulated down the hierarchy with
+// localRot ignored (identity at rest), root at the origin. Pose-independent,
+// so it is valid on a skeleton whose localRots have already been posed by
+// retargetPose. Used to measure bone lengths / landmark heights without caring
+// about the current pose.
+std::vector<glm::vec3> computeRestPositions(const Skeleton& skeleton);
+
+// Head-to-feet Y span of the rest pose, by bone name: Head.y minus the lowest
+// present foot joint (LeftFoot/RightFoot) y. Translation-invariant (rooted at
+// the origin), so it equals the body height regardless of where the root sits.
+// Returns 0 when Head or both feet are missing, or the span is not positive.
+float restHeight(const Skeleton& skeleton);
+
+// Uniform scale of the rest pose: every restOffset and rootPosition multiplied
+// by `scale`. Pure data mutation; leaves localRot untouched.
+void scaleSkeleton(Skeleton& skeleton, float scale);
+
+// Scales `dst` so restHeight(dst) == restHeight(src). Returns the applied scale
+// (dst.height / src.height); 1.0 and leaves dst untouched when either height is
+// unusable (a missing Head or both feet). Call once after loading the avatar,
+// before retargeting/correction maps are built.
+float matchRestHeight(const Skeleton& src, Skeleton& dst);

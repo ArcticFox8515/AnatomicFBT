@@ -180,6 +180,38 @@ TEST(RetargetPose, AnchorsHeadWithDifferentProportions)
     EXPECT_GT(footDistance, 0.01f);
 }
 
+TEST(RetargetPose, HeightMatchedAvatarFeetLandNearReference)
+{
+    Skeleton src = Skeleton::makeDefault();
+    src.joints[indexOf(src, "Waist")].localRot =
+        glm::angleAxis(glm::radians(20.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    src.joints[indexOf(src, "LeftUpperLeg")].localRot =
+        glm::angleAxis(glm::radians(35.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+
+    // Same topology, 20% longer bones — then height-match the avatar so the
+    // overall rest height equals the reference.
+    Skeleton dst = Skeleton::makeDefaultHipRooted();
+    for (Joint& joint : dst.joints)
+        if (joint.parentIndex)
+            joint.restOffset *= 1.2f;
+    matchRestHeight(src, dst);
+
+    const RetargetMap map = buildRetargetMap(src, dst);
+    retargetPose(src, dst, map);
+
+    const WorldTransforms srcWorld = computeWorldTransforms(src);
+    const WorldTransforms dstWorld = computeWorldTransforms(dst);
+
+    // Head still anchors exactly.
+    expectNearVec3(dstWorld.positions[indexOf(dst, "Head")],
+        srcWorld.positions[indexOf(src, "Head")], 1e-4f);
+    // Feet now land near the reference feet (within a few cm) — height matched,
+    // only the proportion redistribution remains.
+    const float footDistance = glm::distance(dstWorld.positions[indexOf(dst, "LeftFoot")],
+        srcWorld.positions[indexOf(src, "LeftFoot")]);
+    EXPECT_LT(footDistance, 0.05f);
+}
+
 TEST(RetargetPose, NoMatchingNamesLeavesDstUntouched)
 {
     const nlohmann::json j = nlohmann::json::parse(R"(

@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 #include "model/Skeleton.h"
+#include "model/BodyProportions.h"
+#include "model/BoneNames.h"
 
 TEST(SkeletonSerialization, DefaultRoundTrip)
 {
@@ -234,4 +236,117 @@ TEST(ComputeWorldTransforms, RotationsAccumulateHierarchically)
     EXPECT_NEAR(wt.positions[2].y, 1.25f, 1e-5f);
     EXPECT_NEAR(glm::abs(glm::dot(wt.rotations[1], rootRot)), 1.0f, 1e-5f);
     EXPECT_NEAR(glm::abs(glm::dot(wt.rotations[2], rootRot)), 1.0f, 1e-5f);
+}
+
+// ---- rest height / scaling -------------------------------------------------
+
+TEST(RestHeight, EqualsHeadToFeetSpan)
+{
+    BodyProportions p;
+    p.shoulderHeight = 1.40f;
+    p.neckLength = 0.30f;
+    p.upperLegLength = 0.50f;
+    p.lowerLegLength = 0.50f;
+    p.navelHeight = 1.10f;
+    const Skeleton skeleton = Skeleton::makeDefault(p);
+
+    // Head (the root) sits at the top; the span down to the feet includes the
+    // Head->Neck bone (0.15, an internal constant) on top of shoulderHeight +
+    // neckLength, since the root is the Head joint itself.
+    constexpr float kHeadBoneLength = 0.15f;
+    EXPECT_NEAR(restHeight(skeleton), p.shoulderHeight + p.neckLength + kHeadBoneLength, 1e-5f);
+}
+
+TEST(RestHeight, HeadRootedAndHipRootedDefaultAgree)
+{
+    const Skeleton headRooted = Skeleton::makeDefault();
+    const Skeleton hipRooted = Skeleton::makeDefaultHipRooted();
+
+    EXPECT_NEAR(restHeight(headRooted), restHeight(hipRooted), 1e-5f);
+}
+
+TEST(RestHeight, IsPoseIndependent)
+{
+    Skeleton skeleton = Skeleton::makeDefault();
+    // Pose the skeleton arbitrarily — restHeight must not move.
+    const float before = restHeight(skeleton);
+    for (Joint& joint : skeleton.joints)
+        joint.localRot = glm::angleAxis(0.5f, glm::vec3(0.0f, 1.0f, 0.0f));
+    skeleton.rootPosition = glm::vec3(10.0f, 20.0f, 30.0f);
+    EXPECT_NEAR(restHeight(skeleton), before, 1e-5f);
+}
+
+TEST(RestHeight, MissingHeadReturnsZero)
+{
+    Skeleton skeleton = Skeleton::makeDefaultHipRooted();
+    const int head = [&]
+    {
+        for (size_t i = 0; i < skeleton.joints.size(); ++i)
+            if (skeleton.joints[i].name == BoneNames::Head)
+                return static_cast<int>(i);
+        return -1;
+    }();
+    ASSERT_GE(head, 0);
+    skeleton.joints[static_cast<size_t>(head)].name = "HeadX";
+    EXPECT_EQ(restHeight(skeleton), 0.0f);
+}
+
+TEST(ScaleSkeleton, ScalesRestOffsetsAndRootPosition)
+{
+    Skeleton skeleton = Skeleton::makeDefault();
+    const Skeleton original = skeleton;
+    const float scale = 0.9f;
+    scaleSkeleton(skeleton, scale);
+
+    for (size_t i = 0; i < skeleton.joints.size(); ++i)
+        EXPECT_EQ(skeleton.joints[i].restOffset, original.joints[i].restOffset * scale);
+    EXPECT_EQ(skeleton.rootPosition, original.rootPosition * scale);
+}
+
+TEST(ScaleSkeleton, ScalesRestHeight)
+{
+    Skeleton skeleton = Skeleton::makeDefault();
+    const float before = restHeight(skeleton);
+    scaleSkeleton(skeleton, 1.2f);
+    EXPECT_NEAR(restHeight(skeleton), before * 1.2f, 1e-5f);
+}
+
+TEST(MatchRestHeight, ScalesAvatarToReference)
+{
+    BodyProportions ref;
+    ref.shoulderHeight = 1.60f;
+    ref.neckLength = 0.25f;
+    ref.upperLegLength = 0.50f;
+    ref.lowerLegLength = 0.50f;
+    ref.navelHeight = 1.10f;
+    const Skeleton reference = Skeleton::makeDefault(ref);
+
+    Skeleton avatar = Skeleton::makeDefaultHipRooted();
+    const float refHeight = restHeight(reference);
+    const float avatarHeightBefore = restHeight(avatar);
+
+    const float scale = matchRestHeight(reference, avatar);
+
+    EXPECT_NEAR(scale, refHeight / avatarHeightBefore, 1e-5f);
+    EXPECT_NEAR(restHeight(avatar), refHeight, 1e-5f);
+}
+
+TEST(MatchRestHeight, MissingHeadLeavesAvatarUntouched)
+{
+    const Skeleton reference = Skeleton::makeDefault();
+    Skeleton avatar = Skeleton::makeDefaultHipRooted();
+    const Skeleton avatarCopy = avatar;
+    // Remove Head from the reference so its restHeight is 0.
+    Skeleton badRef = reference;
+    for (Joint& joint : badRef.joints)
+        if (joint.name == BoneNames::Head)
+            joint.name = "HeadX";
+
+    const float scale = matchRestHeight(badRef, avatar);
+
+    EXPECT_EQ(scale, 1.0f);
+    ASSERT_EQ(avatar.joints.size(), avatarCopy.joints.size());
+    for (size_t i = 0; i < avatar.joints.size(); ++i)
+        EXPECT_EQ(avatar.joints[i].restOffset, avatarCopy.joints[i].restOffset);
+    EXPECT_EQ(avatar.rootPosition, avatarCopy.rootPosition);
 }

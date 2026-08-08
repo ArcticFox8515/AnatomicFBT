@@ -5,6 +5,8 @@
 #include "Error.h"
 #include "GlmJson.h"
 
+#include <algorithm>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -265,4 +267,64 @@ WorldTransforms computeWorldTransforms(const Skeleton& skeleton)
 std::vector<glm::vec3> computeWorldPositions(const Skeleton& skeleton)
 {
 	return computeWorldTransforms(skeleton).positions;
+}
+
+std::vector<glm::vec3> computeRestPositions(const Skeleton& skeleton)
+{
+	std::vector<glm::vec3> positions(skeleton.joints.size());
+	for (size_t i = 0; i < skeleton.joints.size(); ++i)
+	{
+		const Joint& joint = skeleton.joints[i];
+		if (joint.parentIndex)
+			positions[i] = positions[static_cast<size_t>(*joint.parentIndex)] + joint.restOffset;
+		else
+			positions[i] = glm::vec3{0.0f, 0.0f, 0.0f};
+	}
+	return positions;
+}
+
+float restHeight(const Skeleton& skeleton)
+{
+	const std::vector<glm::vec3> rest = computeRestPositions(skeleton);
+	int head = -1;
+	int leftFoot = -1;
+	int rightFoot = -1;
+	for (size_t i = 0; i < skeleton.joints.size(); ++i)
+	{
+		const std::string& name = skeleton.joints[i].name;
+		if (name == BoneNames::Head)
+			head = static_cast<int>(i);
+		else if (name == BoneNames::LeftFoot)
+			leftFoot = static_cast<int>(i);
+		else if (name == BoneNames::RightFoot)
+			rightFoot = static_cast<int>(i);
+	}
+	if (head < 0 || (leftFoot < 0 && rightFoot < 0))
+		return 0.0f;
+	const float headY = rest[static_cast<size_t>(head)].y;
+	float footY = std::numeric_limits<float>::max();
+	if (leftFoot >= 0)
+		footY = std::min(footY, rest[static_cast<size_t>(leftFoot)].y);
+	if (rightFoot >= 0)
+		footY = std::min(footY, rest[static_cast<size_t>(rightFoot)].y);
+	const float h = headY - footY;
+	return h > 0.0f ? h : 0.0f;
+}
+
+void scaleSkeleton(Skeleton& skeleton, float scale)
+{
+	for (Joint& joint : skeleton.joints)
+		joint.restOffset *= scale;
+	skeleton.rootPosition *= scale;
+}
+
+float matchRestHeight(const Skeleton& src, Skeleton& dst)
+{
+	const float srcHeight = restHeight(src);
+	const float dstHeight = restHeight(dst);
+	if (srcHeight <= 0.0f || dstHeight <= 0.0f)
+		return 1.0f;
+	const float scale = srcHeight / dstHeight;
+	scaleSkeleton(dst, scale);
+	return scale;
 }

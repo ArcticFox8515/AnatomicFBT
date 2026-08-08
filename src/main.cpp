@@ -159,6 +159,22 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 	// The avatar skeleton the solved pose is retargeted onto (hip-rooted by
 	// default, like VRChat/Unity avatars).
 	Skeleton avatarSkeleton = loadOrCreate<Skeleton>(kAvatarSkeletonPath, Skeleton::makeDefaultHipRooted);
+	// Scale the avatar to the reference skeleton's rest height (Head-to-feet
+	// Y span). Without this, retargeting a 1.8 m body onto a 1.5 m avatar
+	// squashes the pose; with it, overall height is preserved and correction
+	// only redistributes proportions. The avatar JSON stays as-authored — the
+	// scale is applied in memory, once. Must happen before the retarget and
+	// correction maps are built (they are name-based, so scaling first changes
+	// nothing about them).
+	const float refHeight = restHeight(rig.skeleton);
+	const float avatarHeight = restHeight(avatarSkeleton);
+	const float avatarScale = matchRestHeight(rig.skeleton, avatarSkeleton);
+	if (avatarScale != 1.0f)
+		spdlog::info("Avatar height-scaled to match reference: {:.2f} (ref {:.2f} m / avatar {:.2f} m)",
+		             avatarScale, refHeight, avatarHeight);
+	else if (refHeight <= 0.0f || avatarHeight <= 0.0f)
+		spdlog::warn("Avatar height scale skipped: reference ({:.2f}) or avatar ({:.2f}) rest height unusable "
+		             "(missing Head or both feet joints)", refHeight, avatarHeight);
 	const RetargetMap retargetMap = buildRetargetMap(rig.skeleton, avatarSkeleton);
 	// Per-target correction toggle + avatar-joint map. Built once: the rig
 	// config is loaded once at startup and the avatar skeleton does not
@@ -367,16 +383,18 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 			scene.renderTargets(rig);
 
 		// Right half: the avatar skeleton with the pose retargeted onto it,
-		// plus the corrected tracker poses re-hung on its bones. The
-		// correction recomputes each tracker as
-		// avatarBoneWorld * deviceInBone (the tracker's bone-local strap
-		// captured at calibration), so with different proportions the tracker
-		// markers shift by the same delta the avatar's joints shift by —
-		// 10 cm from the reference hips = 10 cm from the avatar hips.
+		// plus the corrected tracker poses re-hung on its bones. The avatar
+		// was height-scaled at startup to match the reference skeleton, so
+		// correction only redistributes proportions (no overall squash). Each
+		// corrected tracker is placed at the avatar joint's world pose
+		// (joint center, no strap offset); controllers keep their raw
+		// rotation (aiming must not change) so only their position is
+		// corrected. The corrected poses are rendered as markers and their
+		// deltas shipped to the driver.
 		retargetPose(rig.skeleton, avatarSkeleton, retargetMap);
 		scene.setViewport(leftWidth, 0, width - leftWidth, height);
 		scene.renderSkeleton(avatarSkeleton);
-		corrected = correctDevicePoses(controller.calibration(), correctionMap, avatarSkeleton);
+		corrected = correctDevicePoses(controller.calibration(), correctionMap, avatarSkeleton, devices);
 		if (vr.isInitialized())
 			vr.sendOffsets(correctionOffsets(corrected, devices));
 		if (!corrected.empty())
@@ -459,14 +477,23 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 						ImGui::BulletText("%s <- (no device)", rig.targetName(i).c_str());
 				}
 			}
-			// Tracker correction: per-target on/off + the raw -> corrected
-			// position delta. Only meaningful once calibration froze offsets
-			// (Capture/Replay); the markers themselves are drawn in the right
-			// viewport next to the avatar.
+			// Tracker correction: per-target on/off + rotation toggle + the
+			// raw -> corrected position delta. Only meaningful once calibration
+			// froze offsets (Capture/Replay); the markers themselves are drawn
+			// in the right viewport next to the avatar.
 			if (controller.calibration().isCalibrated())
 			{
-				ImGui::SeparatorText("Correction");
-				const std::vector<std::pair<int, Pose>> devicePoses = devicePosePairs(devices);
+			ImGui::SeparatorText("Correction");
+			ImGui::TextDisabled("Avatar scale: %.2f (ref %.2f m / avatar %.2f m)",
+			                    avatarScale, refHeight, avatarHeight);
+			const std::vector<std::pair<int, Pose>> devicePoses = devicePosePairs(devices);
+				auto findDevice = [&](int id) -> const TrackedDevice*
+				{
+					for (const TrackedDevice& d : devices)
+						if (d.id == id)
+							return &d;
+					return nullptr;
+				};
 				auto findDevicePose = [&](int id) -> const Pose*
 				{
 					for (const auto& [did, pose] : devicePoses)
@@ -482,6 +509,22 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 					bool enabled = correctionMap.enabled[i];
 					if (ImGui::Checkbox(rig.targetName(i).c_str(), &enabled))
 						correctionMap.enabled[i] = enabled;
+					// Rotation toggle: controllers are always rotation-locked
+					// (aiming), so the checkbox is disabled for them. For
+					// trackers it controls whether the avatar joint's rotation
+					// is applied or the raw rotation is kept.
+					const std::optional<int> boundId = controller.calibration().boundDevice(i);
+					const bool isController = boundId && [&]
+					{
+						const TrackedDevice* d = findDevice(*boundId);
+						return d && d->kind == TrackedDeviceKind::Controller;
+					}();
+					ImGui::SameLine();
+					ImGui::BeginDisabled(isController);
+					bool rotEnabled = isController ? false : correctionMap.rotationEnabled[i];
+					if (ImGui::Checkbox("Rot", &rotEnabled))
+						correctionMap.rotationEnabled[i] = rotEnabled;
+					ImGui::EndDisabled();
 					for (const CorrectedPose& c : corrected)
 					{
 						if (c.targetIndex != i)

@@ -119,7 +119,13 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   runtime-only (never serialized); rest orientation is always identity.
   `makeDefault(proportions)` = 22-joint head-rooted skeleton (spine downward);
   `makeDefaultHipRooted()` = same rest positions re-rooted at Hips (avatar default).
-  `computeWorldTransforms` = hierarchical FK. JSON schema:
+  `computeWorldTransforms` = hierarchical FK; `computeRestPositions` = the same
+  but with `localRot` ignored (root at origin) — pose-independent, used for landmark
+  measurements. `restHeight` = Head-to-feet Y span of the rest pose (by bone name;
+  0 when Head or both feet are missing). `scaleSkeleton` uniformly scales every
+  restOffset + rootPosition; `matchRestHeight(src, dst)` scales dst so
+  `restHeight(dst) == restHeight(src)` (returns 1.0, dst untouched, when either
+  height is unusable). JSON schema:
   `{"bones":[{name, parent|null, offset:[x,y,z]}]}`; `from_json` throws `Error` on
   duplicate names, unknown parents, cycles, or not exactly one root.
 - `IkMath` — `solveTwoBoneIk` (closed-form, pole vector, stretches on overreach),
@@ -164,18 +170,28 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   lateral from the HMD); falls back to plain HMD alignment.
 - `TrackerCorrection` — app-side re-placement of tracker poses onto the
   avatar skeleton (milestone 4, existing-tracker correction). `buildCorrectionMap`
-  matches each IK target to an avatar joint by name (built once at startup);
-  `correctDevicePoses` places each enabled, mapped, bound target's tracker at
-  the avatar joint's world pose — the bone center, no strap offset (one FK pass
-  over the avatar, called after `retargetPose`). The bone-local offset captured
-  at calibration is deliberately dropped: the reference and avatar skeletons
-  have differently-oriented bone frames (rest rotations / bone roll), so
-  re-hanging in the local frame rotates the tracker wrong. No GL/OpenVR; the app
-  renders the corrected poses as markers in the right viewport.
+  matches each IK target to an avatar joint by name (built once at startup).
+  `correctDevicePoses` (takes the live `devices` snapshot) places each enabled,
+  mapped, bound target's tracker at the avatar joint's world pose — the bone
+  center, no strap offset (one FK pass over the avatar, called after
+  `retargetPose`). Controllers always keep their raw rotation (aiming must not
+  change); trackers keep it too when `map.rotationEnabled[t]` is false (user
+  toggle, per target — useful when avatar bone-roll differences produce a
+  visually wrong tracker orientation) — `CorrectedPose::rotationLocked` records
+  this. A device bound but absent from the snapshot is skipped (no stale
+  marker). The bone-local offset
+  captured at calibration is deliberately dropped: the reference and avatar
+  skeletons have differently-oriented bone frames (rest rotations / bone roll),
+  so re-hanging in the local frame rotates the tracker wrong. No GL/OpenVR; the
+  app renders the corrected poses as markers in the right viewport. The avatar
+  skeleton is height-scaled to the reference once at startup (`matchRestHeight`,
+  before the maps are built) so overall height is preserved and correction only
+  redistributes proportions — no 180 cm body squashed into a 150 cm avatar.
   `correctionOffsets` computes the rigid world-space delta per corrected device
-  (`delta = compose(corrected, inverse(raw))`); `OpenVrTracking::sendOffsets`
-  ships one `PoseOverride` per device each frame through the same duplex channel
-  the driver link uses.
+  (`delta = compose(corrected, inverse(raw))`, or an exactly identity-rotation
+  translation when `rotationLocked`); `OpenVrTracking::sendOffsets` ships one
+  `PoseOverride` per device each frame through the same duplex channel the
+  driver link uses.
 - `ModeController` — ManualPose/Calibration/Capture/Replay state machine, hardware-free.
   `update(rig, devices, captureGesture)` mutates the rig and returns
   `FramePlan{solve, goals, capturedOffsets}`. Invariant: Capture frames, including the
@@ -277,17 +293,19 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   leaving (including the automatic Calibration→Capture transition). The only
   place openvr.h is included.
 - `src/main.cpp` — spdlog → GLFW/GL/GLEW → ImGui + ImGuizmo → load-or-create the three
-  configs → `IkRig` → avatar skeleton + `RetargetMap` → `link::Logger` (sink into
+  configs → `IkRig` → avatar skeleton, `matchRestHeight` (scale avatar to reference
+  rest height) + `RetargetMap` + `CorrectionMap` → `link::Logger` (sink into
   spdlog) + `OpenVrTracking` (pipe factory + clock) → `OpenVrTracking::init` + create
   `OpenVrInput` (success: start in Calibration; failure: ManualPose). Per frame: poll
   poses once from the driver link, read the trigger edge in Calibration only (from
   `OpenVrInput`), `ModeController::update`, tear down `OpenVrInput` if no longer in
   Calibration, execute the returned plan, `SessionRecorder::update`, camera follow,
   left viewport (IK skeleton + gizmos in ManualPose), `retargetPose` + right viewport
-  (avatar), `correctDevicePoses` + corrected tracker markers on the avatar,
-  `correctionOffsets` + `sendOffsets` (ship the deltas to the driver each frame),
-  ImGui panel (with per-target correction checkboxes when calibrated), replay
-  timeline. All mode logic lives in the model layer.
+  (avatar), `correctDevicePoses` (live `devices`) + corrected tracker markers on the
+  avatar, `correctionOffsets` + `sendOffsets` (ship the deltas to the driver each frame),
+  ImGui panel (with per-target correction checkboxes + rotation toggle when
+  calibrated + read-only avatar scale readout), replay timeline. All mode logic
+  lives in the model layer.
 
 ## Libraries (Conan, see `conanfile.py`)
 
