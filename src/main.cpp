@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <cmath>
+
 #include <imgui.h>
 #include <ImGuizmo.h>
 #include <GL/glew.h>
@@ -20,6 +21,7 @@
 #include "bindings/imgui_impl_glfw.h"
 #include "bindings/imgui_impl_opengl3.h"
 #include "model/BodyProportions.h"
+#include "model/FrameTick.h"
 #include "model/IkRig.h"
 #include "model/IkRigConfig.h"
 #include "model/ModeController.h"
@@ -40,7 +42,6 @@
 constexpr char kProportionsPath[] = "user-proportions.json";
 constexpr char kIkRigPath[] = "user-ikrig.json";
 constexpr char kAvatarSkeletonPath[] = "user-avatar-skeleton.json";
-constexpr char kRecordingPath[] = "recording.tcrec";
 
 // Loads T from a JSON file; creates the file with the default if missing;
 // falls back to the default (in memory only) if the file exists but is
@@ -205,6 +206,12 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 	                  [] { return std::make_shared<link::Win32ClientPipe>(link::kDriverPipeName); },
 	                  [] { return glfwGetTime(); });
 
+	// Frame-tick event logger (calibration capture, recording start/stop/error).
+	// Same pattern as the driver link logger above: the model is log-free, so
+	// pollAndUpdate reports through a link::Logger whose sink forwards to spdlog.
+	link::Logger frameLog;
+	frameLog.setSink([](const char* message) { spdlog::info(message); });
+
 	// The trigger reader is on demand: VR_Init/VR_Shutdown follow Calibration
 	// mode (no driver-side input source exists). Held as unique_ptr so the
 	// session ends the moment Calibration is left, including the automatic
@@ -284,12 +291,37 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 		{
 			int width, height;
 			glfwGetFramebufferSize(window, &width, &height);
-			if (width <= 0 || height <= 0)
-			{
+			const bool minimized = width <= 0 || height <= 0;
+			if (minimized)
 				glfwWaitEventsTimeout(1.0 / 90);
+			else
+				glfwPollEvents();
+
+			// Shared head: runs every frame, minimized or not, so the driver
+			// link stays fed (pollPoses pumps the channel, sendOffsets ships
+			// overrides). See FrameTick. The model is log-free and owns no VR
+			// session, so the two action signals are handled here: reset the
+			// trigger reader when Calibration is over; events (capture,
+			// recording start/stop/error) flow through the sink into spdlog.
+			const UpdateResult tick =
+				pollAndUpdate(controller, rig, &replay, recorder, vr, input.get(), glfwGetTime(),
+				              frameLog);
+			if (tick.tearDownGestureSource)
+				input.reset();
+
+			if (minimized)
+			{
+				// Goals-only: ManualPose ships no overrides and its Targets
+				// solve is gizmo-driven (render-interleaved), so there is
+				// nothing to do for it while minimized.
+				if (tick.plan.solve == SolveMode::Goals)
+				{
+					rig.solve(tick.plan.goals);
+					retargetAndShip(rig, avatarSkeleton, retargetMap, correctionMap,
+					                controller.calibration(), tick.devices, vr);
+				}
 				continue;
 			}
-			glfwPollEvents();
 
 			// feed inputs to dear imgui, start new frame
 			ImGui_ImplOpenGL3_NewFrame();
@@ -301,50 +333,12 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 			scene.update(window, !io.WantCaptureMouse && !gizmoBusy);
 			scene.beginFrame(width, height);
 
-			// Feed input into the mode state machine. In Replay the devices
-			// come from the loaded recording's current frame (the solver never
-			// knows the difference); otherwise poses are polled exactly once
-			// per frame from the driver link and the trigger edge is read only
-			// in Calibration (bothTriggersJustPressed is stateful). The returned
-			// plan says what to solve in the left pass — in Capture/Replay its
-			// goals are always fresh from this frame, including the
-			// calibration->capture transition.
-			std::vector<TrackedDevice> devices;
-			bool captureGesture = false;
-			if (controller.mode() == Mode::Replay)
-			{
-				devices = replay.currentDevices();
-			}
-			else if (vr.isInitialized())
-			{
-				devices = vr.pollPoses();
-				if (controller.mode() == Mode::Calibration && input && input->isInitialized())
-					captureGesture = input->bothTriggersJustPressed();
-			}
-			const FramePlan plan = controller.update(rig, devices, captureGesture);
-		// Corrected tracker poses for the right viewport + the ImGui
-		// readout; computed after retargetPose runs (below). Empty when
-		// uncalibrated or no target is enabled.
-		std::vector<CorrectedPose> corrected;
-			// Calibration owns the VR_Init/VR_Shutdown session; the moment the
-			// mode is no longer Calibration (manual switch or the automatic
-			// capture transition) the trigger reader is torn down.
-			if (controller.mode() != Mode::Calibration)
-				input.reset();
-			if (plan.capturedOffsets)
-				spdlog::info("Calibration captured; entering capture mode");
-
-			// Capture sessions are always recorded (frame 0 = the exact
-			// devices calibration froze offsets from); the recorder is a
-			// no-op outside Capture. Failures are reported, never thrown.
-			const SessionRecorder::Event recorded =
-				recorder.update(controller.mode(), plan.capturedOffsets, glfwGetTime(), devices);
-			if (recorded.started)
-				spdlog::info("Recording capture session to {}", kRecordingPath);
-			if (recorded.stopped)
-				spdlog::info("Recording saved to {}", kRecordingPath);
-			if (!recorded.error.empty())
-				spdlog::error("Recording failed; stopping it: {}", recorded.error);
+			const std::vector<TrackedDevice>& devices = tick.devices;
+			const FramePlan& plan = tick.plan;
+			// Corrected tracker poses for the right viewport + the ImGui
+			// readout; computed after retargetPose runs (below). Empty when
+			// uncalibrated or no target is enabled.
+			std::vector<CorrectedPose> corrected;
 
 			// In VR modes keep the orbit camera centered on the user's XZ
 			// position so the skeleton doesn't walk out of view. Calibration
@@ -383,20 +377,16 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 			scene.renderTargets(rig);
 
 		// Right half: the avatar skeleton with the pose retargeted onto it,
-		// plus the corrected tracker poses re-hung on its bones. The avatar
-		// was height-scaled at startup to match the reference skeleton, so
-		// correction only redistributes proportions (no overall squash). Each
-		// corrected tracker is placed at the avatar joint's world pose
-		// (joint center, no strap offset); controllers keep their raw
-		// rotation (aiming must not change) so only their position is
-		// corrected. The corrected poses are rendered as markers and their
-		// deltas shipped to the driver.
-		retargetPose(rig.skeleton, avatarSkeleton, retargetMap);
+		// plus the corrected tracker poses re-hung on its bones (see
+		// retargetAndShip in FrameTick). Each corrected tracker is placed at
+		// the avatar joint's world pose (joint center, no strap offset);
+		// controllers keep their raw rotation (aiming must not change) so
+		// only their position is corrected. The corrected poses are rendered
+		// as markers.
+		corrected = retargetAndShip(rig, avatarSkeleton, retargetMap, correctionMap,
+		                            controller.calibration(), devices, vr);
 		scene.setViewport(leftWidth, 0, width - leftWidth, height);
 		scene.renderSkeleton(avatarSkeleton);
-		corrected = correctDevicePoses(controller.calibration(), correctionMap, avatarSkeleton, devices);
-		if (vr.isInitialized())
-			vr.sendOffsets(correctionOffsets(corrected, devices));
 		if (!corrected.empty())
 		{
 			std::vector<Pose> correctedPoses;

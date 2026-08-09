@@ -36,6 +36,9 @@ struct RecordingFrame
 // File extension recordings are saved with and scanned for.
 constexpr char kRecordingFileExtension[] = ".tcrec";
 
+// Default recording file path (overwritten per capture session).
+constexpr char kRecordingPath[] = "recording.tcrec";
+
 struct Recording
 {
     std::vector<RecordingFrame> frames;

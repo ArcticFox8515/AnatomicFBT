@@ -148,7 +148,8 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
 - `Pose` — header-only `{position, rotation}` + `compose`/`inverse`/`yawOnly`.
 - `TrackedDevice` — hardware-agnostic snapshot: `{id, kind, pose}`, `kind` =
   `hmd|controller|tracker|other`; `id` is an opaque stable id from the provider.
-- `OpenVrTracking` — the app's pose source: owns a `link::MessageChannel`
+- `OpenVrTracking` — the app's pose source (implements `IPoseSource`,
+  model/FrameTick.h): owns a `link::MessageChannel`
   (client side) and folds `link::DevicePose` frames into `TrackedDevice`
   snapshots. `init()` throws `Error` when the driver pipe is not connected
   (retryable); `pollPoses()` drains and returns the snapshot (ordered by device
@@ -207,6 +208,25 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   reports via `Event{started, stopped, error}`.
 - `ReplaySession` — recording file list (`scan`), loaded recording, timeline position;
   `load` recalibrates from frame 0, `currentDevices()` feeds `update`.
+- `FrameTick` — the per-frame orchestration shared by the visible and the
+  minimized frame paths, extracted so the driver link stays fed (poses polled,
+  overrides shipped) whether the window renders or not. Defines the `IPoseSource`
+  and `IGestureSource` seams (`OpenVrTracking` / `OpenVrInput` implement them) so
+  the sequencing is unit-testable without OpenVR/pipe bindings. `pollAndUpdate`
+  (the head: device-source selection by mode — Replay pulls from the loaded
+  recording, otherwise from the pose source when connected; reads the
+  both-triggers gesture only in Calibration; advances the mode controller; runs
+  the recorder) returns `UpdateResult{devices, plan, tearDownGestureSource}` and
+  reports events (calibration capture, recording start/stop/error) as
+  fully-formatted lines through the injected `link::Logger` — same sink the
+  driver link layer uses; the app forwards each line to spdlog exactly as it
+  wires `link::Logger`'s sink for `OpenVrTracking`. The caller tears down the
+  trigger reader when `tearDownGestureSource` is set (the model owns no VR
+  session). `retargetAndShip` (the tail: retargetPose + correctDevicePoses +
+  sendOffsets when connected) returns the corrected poses for rendering. Main
+  calls these in both paths; the minimized path skips the GL/ImGui/gizmo work
+  and the Targets (ManualPose) solve, which is gizmo-driven and
+  render-interleaved.
 
 ## Link layer (`src/link/`)
 
@@ -289,23 +309,27 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
 - `OpenVrInput` (`src/vr/`) — on-demand OpenVR background client for the
   both-triggers gesture only (no driver-side input source exists). `init()`
   uses `VRApplication_Background` (never launches SteamVR), throws `Error`.
-  main owns it as a `unique_ptr`, created on entering Calibration, destroyed on
-  leaving (including the automatic Calibration→Capture transition). The only
-  place openvr.h is included.
+  Implements `IGestureSource` (model/FrameTick.h) so the frame tick reads the
+  gesture through a seam without itself depending on openvr. main owns it as
+  a `unique_ptr`, created on entering Calibration, destroyed on leaving
+  (including the automatic Calibration→Capture transition). The only place
+  openvr.h is included.
 - `src/main.cpp` — spdlog → GLFW/GL/GLEW → ImGui + ImGuizmo → load-or-create the three
   configs → `IkRig` → avatar skeleton, `matchRestHeight` (scale avatar to reference
   rest height) + `RetargetMap` + `CorrectionMap` → `link::Logger` (sink into
-  spdlog) + `OpenVrTracking` (pipe factory + clock) → `OpenVrTracking::init` + create
-  `OpenVrInput` (success: start in Calibration; failure: ManualPose). Per frame: poll
-  poses once from the driver link, read the trigger edge in Calibration only (from
-  `OpenVrInput`), `ModeController::update`, tear down `OpenVrInput` if no longer in
-  Calibration, execute the returned plan, `SessionRecorder::update`, camera follow,
-  left viewport (IK skeleton + gizmos in ManualPose), `retargetPose` + right viewport
-  (avatar), `correctDevicePoses` (live `devices`) + corrected tracker markers on the
-  avatar, `correctionOffsets` + `sendOffsets` (ship the deltas to the driver each frame),
-  ImGui panel (with per-target correction checkboxes + rotation toggle when
-  calibrated + read-only avatar scale readout), replay timeline. All mode logic
-  lives in the model layer.
+  spdlog) + `OpenVrTracking` (pipe factory + clock; implements `IPoseSource`) →
+  `OpenVrTracking::init` + create `OpenVrInput` (implements `IGestureSource`;
+  success: start in Calibration; failure: ManualPose). Per frame: `pollAndUpdate`
+  (FrameTick — shared by both paths), tear down `OpenVrInput` when the result's
+  `tearDownGestureSource` is set, execute the returned plan, camera follow, left
+  viewport (IK skeleton + gizmos in ManualPose), `retargetAndShip` (FrameTick —
+  retarget + correct + ship the deltas to the driver) + right viewport (avatar)
+  + corrected tracker markers, ImGui panel (with per-target correction
+  checkboxes + rotation toggle when calibrated + read-only avatar scale
+  readout), replay timeline. Minimized frames (no framebuffer) run the same
+  `pollAndUpdate` + Goals `solve` + `retargetAndShip`, skipping GL/ImGui/gizmo
+  work and the Targets (ManualPose) solve — so the driver link stays fed while
+  the window is minimized. All mode logic lives in the model layer.
 
 ## Libraries (Conan, see `conanfile.py`)
 

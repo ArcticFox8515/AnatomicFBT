@@ -17,6 +17,7 @@
 // the old OpenVR-index ascending order. A `Lost` frame removes the device (the
 // old code skipped devices whose pose was invalid or that had disconnected).
 
+#include "FrameTick.h"
 #include "link/Log.h"
 #include "link/Pipe.h"
 #include "link/MessageChannel.h"
@@ -27,7 +28,7 @@
 #include <functional>
 #include <vector>
 
-class OpenVrTracking
+class OpenVrTracking : public IPoseSource
 {
 public:
     // `factory` builds an unconnected client pipe (the exe supplies a
@@ -48,19 +49,19 @@ public:
 
     // Currently connected to the driver pipe. A drop flips this to false until
     // the next successful connect (which `pollPoses`/`init` re-attempt).
-    bool isInitialized() const;
+    bool isInitialized() const override;
 
     // Drains pending frames, folds them into the device list, and returns the
     // current snapshot. While disconnected it re-attempts the connect at most
     // once per second (per the injected clock) and returns an empty list, as
     // the old poll did when uninitialized.
-    std::vector<TrackedDevice> pollPoses();
+    std::vector<TrackedDevice> pollPoses() override;
 
     // Sends one `PoseOverride` frame per device offset to the driver, so the
     // driver can rewrite each device's pose before handing it to SteamVR. The
     // channel is duplex and this class owns the only end of it, so the upstream
     // direction lives here. No-op while disconnected.
-    void sendOffsets(const std::vector<DeviceOffset>& offsets);
+    void sendOffsets(const std::vector<DeviceOffset>& offsets) override;
 
 private:
     void applyPose(const link::DevicePose& pose);

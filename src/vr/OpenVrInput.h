@@ -2,13 +2,17 @@
 
 #include <array>
 
+#include "model/FrameTick.h"
+
 // On-demand OpenVR background client used only in Calibration mode to read the
 // both-triggers gesture (no driver-side input source exists — see
 // doc/driver-plan.md "Buttons stay client-side"). Poses come from the driver
 // link (OpenVrTracking in the model layer); this is the only place openvr.h is
 // included. Owned by main as a `unique_ptr`, constructed when entering
-// Calibration and destroyed on leaving it (dtor calls VR_Shutdown).
-class OpenVrInput
+// Calibration and destroyed on leaving it (dtor calls VR_Shutdown). Implements
+// IGestureSource so the frame tick (model layer) can read the gesture through
+// a seam without itself depending on openvr.
+class OpenVrInput : public IGestureSource
 {
 public:
     OpenVrInput() = default;
@@ -22,12 +26,12 @@ public:
     // success is a no-op, so the UI can offer a retry after failure.
     void init();
 
-    bool isInitialized() const;
+    bool isInitialized() const override;
 
     // Rising-edge detection: true on the frame both controllers' triggers
     // transitioned to pressed (the second one counts). State is kept between
     // calls, so call exactly once per frame.
-    bool bothTriggersJustPressed();
+    bool bothTriggersJustPressed() override;
 
 private:
     bool initialized_ = false;

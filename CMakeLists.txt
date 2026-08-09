@@ -16,6 +16,8 @@ find_package(GTest REQUIRED)
 
 add_library(TrackingCorrectorLib STATIC
     src/model/Error.h
+    src/model/FrameTick.cpp
+    src/model/FrameTick.h
     src/model/GlmJson.h
     src/model/BoneNames.h
     src/model/BodyProportions.cpp
@@ -190,6 +192,7 @@ add_executable(TrackingCorrectorTests
     tests/DriverEnvironmentTest.cpp
     tests/DriverHooksTest.cpp
     tests/DriverTest.cpp
+    tests/FrameTickTest.cpp
     tests/HooksTest.cpp
     tests/LogFileTest.cpp
     tests/ObserverTest.cpp
