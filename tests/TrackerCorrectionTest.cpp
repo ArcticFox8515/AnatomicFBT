@@ -93,6 +93,28 @@ RestCalibration calibrateAtRest(IkRig& rig)
 }
 } // namespace
 
+TEST(CorrectionGroupForBone, ClassifiesKnownBones)
+{
+    using namespace BoneNames;
+    EXPECT_EQ(correctionGroupForBone(LeftHand), CorrectionGroup::Hands);
+    EXPECT_EQ(correctionGroupForBone(RightHand), CorrectionGroup::Hands);
+    EXPECT_EQ(correctionGroupForBone(LeftFoot), CorrectionGroup::Feet);
+    EXPECT_EQ(correctionGroupForBone(RightFoot), CorrectionGroup::Feet);
+    EXPECT_EQ(correctionGroupForBone(Hips), CorrectionGroup::Hips);
+    EXPECT_EQ(correctionGroupForBone(LeftLowerLeg), CorrectionGroup::Knees);
+    EXPECT_EQ(correctionGroupForBone(RightLowerLeg), CorrectionGroup::Knees);
+    EXPECT_EQ(correctionGroupForBone(LeftLowerArm), CorrectionGroup::Elbows);
+    EXPECT_EQ(correctionGroupForBone(RightLowerArm), CorrectionGroup::Elbows);
+    EXPECT_EQ(correctionGroupForBone(Chest), CorrectionGroup::Chest);
+    EXPECT_EQ(correctionGroupForBone(Spine), CorrectionGroup::Chest);
+}
+
+TEST(CorrectionGroupForBone, HeadAndUnknownAreNullopt)
+{
+    EXPECT_FALSE(correctionGroupForBone(BoneNames::Head).has_value());
+    EXPECT_FALSE(correctionGroupForBone("UnknownBone").has_value());
+}
+
 TEST(BuildCorrectionMap, MatchesTargetsByNameAndEnablesThem)
 {
     IkRig rig = makeRig();
@@ -101,8 +123,7 @@ TEST(BuildCorrectionMap, MatchesTargetsByNameAndEnablesThem)
     const CorrectionMap map = buildCorrectionMap(rig, avatar);
 
     ASSERT_EQ(map.avatarJoint.size(), rig.targets.size());
-    ASSERT_EQ(map.enabled.size(), rig.targets.size());
-    ASSERT_EQ(map.rotationEnabled.size(), rig.targets.size());
+    ASSERT_EQ(map.targetGroup.size(), rig.targets.size());
     const int headTarget = findTargetIndex(rig, BoneNames::Head);
     ASSERT_GE(headTarget, 0);
     for (size_t t = 0; t < rig.targets.size(); ++t)
@@ -111,15 +132,20 @@ TEST(BuildCorrectionMap, MatchesTargetsByNameAndEnablesThem)
         {
             // Head is the HMD (anchor), never a tracker — skipped outright.
             EXPECT_FALSE(map.avatarJoint[t].has_value()) << "Head should be skipped";
-            EXPECT_FALSE(map.enabled[t]) << "Head should be disabled";
-            EXPECT_FALSE(map.rotationEnabled[t]);
+            EXPECT_FALSE(map.targetGroup[t].has_value());
             continue;
         }
         ASSERT_TRUE(map.avatarJoint[t].has_value()) << "target " << t;
         const std::string& name = rig.skeleton.joints[rig.targets[t].jointIndex].name;
         EXPECT_EQ(avatar.joints[*map.avatarJoint[t]].name, name);
-        EXPECT_TRUE(map.enabled[t]) << "target " << t << " should start enabled";
-        EXPECT_TRUE(map.rotationEnabled[t]) << "target " << t << " should start rotation-enabled";
+        ASSERT_TRUE(map.targetGroup[t].has_value()) << "target " << t;
+        const CorrectionGroup group = *map.targetGroup[t];
+        const size_t gi = static_cast<size_t>(group);
+        EXPECT_EQ(*correctionGroupForBone(name), group);
+        EXPECT_TRUE(map.groupPresent[gi]) << "group " << gi << " should be present";
+        EXPECT_TRUE(map.groupEnabled[gi]) << "group " << gi << " should start enabled";
+        EXPECT_TRUE(map.groupRotationEnabled[gi])
+            << "group " << gi << " should start rotation-enabled";
     }
 }
 
@@ -131,7 +157,7 @@ TEST(BuildCorrectionMap, HeadAnchorIsNeverCorrectable)
     const int headTarget = findTargetIndex(rig, BoneNames::Head);
     ASSERT_GE(headTarget, 0);
     EXPECT_FALSE(map.avatarJoint[static_cast<size_t>(headTarget)].has_value());
-    EXPECT_FALSE(map.enabled[static_cast<size_t>(headTarget)]);
+    EXPECT_FALSE(map.targetGroup[static_cast<size_t>(headTarget)].has_value());
 }
 
 TEST(BuildCorrectionMap, UnmatchedTargetIsNeverEnabled)
@@ -146,7 +172,7 @@ TEST(BuildCorrectionMap, UnmatchedTargetIsNeverEnabled)
     const int leftFootTarget = findTargetIndex(rig, BoneNames::LeftFoot);
     ASSERT_GE(leftFootTarget, 0);
     EXPECT_FALSE(map.avatarJoint[static_cast<size_t>(leftFootTarget)].has_value());
-    EXPECT_FALSE(map.enabled[static_cast<size_t>(leftFootTarget)]);
+    EXPECT_FALSE(map.targetGroup[static_cast<size_t>(leftFootTarget)].has_value());
 
     const int headTarget = findTargetIndex(rig, BoneNames::Head);
     // Every other target (except Head + the unmatched LeftFoot) is mapped.
@@ -155,8 +181,10 @@ TEST(BuildCorrectionMap, UnmatchedTargetIsNeverEnabled)
         if (static_cast<int>(t) == leftFootTarget || static_cast<int>(t) == headTarget)
             continue;
         EXPECT_TRUE(map.avatarJoint[t].has_value()) << "target " << t;
-        EXPECT_TRUE(map.enabled[t]) << "target " << t;
+        EXPECT_TRUE(map.targetGroup[t].has_value()) << "target " << t;
     }
+    // The Feet group is still present (RightFoot is still mapped).
+    EXPECT_TRUE(map.groupPresent[static_cast<size_t>(CorrectionGroup::Feet)]);
 }
 
 TEST(CorrectDevicePoses, IdenticalProportionsPlaceTrackersAtBoneCenters)
@@ -232,24 +260,30 @@ TEST(CorrectDevicePoses, ScaledAvatarShiftsByAvatarBoneDelta)
     EXPECT_GT(footDistance, 0.01f);
 }
 
-TEST(CorrectDevicePoses, DisabledTargetIsSkipped)
+TEST(CorrectDevicePoses, DisabledGroupIsSkipped)
 {
     IkRig rig = makeRig();
     const RestCalibration calib = calibrateAtRest(rig);
     Skeleton avatar = Skeleton::makeDefaultHipRooted();
     retargetPose(rig.skeleton, avatar, buildRetargetMap(rig.skeleton, avatar));
     CorrectionMap map = buildCorrectionMap(rig, avatar);
-    const int leftFootTarget = findTargetIndex(rig, BoneNames::LeftFoot);
-    ASSERT_GE(leftFootTarget, 0);
-    map.enabled[static_cast<size_t>(leftFootTarget)] = false;
+    // Disable the whole Feet group — both feet must be skipped.
+    map.groupEnabled[static_cast<size_t>(CorrectionGroup::Feet)] = false;
 
     const std::vector<CorrectedPose> corrected =
         correctDevicePoses(calib.calibration, map, avatar, calib.devices);
 
-    // Head (anchor, never mapped) + disabled LeftFoot are both absent.
-    EXPECT_EQ(corrected.size(), rig.targets.size() - 2);
+    const int leftFootTarget = findTargetIndex(rig, BoneNames::LeftFoot);
+    const int rightFootTarget = findTargetIndex(rig, BoneNames::RightFoot);
+    ASSERT_GE(leftFootTarget, 0);
+    ASSERT_GE(rightFootTarget, 0);
+    // Head (anchor, never mapped) + both feet (disabled group) are absent.
+    EXPECT_EQ(corrected.size(), rig.targets.size() - 3);
     for (const CorrectedPose& c : corrected)
+    {
         EXPECT_NE(static_cast<int>(c.targetIndex), leftFootTarget);
+        EXPECT_NE(static_cast<int>(c.targetIndex), rightFootTarget);
+    }
 }
 
 TEST(CorrectDevicePoses, UnboundTargetIsSkipped)
@@ -418,8 +452,8 @@ TEST(CorrectDevicePoses, TrackerRotationDisabledKeepsRawRotation)
         if (d.id == calib.devices[static_cast<size_t>(leftFootTarget)].id)
             d.pose.rotation = trackerRot;
 
-    // Rotation disabled → tracker keeps raw rotation, position still corrected.
-    map.rotationEnabled[static_cast<size_t>(leftFootTarget)] = false;
+    // Rotation disabled for the Feet group → both feet keep raw rotation.
+    map.groupRotationEnabled[static_cast<size_t>(CorrectionGroup::Feet)] = false;
 
     const std::vector<CorrectedPose> corrected =
         correctDevicePoses(calib.calibration, map, avatar, devices);

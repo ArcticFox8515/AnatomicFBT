@@ -467,57 +467,71 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 						ImGui::BulletText("%s <- (no device)", rig.targetName(i).c_str());
 				}
 			}
-			// Tracker correction: per-target on/off + rotation toggle + the
-			// raw -> corrected position delta. Only meaningful once calibration
-			// froze offsets (Capture/Replay); the markers themselves are drawn
-			// in the right viewport next to the avatar.
-			if (controller.calibration().isCalibrated())
-			{
+		// Tracker correction: grouped on/off + rotation toggle + the
+		// raw -> corrected position delta per member target. Only meaningful
+		// once calibration froze offsets (Capture/Replay); the markers
+		// themselves are drawn in the right viewport next to the avatar.
+		if (controller.calibration().isCalibrated())
+		{
 			ImGui::SeparatorText("Correction");
 			ImGui::TextDisabled("Avatar scale: %.2f (ref %.2f m / avatar %.2f m)",
 			                    avatarScale, refHeight, avatarHeight);
 			const std::vector<std::pair<int, Pose>> devicePoses = devicePosePairs(devices);
-				auto findDevice = [&](int id) -> const TrackedDevice*
+			auto findDevice = [&](int id) -> const TrackedDevice*
+			{
+				for (const TrackedDevice& d : devices)
+					if (d.id == id)
+						return &d;
+				return nullptr;
+			};
+			auto findDevicePose = [&](int id) -> const Pose*
+			{
+				for (const auto& [did, pose] : devicePoses)
+					if (did == id)
+						return &pose;
+				return nullptr;
+			};
+			for (size_t gi = 0; gi < kCorrectionGroupCount; ++gi)
+			{
+				if (!correctionMap.groupPresent[gi])
+					continue;
+				const CorrectionGroup group = static_cast<CorrectionGroup>(gi);
+				ImGui::PushID(static_cast<int>(gi));
+				bool enabled = correctionMap.groupEnabled[gi];
+				if (ImGui::Checkbox(correctionGroupName(group), &enabled))
+					correctionMap.groupEnabled[gi] = enabled;
+				// Rotation toggle: controllers are always rotation-locked
+				// (aiming), so the checkbox is disabled unless at least one
+				// tracker is bound in the group. For tracker groups it
+				// controls whether the avatar joint's rotation is applied or
+				// the raw rotation is kept.
+				bool groupHasTracker = false;
+				for (size_t t = 0; t < correctionMap.targetGroup.size(); ++t)
 				{
-					for (const TrackedDevice& d : devices)
-						if (d.id == id)
-							return &d;
-					return nullptr;
-				};
-				auto findDevicePose = [&](int id) -> const Pose*
+					if (correctionMap.targetGroup[t] != group)
+						continue;
+					const std::optional<int> boundId = controller.calibration().boundDevice(t);
+					if (!boundId)
+						continue;
+					const TrackedDevice* d = findDevice(*boundId);
+					if (d && d->kind != TrackedDeviceKind::Controller)
+						groupHasTracker = true;
+				}
+				ImGui::SameLine();
+				ImGui::BeginDisabled(!groupHasTracker);
+				bool rotEnabled = groupHasTracker ? correctionMap.groupRotationEnabled[gi] : false;
+				if (ImGui::Checkbox("Rot", &rotEnabled))
+					correctionMap.groupRotationEnabled[gi] = rotEnabled;
+				ImGui::EndDisabled();
+				// Per-target position delta readout (diagnostic).
+				for (size_t t = 0; t < correctionMap.targetGroup.size(); ++t)
 				{
-					for (const auto& [did, pose] : devicePoses)
-						if (did == id)
-							return &pose;
-					return nullptr;
-				};
-				for (size_t i = 0; i < rig.targets.size(); ++i)
-				{
-					if (!correctionMap.avatarJoint[i])
-						continue; // unmapped (incl. Head, which was skipped at build)
-					ImGui::PushID(static_cast<int>(i));
-					bool enabled = correctionMap.enabled[i];
-					if (ImGui::Checkbox(rig.targetName(i).c_str(), &enabled))
-						correctionMap.enabled[i] = enabled;
-					// Rotation toggle: controllers are always rotation-locked
-					// (aiming), so the checkbox is disabled for them. For
-					// trackers it controls whether the avatar joint's rotation
-					// is applied or the raw rotation is kept.
-					const std::optional<int> boundId = controller.calibration().boundDevice(i);
-					const bool isController = boundId && [&]
-					{
-						const TrackedDevice* d = findDevice(*boundId);
-						return d && d->kind == TrackedDeviceKind::Controller;
-					}();
-					ImGui::SameLine();
-					ImGui::BeginDisabled(isController);
-					bool rotEnabled = isController ? false : correctionMap.rotationEnabled[i];
-					if (ImGui::Checkbox("Rot", &rotEnabled))
-						correctionMap.rotationEnabled[i] = rotEnabled;
-					ImGui::EndDisabled();
+					if (correctionMap.targetGroup[t] != group || !correctionMap.avatarJoint[t])
+						continue;
+					ImGui::BulletText("%s", rig.targetName(t).c_str());
 					for (const CorrectedPose& c : corrected)
 					{
-						if (c.targetIndex != i)
+						if (c.targetIndex != t)
 							continue;
 						if (const Pose* raw = findDevicePose(c.deviceId))
 						{
@@ -528,9 +542,10 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 						}
 						break;
 					}
-					ImGui::PopID();
 				}
+				ImGui::PopID();
 			}
+		}
 			if (mode == Mode::Replay)
 			{
 				ImGui::SeparatorText("Recordings");

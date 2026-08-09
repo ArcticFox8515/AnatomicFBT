@@ -1,38 +1,76 @@
 #include "TrackerCorrection.h"
 
+#include "BoneNames.h"
 #include "IkRig.h"
 #include "Skeleton.h"
 #include "TrackerCalibration.h"
 #include "TrackedDevice.h"
 
+std::optional<CorrectionGroup> correctionGroupForBone(std::string_view name)
+{
+    using namespace BoneNames;
+    if (name == LeftHand || name == RightHand)
+        return CorrectionGroup::Hands;
+    if (name == LeftFoot || name == RightFoot)
+        return CorrectionGroup::Feet;
+    if (name == Hips)
+        return CorrectionGroup::Hips;
+    if (name == LeftLowerLeg || name == RightLowerLeg)
+        return CorrectionGroup::Knees;
+    if (name == LeftLowerArm || name == RightLowerArm)
+        return CorrectionGroup::Elbows;
+    if (name == Chest || name == Spine)
+        return CorrectionGroup::Chest;
+    return std::nullopt;
+}
+
+const char* correctionGroupName(CorrectionGroup group)
+{
+    switch (group)
+    {
+    case CorrectionGroup::Hands:  return "Hands";
+    case CorrectionGroup::Feet:   return "Feet";
+    case CorrectionGroup::Hips:   return "Hips";
+    case CorrectionGroup::Knees:  return "Knees";
+    case CorrectionGroup::Elbows: return "Elbows";
+    case CorrectionGroup::Chest:  return "Chest";
+    }
+    return "?";
+}
+
 CorrectionMap buildCorrectionMap(const IkRig& rig, const Skeleton& avatar)
 {
     CorrectionMap map;
     map.avatarJoint.resize(rig.targets.size());
-    map.enabled.resize(rig.targets.size(), false);
-    map.rotationEnabled.resize(rig.targets.size(), false);
+    map.targetGroup.resize(rig.targets.size());
 
     for (size_t t = 0; t < rig.targets.size(); ++t)
     {
         // The anchor target (Head = the HMD) is never a tracker and must never
         // be corrected — skip it outright so it has no avatar joint and no
-        // checkbox.
+        // group.
         if (t < rig.config.targets.size() && rig.config.targets[t].solver == SolverType::Anchor)
             continue;
         const int jointIndex = rig.targets[t].jointIndex;
         if (jointIndex < 0 || static_cast<size_t>(jointIndex) >= rig.skeleton.joints.size())
             continue;
         const std::string& name = rig.skeleton.joints[static_cast<size_t>(jointIndex)].name;
+        const std::optional<CorrectionGroup> group = correctionGroupForBone(name);
 
         for (size_t a = 0; a < avatar.joints.size(); ++a)
         {
-            if (avatar.joints[a].name == name)
+            if (avatar.joints[a].name != name)
+                continue;
+            map.avatarJoint[t] = static_cast<int>(a);
+            map.targetGroup[t] = group;
+            if (group)
             {
-                map.avatarJoint[t] = static_cast<int>(a);
-                map.enabled[t] = true;
-                map.rotationEnabled[t] = true;
-                break;
+                const size_t gi = static_cast<size_t>(*group);
+                map.groupEnabled[gi] = true;
+                map.groupRotationEnabled[gi] = true;
+                map.groupPresent[gi] = true;
             }
+            break;
         }
     }
 
@@ -52,7 +90,10 @@ std::vector<CorrectedPose> correctDevicePoses(const TrackerCalibration& calibrat
 
     for (size_t t = 0; t < map.avatarJoint.size(); ++t)
     {
-        if (!map.enabled[t] || !map.avatarJoint[t])
+        if (!map.avatarJoint[t] || !map.targetGroup[t])
+            continue;
+        const size_t gi = static_cast<size_t>(*map.targetGroup[t]);
+        if (!map.groupEnabled[gi])
             continue;
         const std::optional<int> deviceId = calibration.boundDevice(t);
         if (!deviceId)
@@ -80,12 +121,12 @@ std::vector<CorrectedPose> correctDevicePoses(const TrackerCalibration& calibrat
         const glm::vec3 avatarPosition = world.positions[static_cast<size_t>(joint)];
 
         // Controllers are aiming devices — their rotation is always locked to
-        // the raw pose regardless of the user toggle. Trackers honor
-        // `map.rotationEnabled[t]`: when false, they keep the raw rotation too
-        // (position-only correction) — useful when avatar bone-roll differences
-        // produce a visually wrong tracker orientation.
+        // the raw pose regardless of the user toggle. Trackers honor the
+        // group's `groupRotationEnabled`: when false, they keep the raw
+        // rotation too (position-only correction) — useful when avatar
+        // bone-roll differences produce a visually wrong tracker orientation.
         const bool lockRotation = raw->kind == TrackedDeviceKind::Controller
-            || !map.rotationEnabled[t];
+            || !map.groupRotationEnabled[gi];
 
         if (lockRotation)
         {

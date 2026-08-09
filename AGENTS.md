@@ -171,16 +171,21 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   lateral from the HMD); falls back to plain HMD alignment.
 - `TrackerCorrection` — app-side re-placement of tracker poses onto the
   avatar skeleton (milestone 4, existing-tracker correction). `buildCorrectionMap`
-  matches each IK target to an avatar joint by name (built once at startup).
-  `correctDevicePoses` (takes the live `devices` snapshot) places each enabled,
-  mapped, bound target's tracker at the avatar joint's world pose — the bone
-  center, no strap offset (one FK pass over the avatar, called after
-  `retargetPose`). Controllers always keep their raw rotation (aiming must not
-  change); trackers keep it too when `map.rotationEnabled[t]` is false (user
-  toggle, per target — useful when avatar bone-roll differences produce a
-  visually wrong tracker orientation) — `CorrectedPose::rotationLocked` records
-  this. A device bound but absent from the snapshot is skipped (no stale
-  marker). The bone-local offset
+  matches each IK target to an avatar joint by name (built once at startup) and
+  classifies it into a `CorrectionGroup` (`Hands`, `Feet`, `Hips`, `Knees`,
+  `Elbows`, `Chest` — the last three forward-declared for future knee/elbow/
+  chest targets) via `correctionGroupForBone`. Enable/rotation toggles are
+  **per group**, not per target — there is no real case for correcting one
+  leg but not the other, so one checkbox pair (Enable + Rot) controls every
+  member of the group. `correctDevicePoses` (takes the live `devices`
+  snapshot) places each mapped, bound target whose group is enabled at the
+  avatar joint's world pose — the bone center, no strap offset (one FK pass
+  over the avatar, called after `retargetPose`). Controllers always keep
+  their raw rotation (aiming must not change); trackers keep it too when the
+  group's `groupRotationEnabled` is false (useful when avatar bone-roll
+  differences produce a visually wrong tracker orientation) —
+  `CorrectedPose::rotationLocked` records this. A device bound but absent
+  from the snapshot is skipped (no stale marker). The bone-local offset
   captured at calibration is deliberately dropped: the reference and avatar
   skeletons have differently-oriented bone frames (rest rotations / bone roll),
   so re-hanging in the local frame rotates the tracker wrong. No GL/OpenVR; the
@@ -324,7 +329,7 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   `tearDownGestureSource` is set, execute the returned plan, camera follow, left
   viewport (IK skeleton + gizmos in ManualPose), `retargetAndShip` (FrameTick —
   retarget + correct + ship the deltas to the driver) + right viewport (avatar)
-  + corrected tracker markers, ImGui panel (with per-target correction
+  + corrected tracker markers, ImGui panel (with per-group correction
   checkboxes + rotation toggle when calibrated + read-only avatar scale
   readout), replay timeline. Minimized frames (no framebuffer) run the same
   `pollAndUpdate` + Goals `solve` + `retargetAndShip`, skipping GL/ImGui/gizmo

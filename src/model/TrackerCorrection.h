@@ -2,17 +2,45 @@
 
 #include "Pose.h"
 
+#include <array>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 class IkRig;
 class Skeleton;
 class TrackerCalibration;
 struct TrackedDevice;
+
+// Correction groups: trackers that move together are toggled as one rather
+// than per-bone — there is no real case for correcting one leg but not the
+// other. Each group shares a single enable + rotation-enable checkbox in the
+// UI. New groups (Knees, Elbows, Chest) are forward-declared here so the
+// classifier and the arrays are ready before those bones become IK targets.
+enum class CorrectionGroup : int
+{
+    Hands = 0,
+    Feet,
+    Hips,
+    Knees,
+    Elbows,
+    Chest,
+    Count
+};
+constexpr size_t kCorrectionGroupCount = static_cast<size_t>(CorrectionGroup::Count);
+
+// Maps a bone name to its correction group, or nullopt when the bone is not
+// correctable (e.g. the Head anchor) or does not belong to any group. Based on
+// BoneNames; left/right symmetric.
+std::optional<CorrectionGroup> correctionGroupForBone(std::string_view name);
+
+// Human-readable label for a group (used by the ImGui panel).
+const char* correctionGroupName(CorrectionGroup group);
+
 // Per-IK-target correction state: the avatar joint each target's tracker is
-// placed on (matched by joint name — built once at startup) and whether the
-// user has enabled the correction for that target. Targets with no matching
-// avatar joint can never be enabled. Indices parallel IkRig::targets.
+// placed on (matched by joint name — built once at startup), the correction
+// group the target belongs to, and the per-group enable/rotation toggles.
+// Indices parallel IkRig::targets.
 //
 // The corrected pose is the avatar joint's world pose directly — the tracker
 // is placed at the center of the avatar's matching bone, with no strap offset.
@@ -24,27 +52,39 @@ struct TrackedDevice;
 struct CorrectionMap
 {
     // Per target index: the avatar joint whose world pose the tracker is
-    // re-hung on, or nullopt when the avatar has no joint of that name.
+    // re-hung on, or nullopt when the avatar has no joint of that name (or the
+    // target was skipped — e.g. the Head anchor).
     std::vector<std::optional<int>> avatarJoint;
 
-    // Per target index: user toggle. Defaults to true for every mapped
-    // target; unmapped targets stay false and BeginDisabled in the UI.
-    std::vector<bool> enabled;
+    // Per target index: the correction group the target belongs to, or
+    // nullopt when the target has no group (unmapped, Head, or a bone not
+    // covered by any group). Targets with no group are never corrected.
+    std::vector<std::optional<CorrectionGroup>> targetGroup;
 
-    // Per target index: user toggle for rotation correction (non-controller
-    // targets only). Defaults to true for every mapped target. Controllers are
-    // always rotation-locked regardless of this value (aiming must not change),
-    // so the UI disables the checkbox for them. When false on a tracker, the
-    // tracker keeps its raw rotation (position-only correction, same as a
+    // Per group: user toggle for position correction. Defaults to true for
+    // every group that has at least one mapped target; groups with no mapped
+    // target stay false and the UI does not render them.
+    std::array<bool, kCorrectionGroupCount> groupEnabled{};
+
+    // Per group: user toggle for rotation correction. Controllers are always
+    // rotation-locked regardless of this value (aiming must not change), so it
+    // is meaningless for the Hands group when all its bound devices are
+    // controllers — the UI disables the checkbox then. When false on a tracker,
+    // the tracker keeps its raw rotation (position-only correction, same as a
     // controller) — useful when avatar bone-roll differences produce a visually
     // wrong tracker orientation.
-    std::vector<bool> rotationEnabled;
+    std::array<bool, kCorrectionGroupCount> groupRotationEnabled{};
+
+    // Per group: whether at least one mapped target belongs to this group, set
+    // once at build time so the UI knows which groups to render.
+    std::array<bool, kCorrectionGroupCount> groupPresent{};
 };
 
 // Builds the correction map by matching each IK target's joint name to an
-// avatar joint. mapped targets start enabled. One linear scan per target;
-// call once at startup (the rig config is loaded once and the avatar
-// skeleton does not change at runtime).
+// avatar joint and classifying it into a correction group. Mapped groups start
+// enabled (both position and rotation). One linear scan per target; call once
+// at startup (the rig config is loaded once and the avatar skeleton does not
+// change at runtime).
 CorrectionMap buildCorrectionMap(const IkRig& rig, const Skeleton& avatar);
 
 // One corrected device pose: the target index it corrects, the stable device
@@ -62,14 +102,14 @@ struct CorrectedPose
     bool rotationLocked = false;
 };
 
-// Computes corrected device poses for every enabled, mapped, bound target:
-// corrected = the avatar joint's world pose (position + rotation), no strap
-// offset. Controllers always keep their raw rotation (aiming must not change);
-// trackers keep it too when `map.rotationEnabled[t]` is false. A device bound
-// but absent from `devices` this frame is skipped (no raw pose to correct, no
-// stale marker to render). Empty when uncalibrated. One FK pass over `avatar`.
-// The avatar must already have been posed (retargetPose called this frame)
-// before this is called.
+// Computes corrected device poses for every enabled, mapped, bound target in
+// an enabled group: corrected = the avatar joint's world pose (position +
+// rotation), no strap offset. Controllers always keep their raw rotation
+// (aiming must not change); trackers keep it too when the group's
+// `groupRotationEnabled` is false. A device bound but absent from `devices`
+// this frame is skipped (no raw pose to correct, no stale marker to render).
+// Empty when uncalibrated. One FK pass over `avatar`. The avatar must already
+// have been posed (retargetPose called this frame) before this is called.
 std::vector<CorrectedPose> correctDevicePoses(const TrackerCalibration& calibration,
                                               const CorrectionMap& map,
                                               const Skeleton& avatar,
@@ -88,7 +128,7 @@ struct DeviceOffset
 // device poses: `delta = compose(corrected, inverse(raw))`. When a corrected
 // pose has `rotationLocked`, the delta is emitted with an exactly-identity
 // rotation (position only) — the driver applies a pure translation so the
-// controller's aim is untouched. Iterates `corrected` only — an unticked target
+// controller's aim is untouched. Iterates `corrected` only — an unticked group
 // simply has no entry this frame, and the driver expires its last override
 // after `kOverrideStaleSeconds`.
 std::vector<DeviceOffset> correctionOffsets(const std::vector<CorrectedPose>& corrected,
