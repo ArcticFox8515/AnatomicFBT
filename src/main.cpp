@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <algorithm>
 #include <cmath>
 
 #include <imgui.h>
@@ -21,6 +22,7 @@
 #include "bindings/imgui_impl_glfw.h"
 #include "bindings/imgui_impl_opengl3.h"
 #include "model/BodyProportions.h"
+#include "model/AppSettings.h"
 #include "model/FrameTick.h"
 #include "model/IkRig.h"
 #include "model/IkRigConfig.h"
@@ -34,6 +36,7 @@
 #include "model/TrackedDevice.h"
 #include "model/TrackerCalibration.h"
 #include "model/TrackerCorrection.h"
+#include "model/VirtualTrackers.h"
 #include "view/Scene.h"
 #include "vr/OpenVrInput.h"
 #include "link/Log.h"
@@ -42,6 +45,7 @@
 constexpr char kProportionsPath[] = "user-proportions.json";
 constexpr char kIkRigPath[] = "user-ikrig.json";
 constexpr char kAvatarSkeletonPath[] = "user-avatar-skeleton.json";
+constexpr char kSettingsPath[] = "user-settings.json";
 
 // Loads T from a JSON file; creates the file with the default if missing;
 // falls back to the default (in memory only) if the file exists but is
@@ -72,6 +76,18 @@ static T loadOrCreate(const char* path, T (*makeDefault)())
 	out << nlohmann::json(value).dump(2) << '\n';
 	spdlog::info("Created default {}", path);
 	return value;
+}
+
+// Writes T to a JSON file (pretty). Used to persist user-edited settings
+// immediately on change so a tick survives a restart. Failures are logged
+// and swallowed — a dropped save is not fatal.
+template <typename T>
+static void saveToFile(const char* path, const T& value)
+{
+	std::ofstream out(path);
+	out << nlohmann::json(value).dump(2) << '\n';
+	if (!out)
+		spdlog::error("Failed to save {}", path);
 }
 
 // Draws one ImGuizmo per IK target; ImGuizmo::SetID activates whichever the mouse grabs.
@@ -160,6 +176,10 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 	// The avatar skeleton the solved pose is retargeted onto (hip-rooted by
 	// default, like VRChat/Unity avatars).
 	Skeleton avatarSkeleton = loadOrCreate<Skeleton>(kAvatarSkeletonPath, Skeleton::makeDefaultHipRooted);
+
+	// App settings (per-bone virtual-tracker selection today; shaped for more
+	// later). Load-or-create, same convention as the other configs.
+	AppSettings settings = loadOrCreate<AppSettings>(kSettingsPath, &AppSettings::makeDefault);
 	// Scale the avatar to the reference skeleton's rest height (Head-to-feet
 	// Y span). Without this, retargeting a 1.8 m body onto a 1.5 m avatar
 	// squashes the pose; with it, overall height is preserved and correction
@@ -338,7 +358,7 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 			// Corrected tracker poses for the right viewport + the ImGui
 			// readout; computed after retargetPose runs (below). Empty when
 			// uncalibrated or no target is enabled.
-			std::vector<CorrectedPose> corrected;
+			RetargetResult retargetResult;
 
 			// In VR modes keep the orbit camera centered on the user's XZ
 			// position so the skeleton doesn't walk out of view. Calibration
@@ -382,19 +402,22 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 		// the avatar joint's world pose (joint center, no strap offset);
 		// controllers keep their raw rotation (aiming must not change) so
 		// only their position is corrected. The corrected poses are rendered
-		// as markers.
-		corrected = retargetAndShip(rig, avatarSkeleton, retargetMap, correctionMap,
-		                            controller.calibration(), devices, vr);
+		// as markers. Virtual tracker poses come back in the same result,
+		// computed from the retargeted avatar, so the wiring is one call —
+		// no separate VT path to forget.
+		retargetResult = retargetAndShip(rig, avatarSkeleton, retargetMap, correctionMap,
+		                            controller.calibration(), devices, vr, settings.virtualTrackerBones);
 		scene.setViewport(leftWidth, 0, width - leftWidth, height);
 		scene.renderSkeleton(avatarSkeleton);
-		if (!corrected.empty())
+		if (!retargetResult.corrected.empty())
 		{
 			std::vector<Pose> correctedPoses;
-			correctedPoses.reserve(corrected.size());
-			for (const CorrectedPose& c : corrected)
+			correctedPoses.reserve(retargetResult.corrected.size());
+			for (const CorrectedPose& c : retargetResult.corrected)
 				correctedPoses.push_back(c.pose);
 			scene.renderMarkers(correctedPoses);
 		}
+		scene.renderMarkers(retargetResult.virtualTrackers);
 
 			ImGui::Begin("TrackingCorrector");
 			ImGui::Text("ImGui initialized. %.1f FPS", io.Framerate);
@@ -529,7 +552,7 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 					if (correctionMap.targetGroup[t] != group || !correctionMap.avatarJoint[t])
 						continue;
 					ImGui::BulletText("%s", rig.targetName(t).c_str());
-					for (const CorrectedPose& c : corrected)
+					for (const CorrectedPose& c : retargetResult.corrected)
 					{
 						if (c.targetIndex != t)
 							continue;
@@ -543,10 +566,54 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 						break;
 					}
 				}
-				ImGui::PopID();
+ImGui::PopID();
 			}
 		}
-			if (mode == Mode::Replay)
+		// Virtual tracker selection (doc/virtual-trackers-plan.md step 4):
+		// the step-1 candidate bones, one checkbox each. Editable only before
+		// calibration completes; once calibrated, the selection is fixed until
+		// recalibration (switching back to Calibration clears the calibration,
+		// re-enabling editing). A tick persists immediately to
+		// user-settings.json on every tick. The list is recomputed each frame,
+		// so it tracks avatar/rig config changes; bones that leave the
+		// eligible set on calibration (the six tracker targets) simply drop
+		// out of view.
+		{
+			const std::vector<std::string> candidateBones =
+				eligibleVirtualTrackerBones(rig, avatarSkeleton, controller.calibration());
+			if (!candidateBones.empty())
+			{
+				ImGui::SeparatorText("Virtual trackers");
+				const bool locked = controller.calibration().isCalibrated();
+				if (locked)
+					ImGui::TextDisabled("Locked (calibration complete)");
+				ImGui::BeginDisabled(locked);
+				bool changed = false;
+				for (const std::string& bone : candidateBones)
+				{
+					bool ticked = std::find(settings.virtualTrackerBones.begin(),
+					                        settings.virtualTrackerBones.end(), bone)
+					              != settings.virtualTrackerBones.end();
+					ImGui::PushID(bone.c_str());
+					if (ImGui::Checkbox(bone.c_str(), &ticked))
+					{
+						if (ticked)
+							settings.virtualTrackerBones.push_back(bone);
+						else
+							settings.virtualTrackerBones.erase(
+								std::remove(settings.virtualTrackerBones.begin(),
+								            settings.virtualTrackerBones.end(), bone),
+								settings.virtualTrackerBones.end());
+						changed = true;
+					}
+					ImGui::PopID();
+				}
+				if (changed)
+					saveToFile(kSettingsPath, settings);
+				ImGui::EndDisabled();
+			}
+		}
+		if (mode == Mode::Replay)
 			{
 				ImGui::SeparatorText("Recordings");
 				if (replay.files().empty())

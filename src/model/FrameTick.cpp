@@ -5,6 +5,9 @@
 #include "Recording.h"
 #include "ReplaySession.h"
 #include "SessionRecorder.h"
+#include "VirtualTrackers.h"
+
+#include <algorithm>
 
 namespace
 {
@@ -52,17 +55,36 @@ UpdateResult pollAndUpdate(ModeController& controller, IkRig& rig,
     return result;
 }
 
-std::vector<CorrectedPose> retargetAndShip(IkRig& rig, Skeleton& avatar,
-                                           const RetargetMap& retargetMap,
-                                           const CorrectionMap& correctionMap,
-                                           const TrackerCalibration& calibration,
-                                           const std::vector<TrackedDevice>& devices,
-                                           IPoseSource& poses)
+RetargetResult retargetAndShip(IkRig& rig, Skeleton& avatar,
+                               const RetargetMap& retargetMap,
+                               const CorrectionMap& correctionMap,
+                               const TrackerCalibration& calibration,
+                               const std::vector<TrackedDevice>& devices,
+                               IPoseSource& poses,
+                               const std::vector<std::string>& selectedBones)
 {
     retargetPose(rig.skeleton, avatar, retargetMap);
     std::vector<CorrectedPose> corrected =
         correctDevicePoses(calibration, correctionMap, avatar, devices);
     if (poses.isInitialized())
         poses.sendOffsets(correctionOffsets(corrected, devices));
-    return corrected;
+    // Virtual tracker markers: ticked eligible bones' avatar poses, computed
+    // from the retargeted avatar above. Flows out in the result so the render
+    // loop draws them via the same call — no separate wiring to forget.
+    std::vector<Pose> virtualTrackers;
+    if (!selectedBones.empty())
+    {
+        const std::vector<std::string> eligible =
+            eligibleVirtualTrackerBones(rig, avatar, calibration);
+        std::vector<std::string> tickedEligible;
+        for (const std::string& bone : selectedBones)
+            if (std::find(eligible.begin(), eligible.end(), bone) != eligible.end())
+                tickedEligible.push_back(bone);
+        const std::vector<VirtualTrackerPose> vt =
+            computeVirtualTrackerPoses(avatar, tickedEligible);
+        virtualTrackers.reserve(vt.size());
+        for (const VirtualTrackerPose& p : vt)
+            virtualTrackers.push_back(p.pose);
+    }
+    return {std::move(corrected), std::move(virtualTrackers)};
 }

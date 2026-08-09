@@ -53,7 +53,15 @@ public:
 
     Mode mode() const { return mode_; }
 
-    void switchToManual() { mode_ = Mode::ManualPose; }
+    // Manual is a non-calibrated mode (gizmo targets), so any previously
+    // captured offsets are dropped — same as switchToCalibration/Replay.
+    // Without this, returning to Manual from Capture/Replay left
+    // isCalibrated() true and the UI checkboxes locked forever.
+    void switchToManual()
+    {
+        calibration_.clear();
+        mode_ = Mode::ManualPose;
+    }
 
     // (Re-)enters calibration: drops any previously captured offsets.
     void switchToCalibration()

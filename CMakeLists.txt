@@ -16,6 +16,8 @@ find_package(GTest REQUIRED)
 
 add_library(TrackingCorrectorLib STATIC
     src/model/Error.h
+    src/model/AppSettings.cpp
+    src/model/AppSettings.h
     src/model/FrameTick.cpp
     src/model/FrameTick.h
     src/model/GlmJson.h
@@ -51,6 +53,8 @@ add_library(TrackingCorrectorLib STATIC
     src/model/TrackerCalibration.h
     src/model/TrackerCorrection.cpp
     src/model/TrackerCorrection.h
+    src/model/VirtualTrackers.cpp
+    src/model/VirtualTrackers.h
     src/view/Scene.cpp
     src/view/Scene.h)
 
@@ -176,6 +180,7 @@ add_custom_command(TARGET driver_00trackingcorrector POST_BUILD
 add_executable(TrackingCorrectorTests
     tests/SkeletonTest.cpp
     tests/BodyProportionsTest.cpp
+    tests/AppSettingsTest.cpp
     tests/IkRigTest.cpp
     tests/IkMathTest.cpp
     tests/IkSolversTest.cpp
@@ -199,7 +204,8 @@ add_executable(TrackingCorrectorTests
     tests/ServerTest.cpp
     tests/TrackedDeviceTest.cpp
     tests/TrackerCalibrationTest.cpp
-    tests/TrackerCorrectionTest.cpp)
+    tests/TrackerCorrectionTest.cpp
+    tests/VirtualTrackersTest.cpp)
 
 target_link_libraries(TrackingCorrectorTests
     TrackingCorrectorLib

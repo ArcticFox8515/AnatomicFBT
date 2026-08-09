@@ -74,13 +74,21 @@ UpdateResult pollAndUpdate(ModeController& controller, IkRig& rig,
 // The tail of one frame: retarget the (already solved) rig pose onto the
 // avatar, re-hang trackers at the avatar joints (correctDevicePoses), and
 // ship the world-space deltas to the driver when `poses` is connected.
-// Returns the corrected poses for rendering / the UI readout. Pure logic —
-// the caller draws from the result. Call after the rig pose is final
+// `selectedBones` is the user's ticked virtual-tracker selection (names from
+// the step-1 eligible list); the result's `virtualTrackers` carries the
+// marker poses for those bones, computed from the retargeted avatar. Pure
+// logic — the caller draws from the result. Call after the rig pose is final
 // (Goals solved, or the gizmo-driven Targets solve in the visible path).
-std::vector<CorrectedPose> retargetAndShip(IkRig& rig,
-                                           Skeleton& avatar,
-                                           const RetargetMap& retargetMap,
-                                           const CorrectionMap& correctionMap,
-                                           const TrackerCalibration& calibration,
-                                           const std::vector<TrackedDevice>& devices,
-                                           IPoseSource& poses);
+struct RetargetResult
+{
+    std::vector<CorrectedPose> corrected;
+    std::vector<Pose> virtualTrackers;
+};
+RetargetResult retargetAndShip(IkRig& rig,
+                               Skeleton& avatar,
+                               const RetargetMap& retargetMap,
+                               const CorrectionMap& correctionMap,
+                               const TrackerCalibration& calibration,
+                               const std::vector<TrackedDevice>& devices,
+                               IPoseSource& poses,
+                               const std::vector<std::string>& selectedBones = {});

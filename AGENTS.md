@@ -21,9 +21,10 @@ Conan 2 + Visual Studio 2022. Windows-only (`WIN32` exe, `WinMain` entry).
   the fake vrserver's calls, so only it exercises the patched bodies).
 - `CMakeUserPresets.json` and `src/bindings/` are generated — never hand-edit.
 - Runtime files created in the working directory: `user-proportions.json`,
-  `user-ikrig.json`, `user-avatar-skeleton.json` (load-or-create; invalid files fall
-  back to defaults with the error logged), `logs/trackingcorrector.log` (rotating
-  3×5MB), `recording.tcrec` (every capture session, overwritten per session).
+  `user-ikrig.json`, `user-avatar-skeleton.json`, `user-settings.json`
+  (load-or-create; invalid files fall back to defaults with the error
+  logged), `logs/trackingcorrector.log` (rotating 3×5MB), `recording.tcrec`
+  (every capture session, overwritten per session).
 
 ### SteamVR driver
 
@@ -113,6 +114,20 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   Unity's `HumanBodyBones`, so an exported avatar retargets by name with no translation.
 - `BodyProportions` — 9 tape-measurable floats (`user-proportions.json`), symmetric L/R,
   meters. No skeleton knowledge; `validate()` checks positive lengths and landmark order.
+- `AppSettings` — app-wide user settings (`user-settings.json`), shaped so
+  unrelated settings can be added later without a schema break. Today holds
+  only the per-bone virtual-tracker selection
+  (`virtualTrackerBones`, names from the step-1 eligible list; empty by
+  default — no bone emits on a fresh install). `from_json` is
+  forward-tolerant: a missing `virtualTrackers` block is the empty
+  selection (so a file written before this feature still loads), and
+  unknown top-level/nested keys are ignored; a present-but-malformed block
+  throws and the caller falls back to the default. Same load-or-create
+  convention as the other configs. The UI (step 4) lists the step-1
+  candidate bones with a checkbox each in the ImGui panel; the selection
+  is editable only before calibration completes (locked once
+  `TrackerCalibration::isCalibrated()`, re-enabled on recalibration) and
+  persists immediately to `user-settings.json` on every tick.
 - `Skeleton` — flat `vector<Joint>` sorted parent-before-child. `Joint = {name,
   parentIndex, restOffset, localRot}`; `localRot(i)` = rotation of the bone *ending* at
   joint i, relative to the parent's world orientation. `localRot` and `rootPosition` are
@@ -198,6 +213,23 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   translation when `rotationLocked`); `OpenVrTracking::sendOffsets` ships one
   `PoseOverride` per device each frame through the same duplex channel the
   driver link uses.
+- `VirtualTrackers` — `eligibleVirtualTrackerBones(rig, avatar)`
+  (doc/virtual-trackers-plan.md step 1): the set of bones a virtual tracker
+  can be emitted for — joints present in BOTH the source and the avatar
+  skeleton, minus joints that are IK targets (those are "mapped to
+  trackers": Head is the HMD anchor, hands/feet/Hips are tracker targets).
+  Exclusion is by target configuration, not device binding, so the list is
+  stable across calibration state. Name-only intersection, so a
+  height-scaled avatar yields the same set; returned in source-skeleton
+  order (parent before child) for stable UI listing. Model layer only, no
+  GL/OpenVR. `computeVirtualTrackerPoses(avatar, boneNames)` (step 2)
+  produces the emitted pose per selected bone from the **avatar's** current
+  pose (run after `retargetPose`): position = the midpoint of the bone's two
+  joint world positions (the avatar joint plus its parent), rotation = that
+  avatar joint's world rotation. Recomputed every frame — the source is the
+  live avatar FK, not the rest pose, so positions track the posed/rescaled
+  avatar. A bone not in the avatar or whose avatar joint is the root (no
+  parent) is skipped.
 - `ModeController` — ManualPose/Calibration/Capture/Replay state machine, hardware-free.
   `update(rig, devices, captureGesture)` mutates the rig and returns
   `FramePlan{solve, goals, capturedOffsets}`. Invariant: Capture frames, including the

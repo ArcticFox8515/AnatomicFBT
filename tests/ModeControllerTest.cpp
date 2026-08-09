@@ -235,3 +235,24 @@ TEST(ModeController, ReplayWithoutARecordingIdlesSolvably)
     EXPECT_EQ(plan.goals.size(), rig.targets.size());
     EXPECT_NO_THROW(rig.solve(plan.goals));
 }
+
+// --- bug: switchToManual must clear calibration -----------------------------
+//
+// After calibration (live capture or replay's calibrateFromFrame),
+// `isCalibrated()` is true and the UI locks the virtual-tracker checkboxes.
+// Returning to Manual pose (from Capture or Replay) must clear that state so
+// the checkboxes unlock — Manual is a non-calibrated mode. switchToCalibration
+// and switchToReplay already clear; switchToManual did not, so the checkboxes
+// stayed locked forever after one calibration. This test catches that.
+TEST(ModeController, SwitchToManualClearsCalibration)
+{
+    IkRig rig = makeRig();
+    ModeController controller(Mode::Calibration);
+    controller.update(rig, tPoseDevices(rig), true);  // -> Capture, calibrated
+    ASSERT_TRUE(controller.calibration().isCalibrated());
+
+    controller.switchToManual();
+
+    EXPECT_FALSE(controller.calibration().isCalibrated())
+        << "BUG: switchToManual left calibration set — checkboxes stay locked";
+}

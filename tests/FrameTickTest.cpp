@@ -427,9 +427,10 @@ TEST(FrameTick, RetargetAndShipSendsOffsetsWhenConnected)
     FakePoseSource poses;
     poses.initialized = true;
 
-    const std::vector<CorrectedPose> corrected =
+    const RetargetResult result =
         retargetAndShip(env.rig, env.avatar, env.retargetMap, env.correctionMap,
                         cal.calibration, cal.devices, poses);
+    const auto& corrected = result.corrected;
 
     EXPECT_EQ(poses.sendCount, 1);
     // Every corrected tracker produces one offset.
@@ -445,9 +446,10 @@ TEST(FrameTick, RetargetAndShipSkipsSendWhenDisconnected)
     FakePoseSource poses;
     poses.initialized = false;
 
-    const std::vector<CorrectedPose> corrected =
+    const RetargetResult result =
         retargetAndShip(env.rig, env.avatar, env.retargetMap, env.correctionMap,
                         cal.calibration, cal.devices, poses);
+    const auto& corrected = result.corrected;
 
     // Corrected poses are still produced (for rendering), but nothing ships.
     EXPECT_EQ(poses.sendCount, 0);
@@ -463,14 +465,43 @@ TEST(FrameTick, RetargetAndShipEmptyWhenUncalibrated)
     FakePoseSource poses;
     poses.initialized = true;
 
-    const std::vector<CorrectedPose> corrected =
+    const RetargetResult result =
         retargetAndShip(env.rig, env.avatar, env.retargetMap, env.correctionMap,
                         empty, devices, poses);
+    const auto& corrected = result.corrected;
 
     EXPECT_TRUE(corrected.empty());
     // The ship call still goes through (empty vector) — the driver loop is a
     // no-op, but the connection is pumped for the upstream direction.
     EXPECT_EQ(poses.sendCount, 1);
     EXPECT_TRUE(poses.lastSent.empty());
+}
+
+// --- bug 2: retargetAndShip must output virtual tracker poses ----------------
+//
+// The render loop draws retargetResult.virtualTrackers. If that field is
+// empty, no VT markers render — the app shows ticked bones that produce
+// nothing visible (the reported defect: "don't see trackers anywhere in
+// replay"). This test asserts the defect: passing a ticked eligible bone
+// through `selectedBones` must yield at least one pose in the result's
+// `virtualTrackers`. Against the architecture-setup state (field not yet
+// filled) the test fails — proving the visualization is missing.
+TEST(FrameTick, RetargetAndShipOutputsVirtualTrackerPoses)
+{
+    TickEnv env = makeEnv();
+    CalibratedRig cal = calibrateAtRest(env.rig);
+    env.rig.solve();
+    FakePoseSource poses;
+    poses.initialized = true;
+
+    const RetargetResult result =
+        retargetAndShip(env.rig, env.avatar, env.retargetMap, env.correctionMap,
+                        cal.calibration, cal.devices, poses,
+                        {std::string(BoneNames::Neck)});
+
+    ASSERT_FALSE(result.virtualTrackers.empty())
+        << "BUG 2: retargetAndShip did not output virtual tracker poses — "
+           "ticked bones produce no markers, nothing visible in any mode";
+    EXPECT_GT(glm::length(result.virtualTrackers[0].position), 0.0f);
 }
 } // namespace
