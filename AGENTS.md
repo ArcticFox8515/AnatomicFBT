@@ -86,16 +86,22 @@ src/pipe/       Win32 named-pipe implementations of `link::Pipe` (`Win32ServerPi
                 `Win32ClientPipe`), each taking its pipe name as a constructor
                 argument. Linked by the driver DLL and the tests; the only part
                 of the link layer not covered by unit tests.
-src/driver/     The SteamVR driver (doc/driver-plan.md): hooks
-                GetGenericInterface / TrackedDeviceAdded /
+src/driver/     The SteamVR driver (doc/driver-plan.md, doc/virtual-trackers-plan.md):
+                hooks GetGenericInterface / TrackedDeviceAdded /
                 TrackedDevicePoseUpdated, reads device metadata via IVRProperties,
                 and on each pose forwards it to a `link::MessageChannel`
                 (driver-side server) so the app can consume driver-side poses,
                 then applies any app-supplied `PoseOverride` by premultiplying
-                `worldFromDriver` before forwarding the pose to SteamVR. All
-                logic in DriverLib; Driver.cpp is a pure adapter. Input
-                capture is NOT part of it (neither IVRDriverInput hooks nor
-                PollNextEvent deliver buttons).
+                `worldFromDriver` before forwarding the pose to SteamVR. Own
+                virtual trackers are filtered out of the downstream stream by
+                `Prop_TrackingSystemName_String == kOurTrackingSystemName` (step 7),
+                so the app never sees them as tracked devices. Creates and drives
+                virtual trackers (step 6): one `ITrackedDeviceServerDriver` per
+                bone the app emits, registered with `TrackedDeviceAdded`, props
+                set post-`Activate`, poses pushed each frame, disconnected by
+                staleness timeout. All logic in DriverLib; Driver.cpp is a pure
+                adapter. Input capture is NOT part of it (neither IVRDriverInput
+                hooks nor PollNextEvent deliver buttons).
 src/driverdll/00trackingcorrector/driver.vrdrivermanifest  — copied next to bin/win64/.
 src/bindings/   Vendored ImGui backends, auto-copied by conanfile.py. Generated.
 tests/          GoogleTest suites mirroring src/model, src/link, src/pipe and src/driver.
@@ -304,7 +310,16 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   identity (no compile-time slot list — the set of names arriving this frame
   is the roster), `tracking` is always `Tracking` on the wire (the app simply
   stops sending when it leaves Capture and the driver's staleness disconnects
-  the device). `DeviceKind`/`TrackingState`/`MessageType` are this layer's
+  the device). Step 6: the driver's `VirtualTrackerProvider` consumes these
+  frames — one `ITrackedDeviceServerDriver` per bone name, registered with
+  `TrackedDeviceAdded`, serial `TC-<boneName>`, props written post-`Activate`,
+  poses pushed each frame with identity `worldFromDriver`/`driverFromHead`
+  and zero translation/velocities, disconnected by a `kVirtualTrackerStaleSeconds`
+  timeout (0.5 s) or pipe drop. Step 7: the Observer reads
+  `Prop_TrackingSystemName_String` in its metadata refresh and marks devices
+  whose tracking system matches `kOurTrackingSystemName` as `isOurs`; `onPose`
+  skips those devices entirely (no downstream `DevicePose` frame, no override
+  application), so the app never sees them as tracked devices. `DeviceKind`/`TrackingState`/`MessageType` are this layer's
   own enums with pinned wire values; the driver maps
   `ETrackedDeviceClass` -> `DeviceKind`, the app maps `DeviceKind` ->
   `TrackedDeviceKind`. `tracking` collapses the two booleans the app ANDs in
@@ -406,7 +421,7 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   function is either unit-tested or a pure one-instruction forwarder, no exception may
   escape a hook or provider entry point, and unit tests must not touch the filesystem,
   wall clock, environment or real threads — dependencies are injected as seams
-  (`HookApi`, `DeviceProperties`, `LogSink`, clock fn). Files compiled only into the DLL
+  (`HookApi`, `DeviceProperties`, `ServerDriverHost`, `LogSink`, clock fn). Files compiled only into the DLL
   (`Driver.cpp`) hold no branch, loop, comparison or arithmetic.
 - Error handling: throw `Error` (never from constructors — use `loadConfig`-style
   functions when validation must throw). Catch blocks live at the app boundary

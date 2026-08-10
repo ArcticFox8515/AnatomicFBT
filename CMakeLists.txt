@@ -144,7 +144,9 @@ add_library(DriverLib STATIC
     src/driver/Observer.h
     src/driver/PoseMath.h
     src/driver/Server.cpp
-    src/driver/Server.h)
+    src/driver/Server.h
+    src/driver/VirtualTrackers.cpp
+    src/driver/VirtualTrackers.h)
 
 target_include_directories(DriverLib PUBLIC src)
 target_include_directories(DriverLib PUBLIC
@@ -205,7 +207,8 @@ add_executable(TrackingCorrectorTests
     tests/TrackedDeviceTest.cpp
     tests/TrackerCalibrationTest.cpp
     tests/TrackerCorrectionTest.cpp
-    tests/VirtualTrackersTest.cpp)
+    tests/VirtualTrackersTest.cpp
+    tests/VirtualTrackerProviderTest.cpp)
 
 target_link_libraries(TrackingCorrectorTests
     TrackingCorrectorLib

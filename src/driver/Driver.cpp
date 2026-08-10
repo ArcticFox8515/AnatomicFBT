@@ -34,6 +34,7 @@
 #include "LogFile.h"
 #include "Observer.h"
 #include "Server.h"
+#include "VirtualTrackers.h"
 
 #include "pipe/Win32Pipe.h"
 
@@ -185,6 +186,47 @@ driver::Observer& observer()
     return *instance;
 }
 
+// The vrserver glue the virtual-tracker emitter needs: an OpenVR-backed DeviceHost
+// (TrackedDeviceAdded / TrackedDevicePoseUpdated over vr::VRServerDriverHost()) and the
+// OpenVrProperties it writes through (over vr::VRProperties()). Both are valid once
+// InitServerDriverContext has run in Server::init, and the emitter is only driven from
+// runFrame — after init — so the global accessors are non-null when the provider calls
+// them. Like the rest of the process-wide state here, they are deliberately leaked.
+
+class OpenVrServerDriverHost final : public driver::ServerDriverHost
+{
+public:
+    bool trackedDeviceAdded(const char* serial, vr::ETrackedDeviceClass deviceClass,
+                            vr::ITrackedDeviceServerDriver* driver) override
+    {
+        return vr::VRServerDriverHost()->TrackedDeviceAdded(serial, deviceClass, driver);
+    }
+
+    void poseUpdated(uint32_t index, const vr::DriverPose_t& pose, uint32_t poseStructSize) override
+    {
+        vr::VRServerDriverHost()->TrackedDevicePoseUpdated(index, pose, poseStructSize);
+    }
+};
+
+driver::OpenVrProperties& virtualTrackerProperties()
+{
+    static driver::OpenVrProperties* instance = new driver::OpenVrProperties(&vr::VRProperties);
+    return *instance;
+}
+
+OpenVrServerDriverHost& serverDriverHost()
+{
+    static OpenVrServerDriverHost* instance = new OpenVrServerDriverHost();
+    return *instance;
+}
+
+driver::VirtualTrackerProvider& virtualTrackers()
+{
+    static driver::VirtualTrackerProvider* instance = new driver::VirtualTrackerProvider(
+        log(), virtualTrackerProperties(), serverDriverHost(), &nowSeconds);
+    return *instance;
+}
+
 void* detourGetGenericInterface(vr::IVRDriverContext* self, const char* version,
                                 vr::EVRInitError* error)
 {
@@ -318,7 +360,7 @@ public:
 
 private:
     OpenVrServerEnvironment environment_;
-    driver::Server server_{log(), observer(), environment_, channel()};
+    driver::Server server_{log(), observer(), virtualTrackers(), environment_, channel()};
 };
 
 class WatchdogProvider final : public vr::IVRWatchdogProvider

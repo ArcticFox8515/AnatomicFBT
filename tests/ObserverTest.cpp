@@ -92,6 +92,12 @@ public:
         return property == vr::Prop_DeviceClass_Int32 ? device->deviceClass : device->roleHint;
     }
 
+    bool setStringProperty(vr::PropertyContainerHandle_t,
+                           vr::ETrackedDeviceProperty, const std::string&) override
+    {
+        return true;
+    }
+
     std::map<uint32_t, Device> devices;
     uint32_t containerLookups = 0;
     bool throwOnRead = false;
@@ -237,7 +243,7 @@ TEST_F(ObserverTest, HousekeepingRunsOnTheFirstFrameThenOncePerSecond)
     observer_.setProperties(&properties_);
 
     observer_.onRunFrame();
-    EXPECT_TRUE(logged("device 3: class=tracker(3) serial=\"LHR-TESTTRACKER\" container=5003"));
+    EXPECT_TRUE(logged("device 3: class=tracker(3) serial=\"LHR-TESTTRACKER\" ours=0 container=5003"));
 
     const uint32_t lookupsAfterFirst = properties_.containerLookups;
     now_ += driver::kHousekeepingSeconds / 2.0;
@@ -535,5 +541,85 @@ TEST_F(ObserverTest, AThrowingPropertyReaderCannotEscapeTheGuard)
     properties_.throwOnRead = true;
     observer_.setProperties(&properties_);
     driver::runGuarded([&] { observer_.onRunFrame(); });
+}
+
+// ----------------------------------------------- step 7: own devices ----
+
+TEST_F(ObserverTest, OwnDeviceProducesNoDownstreamFrame)
+{
+    // A device whose TrackingSystemName matches ours is one of our virtual trackers.
+    // Its poses must not be fed back to the app.
+    properties_.add(kTracker, {"TC-Chest", "TrackingCorrector Virtual Tracker",
+                               driver::kOurTrackingSystemName,
+                               vr::TrackedDeviceClass_GenericTracker,
+                               vr::TrackedControllerRole_Invalid});
+    observer_.setProperties(&properties_);
+    observer_.onRunFrame();  // populate the metadata cache
+    EXPECT_TRUE(logged("ours=1"));
+
+    std::vector<link::Message> dummy;
+    channel_.receive(dummy);  // construct the pipe
+
+    vr::DriverPose_t out{};
+    const bool replace = observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t), out);
+
+    // No frame on the wire, no override applied.
+    EXPECT_FALSE(replace);
+    EXPECT_TRUE(pipe_.written.empty());
+}
+
+TEST_F(ObserverTest, OwnDeviceWithActiveOverrideStillProducesNoFrameOrReplacement)
+{
+    // Even if an override was somehow stored for our device index, it must not be
+    // applied — the app never sees our devices, so no override should arrive, but
+    // defensively the filter is checked before the override lookup.
+    properties_.add(kTracker, {"TC-Spine", "TrackingCorrector Virtual Tracker",
+                               driver::kOurTrackingSystemName,
+                               vr::TrackedDeviceClass_GenericTracker,
+                               vr::TrackedControllerRole_Invalid});
+    observer_.setProperties(&properties_);
+    observer_.onRunFrame();
+
+    std::vector<link::Message> dummy;
+    channel_.receive(dummy);
+
+    // Install an override for our device index.
+    std::vector<link::Message> messages;
+    messages.push_back(overrideMessage(kTracker, 5.0f, 0.0f, 0.0f));
+    observer_.onMessages(messages);
+
+    vr::DriverPose_t out{};
+    const bool replace = observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t), out);
+
+    EXPECT_FALSE(replace);
+    EXPECT_TRUE(pipe_.written.empty());
+}
+
+TEST_F(ObserverTest, ForeignDeviceIsStillForwardedAfterOwnDeviceFiltering)
+{
+    // A foreign device on a different index behaves exactly as today — the filter
+    // only skips devices whose TrackingSystemName is ours.
+    properties_.add(kTracker, {"LHR-TESTTRACKER", "Vive Tracker", "lighthouse",
+                               vr::TrackedDeviceClass_GenericTracker,
+                               vr::TrackedControllerRole_Invalid});
+    properties_.add(kTracker + 1, {"TC-Chest", "TrackingCorrector Virtual Tracker",
+                                   driver::kOurTrackingSystemName,
+                                   vr::TrackedDeviceClass_GenericTracker,
+                                   vr::TrackedControllerRole_Invalid});
+    observer_.setProperties(&properties_);
+    observer_.onRunFrame();
+
+    std::vector<link::Message> dummy;
+    channel_.receive(dummy);
+
+    // The foreign device is forwarded.
+    vr::DriverPose_t out{};
+    observer_.onPose(kTracker, makePose(), sizeof(vr::DriverPose_t), out);
+    EXPECT_FALSE(pipe_.written.empty());
+
+    // The own device is not.
+    pipe_.written.clear();
+    observer_.onPose(kTracker + 1, makePose(), sizeof(vr::DriverPose_t), out);
+    EXPECT_TRUE(pipe_.written.empty());
 }
 } // namespace

@@ -28,6 +28,12 @@ public:
                                 vr::ETrackedDeviceProperty property, std::string& value) = 0;
     virtual int32_t int32Property(vr::PropertyContainerHandle_t container,
                                   vr::ETrackedDeviceProperty property) = 0;
+    // Writes a string property on the given container. Returns true on success. Used by
+    // the virtual-tracker emitter to set Manufacturer/ModelNumber/RenderModel/
+    // TrackingSystem on a device whose container only exists after Activate assigned it
+    // an index (the owner resolves the container via container(index), then writes).
+    virtual bool setStringProperty(vr::PropertyContainerHandle_t container,
+                                   vr::ETrackedDeviceProperty property, const std::string& value) = 0;
 };
 
 class InterfaceHooks
@@ -82,6 +88,7 @@ private:
             bool known = false;
             int deviceClass = vr::TrackedDeviceClass_Invalid;
             std::string serial;
+            bool isOurs = false;
         };
 
         bool beginRefresh(double now);

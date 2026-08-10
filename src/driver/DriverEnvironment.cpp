@@ -37,6 +37,17 @@ int32_t OpenVrProperties::int32Property(vr::PropertyContainerHandle_t container,
     return helpers_()->GetInt32Property(container, property);
 }
 
+bool OpenVrProperties::setStringProperty(vr::PropertyContainerHandle_t container,
+                                         vr::ETrackedDeviceProperty property,
+                                         const std::string& value)
+{
+    if (!helpers_())
+        return false;
+    const vr::ETrackedPropertyError error =
+        helpers_()->SetStringProperty(container, property, value.c_str());
+    return error == vr::TrackedProp_Success;
+}
+
 // ---- log routing ------------------------------------------------------------------
 
 link::LogSink driverLogSink(DriverLogFn driverLog)

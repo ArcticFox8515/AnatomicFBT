@@ -11,6 +11,7 @@
 
 #include "link/Log.h"
 #include "Observer.h"
+#include "VirtualTrackers.h"
 
 #include "link/MessageChannel.h"
 
@@ -78,8 +79,8 @@ public:
 class Server
 {
 public:
-    Server(link::Logger& logger, Observer& observer, ServerEnvironment& environment,
-           link::MessageChannel& channel);
+    Server(link::Logger& logger, Observer& observer, VirtualTrackerProvider& virtualTrackers,
+           ServerEnvironment& environment, link::MessageChannel& channel);
 
     vr::EVRInitError init(vr::IVRDriverContext* context);
     void cleanup();
@@ -93,6 +94,7 @@ public:
 private:
     link::Logger& log_;
     Observer& observer_;
+    VirtualTrackerProvider& virtualTrackers_;
     ServerEnvironment& environment_;
     link::MessageChannel& channel_;
     bool wasConnected_ = false;

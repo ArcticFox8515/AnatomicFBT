@@ -491,7 +491,7 @@ TEST_F(DriverLifecycle, HooksObserveAndForwardTheWholeDriverSurface)
     server->RunFrame();
     EXPECT_GT(context.properties.containerLookups, lookupsBefore);
     EXPECT_TRUE(context.log.contains(
-        "device 3: class=tracker(3) serial=\"LHR-TESTTRACKER\""));
+        "device 3: class=tracker(3) serial=\"LHR-TESTTRACKER\" ours=0"));
 
     server->RunFrame();
     EXPECT_FALSE(context.log.contains("button"));

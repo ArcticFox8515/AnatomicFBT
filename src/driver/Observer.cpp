@@ -59,7 +59,8 @@ bool Observer::MetadataCache::store(uint32_t index, const Entry& entry)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     Entry& current = entries_[index];
-    if (current.known && current.deviceClass == entry.deviceClass && current.serial == entry.serial)
+    if (current.known && current.deviceClass == entry.deviceClass
+        && current.serial == entry.serial && current.isOurs == entry.isOurs)
         return false;
     current = entry;
     return true;
@@ -143,6 +144,13 @@ bool Observer::onPose(uint32_t index, const vr::DriverPose_t& pose, uint32_t pos
         return false;
 
     const MetadataCache::Entry entry = cache_.lookup(index);
+
+    // Our own virtual trackers: do not feed them back to the app (step 7). The app
+    // would otherwise see them as tracked devices and could bind calibration targets
+    // to them. Also skip override application — the app never sees these indices, so
+    // no override should arrive, but defensively return the pose unchanged.
+    if (entry.isOurs)
+        return false;
 
     link::DevicePose wire;
     wire.deviceId = index;
@@ -231,10 +239,15 @@ void Observer::onRunFrame()
         entry.serial = serial;
         entry.deviceClass = properties_->int32Property(container, vr::Prop_DeviceClass_Int32);
 
+        std::string trackingSystem;
+        if (properties_->stringProperty(container, vr::Prop_TrackingSystemName_String,
+                                        trackingSystem))
+            entry.isOurs = (trackingSystem == kOurTrackingSystemName);
+
         if (cache_.store(i, entry))
-            log_.logf("device %u: class=%s(%d) serial=\"%s\" container=%llu",
+            log_.logf("device %u: class=%s(%d) serial=\"%s\" ours=%d container=%llu",
                       i, deviceClassName(entry.deviceClass), entry.deviceClass,
-                      entry.serial.c_str(),
+                      entry.serial.c_str(), static_cast<int>(entry.isOurs),
                       static_cast<unsigned long long>(container));
     }
 }

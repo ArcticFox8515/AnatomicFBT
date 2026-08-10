@@ -36,9 +36,10 @@ void* serveFactoryRequest(link::Logger& logger, const char* interfaceName, int* 
     return nullptr;
 }
 
-Server::Server(link::Logger& logger, Observer& observer, ServerEnvironment& environment,
-               link::MessageChannel& channel)
-    : log_(logger), observer_(observer), environment_(environment), channel_(channel)
+Server::Server(link::Logger& logger, Observer& observer, VirtualTrackerProvider& virtualTrackers,
+               ServerEnvironment& environment, link::MessageChannel& channel)
+    : log_(logger), observer_(observer), virtualTrackers_(virtualTrackers),
+      environment_(environment), channel_(channel)
 {
 }
 
@@ -110,9 +111,14 @@ void Server::runFrame()
         std::vector<link::Message> messages;
         channel_.receive(messages);
         observer_.onMessages(messages);
+        virtualTrackers_.onMessages(messages);
+        virtualTrackers_.onRunFrame();
 
         if (wasConnected_ && !channel_.connected())
+        {
             observer_.clearOverrides();
+            virtualTrackers_.markAllDisconnected();
+        }
         wasConnected_ = channel_.connected();
     });
 }

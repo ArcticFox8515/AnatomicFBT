@@ -50,6 +50,9 @@ public:
                         vr::ETrackedDeviceProperty property, std::string& value) override;
     int32_t int32Property(vr::PropertyContainerHandle_t container,
                           vr::ETrackedDeviceProperty property) override;
+    bool setStringProperty(vr::PropertyContainerHandle_t container,
+                           vr::ETrackedDeviceProperty property,
+                           const std::string& value) override;
 
 private:
     PropertyHelpersFn helpers_;

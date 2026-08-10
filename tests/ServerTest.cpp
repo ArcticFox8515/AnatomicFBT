@@ -10,6 +10,7 @@
 #include "link/Log.h"
 #include "driver/Observer.h"
 #include "driver/Server.h"
+#include "driver/VirtualTrackers.h"
 
 #include "FakePipe.h"
 #include "link/MessageChannel.h"
@@ -49,6 +50,80 @@ class NoInterfaceHooks : public driver::InterfaceHooks
 {
 public:
     void hookServerDriverHost(void*) override {}
+};
+
+class FakeServerDriverHost : public driver::ServerDriverHost
+{
+public:
+    bool trackedDeviceAdded(const char* serial, vr::ETrackedDeviceClass deviceClass,
+                            vr::ITrackedDeviceServerDriver* driver) override
+    {
+        addedSerials.emplace_back(serial ? serial : "");
+        addedClasses.push_back(deviceClass);
+        addedDrivers.push_back(driver);
+        // Simulate SteamVR calling Activate synchronously with a fresh index.
+        if (driver)
+            driver->Activate(static_cast<uint32_t>(100 + addedSerials.size()));
+        return true;
+    }
+
+    void poseUpdated(uint32_t index, const vr::DriverPose_t& pose,
+                     uint32_t poseStructSize) override
+    {
+        pushedPoses.push_back({index, pose.poseIsValid, pose.deviceIsConnected,
+                               poseStructSize});
+    }
+
+    struct PushedPose
+    {
+        uint32_t index;
+        bool poseIsValid;
+        bool deviceIsConnected;
+        uint32_t structSize;
+    };
+
+    std::vector<std::string> addedSerials;
+    std::vector<vr::ETrackedDeviceClass> addedClasses;
+    std::vector<vr::ITrackedDeviceServerDriver*> addedDrivers;
+    std::vector<PushedPose> pushedPoses;
+};
+
+class FakeDeviceProperties : public driver::DeviceProperties
+{
+public:
+    vr::PropertyContainerHandle_t container(uint32_t deviceIndex) override
+    {
+        return 2000 + deviceIndex;
+    }
+
+    bool stringProperty(vr::PropertyContainerHandle_t, vr::ETrackedDeviceProperty,
+                        std::string&) override
+    {
+        return false;
+    }
+
+    int32_t int32Property(vr::PropertyContainerHandle_t,
+                          vr::ETrackedDeviceProperty) override
+    {
+        return 0;
+    }
+
+    bool setStringProperty(vr::PropertyContainerHandle_t container,
+                           vr::ETrackedDeviceProperty property,
+                           const std::string& value) override
+    {
+        writtenProps.push_back({container, property, value});
+        return true;
+    }
+
+    struct WrittenProp
+    {
+        vr::PropertyContainerHandle_t container;
+        vr::ETrackedDeviceProperty property;
+        std::string value;
+    };
+
+    std::vector<WrittenProp> writtenProps;
 };
 
 class FakeServerEnvironment : public driver::ServerEnvironment
@@ -118,7 +193,9 @@ public:
 class ServerTest : public ::testing::Test
 {
 protected:
-    ServerTest() : observer_(logger_, hooks_, [] { return 0.0; }, channel_)
+    ServerTest()
+        : observer_(logger_, hooks_, [] { return 0.0; }, channel_),
+          virtualTrackers_(logger_, properties_, host_, [] { return 0.0; })
     {
         logger_.setSink([this](const char* message) { lines_.emplace_back(message); });
     }
@@ -136,8 +213,12 @@ protected:
     NoInterfaceHooks hooks_;
     link::MessageChannel channel_{logger_, [] { return nullptr; }};
     driver::Observer observer_{logger_, hooks_, [] { return 0.0; }, channel_};
+    FakeDeviceProperties properties_;
+    FakeServerDriverHost host_;
+    driver::VirtualTrackerProvider virtualTrackers_{logger_, properties_, host_,
+                                                     [] { return 0.0; }};
     FakeServerEnvironment environment_;
-    driver::Server server_{logger_, observer_, environment_, channel_};
+    driver::Server server_{logger_, observer_, virtualTrackers_, environment_, channel_};
 };
 
 TEST_F(ServerTest, InitHooksInTheOrderTheContextForcesOnUs)
@@ -249,8 +330,10 @@ TEST_F(ServerTest, StandbyIsNeverBlocked)
 class ServerPipeTest : public ::testing::Test
 {
 protected:
-    ServerPipeTest() : observer_(logger_, hooks_, [] { return 0.0; }, channel_),
-                            server_(logger_, observer_, environment_, channel_)
+    ServerPipeTest()
+        : observer_(logger_, hooks_, [] { return 0.0; }, channel_),
+          virtualTrackers_(logger_, properties_, host_, [] { return 0.0; }),
+          server_(logger_, observer_, virtualTrackers_, environment_, channel_)
     {
         logger_.setSink([this](const char* message) { lines_.emplace_back(message); });
     }
@@ -258,11 +341,15 @@ protected:
     std::vector<std::string> lines_;
     link::Logger logger_;
     NoInterfaceHooks hooks_;
+    FakeDeviceProperties properties_;
+    FakeServerDriverHost host_;
     link_test::FakePipe pipe_;
     link::MessageChannel channel_{logger_, link_test::borrowPipeFactory(pipe_)};
     driver::Observer observer_{logger_, hooks_, [] { return 0.0; }, channel_};
+    driver::VirtualTrackerProvider virtualTrackers_{logger_, properties_, host_,
+                                                     [] { return 0.0; }};
     FakeServerEnvironment environment_;
-    driver::Server server_{logger_, observer_, environment_, channel_};
+    driver::Server server_{logger_, observer_, virtualTrackers_, environment_, channel_};
 };
 
 TEST_F(ServerPipeTest, OnPoseForwardsThroughTheChannelAfterInit)
