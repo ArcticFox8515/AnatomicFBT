@@ -23,13 +23,13 @@ TEST(LinkProtocol, DevicePoseRoundTripsThroughMemcpy)
     original.deviceId = 3;
     original.tracking = link::TrackingState::Tracking;
     original.deviceKind = link::DeviceKind::Tracker;
-    original.position[0] = 1.5f;
-    original.position[1] = -0.25f;
-    original.position[2] = 2.0f;
-    original.rotation[0] = 0.1f;  // x
-    original.rotation[1] = 0.2f;  // y
-    original.rotation[2] = 0.3f;  // z
-    original.rotation[3] = 0.9f;  // w
+    original.position.x = 1.5f;
+    original.position.y = -0.25f;
+    original.position.z = 2.0f;
+    original.rotation.x = 0.1f;  // x
+    original.rotation.y = 0.2f;  // y
+    original.rotation.z = 0.3f;  // z
+    original.rotation.w = 0.9f;  // w
     const std::string serial = "LHR-ABC1234567";
     std::memcpy(original.serial, serial.c_str(), serial.size());
 
@@ -41,13 +41,13 @@ TEST(LinkProtocol, DevicePoseRoundTripsThroughMemcpy)
     EXPECT_EQ(restored.deviceId, 3u);
     EXPECT_EQ(restored.tracking, link::TrackingState::Tracking);
     EXPECT_EQ(restored.deviceKind, link::DeviceKind::Tracker);
-    EXPECT_FLOAT_EQ(restored.position[0], 1.5f);
-    EXPECT_FLOAT_EQ(restored.position[1], -0.25f);
-    EXPECT_FLOAT_EQ(restored.position[2], 2.0f);
-    EXPECT_FLOAT_EQ(restored.rotation[0], 0.1f);
-    EXPECT_FLOAT_EQ(restored.rotation[1], 0.2f);
-    EXPECT_FLOAT_EQ(restored.rotation[2], 0.3f);
-    EXPECT_FLOAT_EQ(restored.rotation[3], 0.9f);
+    EXPECT_FLOAT_EQ(restored.position.x, 1.5f);
+    EXPECT_FLOAT_EQ(restored.position.y, -0.25f);
+    EXPECT_FLOAT_EQ(restored.position.z, 2.0f);
+    EXPECT_FLOAT_EQ(restored.rotation.x, 0.1f);
+    EXPECT_FLOAT_EQ(restored.rotation.y, 0.2f);
+    EXPECT_FLOAT_EQ(restored.rotation.z, 0.3f);
+    EXPECT_FLOAT_EQ(restored.rotation.w, 0.9f);
     EXPECT_STREQ(restored.serial, "LHR-ABC1234567");
 }
 
@@ -56,8 +56,8 @@ TEST(LinkProtocol, DevicePoseDefaultsToIdentityRotationAndOtherKind)
     link::DevicePose pose;
     EXPECT_EQ(pose.tracking, link::TrackingState::Lost);
     EXPECT_EQ(pose.deviceKind, link::DeviceKind::Other);
-    EXPECT_FLOAT_EQ(pose.rotation[3], 1.0f);  // w
-    EXPECT_FLOAT_EQ(pose.rotation[0], 0.0f);  // x
+    EXPECT_FLOAT_EQ(pose.rotation.w, 1.0f);  // w
+    EXPECT_FLOAT_EQ(pose.rotation.x, 0.0f);  // x
     EXPECT_EQ(pose.serial[0], '\0');
 }
 
@@ -102,23 +102,26 @@ TEST(LinkProtocol, MessageTypeValuesArePinned)
     // so an older driver/app that spoke type 2 still interoperates.
     EXPECT_EQ(static_cast<std::uint16_t>(link::MessageType::DevicePose), 2);
     EXPECT_EQ(static_cast<std::uint16_t>(link::MessageType::PoseOverride), 3);
+    EXPECT_EQ(static_cast<std::uint16_t>(link::MessageType::VirtualTracker), 4);
 }
 
 // ---- the framing layer keys on sizeof(POD); pin those sizes ---------------
 
+static_assert(sizeof(link::WireVec3) == 12, "WireVec3 size drifted");
+static_assert(sizeof(link::WireQuat) == 16, "WireQuat size drifted");
 static_assert(sizeof(link::DevicePose) == 68, "pose POD size drifted");
 
 TEST(LinkProtocol, PoseOverrideRoundTripsThroughMemcpy)
 {
     link::PoseOverride original;
     original.deviceId = 5;
-    original.position[0] = 0.1f;
-    original.position[1] = -0.2f;
-    original.position[2] = 0.3f;
-    original.rotation[0] = 0.4f;  // x
-    original.rotation[1] = 0.5f;  // y
-    original.rotation[2] = 0.6f;  // z
-    original.rotation[3] = 0.7f;  // w
+    original.position.x = 0.1f;
+    original.position.y = -0.2f;
+    original.position.z = 0.3f;
+    original.rotation.x = 0.4f;  // x
+    original.rotation.y = 0.5f;  // y
+    original.rotation.z = 0.6f;  // z
+    original.rotation.w = 0.7f;  // w
 
     std::vector<std::uint8_t> wire(sizeof(link::PoseOverride));
     std::memcpy(wire.data(), &original, sizeof(link::PoseOverride));
@@ -126,25 +129,87 @@ TEST(LinkProtocol, PoseOverrideRoundTripsThroughMemcpy)
     link::PoseOverride restored;
     std::memcpy(&restored, wire.data(), sizeof(link::PoseOverride));
     EXPECT_EQ(restored.deviceId, 5u);
-    EXPECT_FLOAT_EQ(restored.position[0], 0.1f);
-    EXPECT_FLOAT_EQ(restored.position[1], -0.2f);
-    EXPECT_FLOAT_EQ(restored.position[2], 0.3f);
-    EXPECT_FLOAT_EQ(restored.rotation[0], 0.4f);
-    EXPECT_FLOAT_EQ(restored.rotation[1], 0.5f);
-    EXPECT_FLOAT_EQ(restored.rotation[2], 0.6f);
-    EXPECT_FLOAT_EQ(restored.rotation[3], 0.7f);
+    EXPECT_FLOAT_EQ(restored.position.x, 0.1f);
+    EXPECT_FLOAT_EQ(restored.position.y, -0.2f);
+    EXPECT_FLOAT_EQ(restored.position.z, 0.3f);
+    EXPECT_FLOAT_EQ(restored.rotation.x, 0.4f);
+    EXPECT_FLOAT_EQ(restored.rotation.y, 0.5f);
+    EXPECT_FLOAT_EQ(restored.rotation.z, 0.6f);
+    EXPECT_FLOAT_EQ(restored.rotation.w, 0.7f);
 }
 
 TEST(LinkProtocol, PoseOverrideDefaultsToIdentityRotation)
 {
     link::PoseOverride pose;
     EXPECT_EQ(pose.deviceId, 0u);
-    EXPECT_FLOAT_EQ(pose.position[0], 0.0f);
-    EXPECT_FLOAT_EQ(pose.position[1], 0.0f);
-    EXPECT_FLOAT_EQ(pose.position[2], 0.0f);
-    EXPECT_FLOAT_EQ(pose.rotation[3], 1.0f);  // w
-    EXPECT_FLOAT_EQ(pose.rotation[0], 0.0f);  // x
+    EXPECT_FLOAT_EQ(pose.position.x, 0.0f);
+    EXPECT_FLOAT_EQ(pose.position.y, 0.0f);
+    EXPECT_FLOAT_EQ(pose.position.z, 0.0f);
+    EXPECT_FLOAT_EQ(pose.rotation.w, 1.0f);  // w
+    EXPECT_FLOAT_EQ(pose.rotation.x, 0.0f);  // x
 }
 
 static_assert(sizeof(link::PoseOverride) == 32, "poseOverride POD size drifted");
+
+// ---- VirtualTracker (upstream, app -> driver) -------------------------------
+
+TEST(LinkProtocol, VirtualTrackerRoundTripsThroughMemcpy)
+{
+    link::VirtualTracker original;
+    const std::string name = "LeftUpperLeg";
+    std::memcpy(original.name, name.c_str(), name.size());
+    original.tracking = link::TrackingState::Tracking;
+    original.position.x = 0.2f;
+    original.position.y = 1.0f;
+    original.position.z = -0.4f;
+    original.rotation.x = 0.1f;  // x
+    original.rotation.y = 0.2f;  // y
+    original.rotation.z = 0.3f;  // z
+    original.rotation.w = 0.9f;  // w
+
+    std::vector<std::uint8_t> wire(sizeof(link::VirtualTracker));
+    std::memcpy(wire.data(), &original, sizeof(link::VirtualTracker));
+
+    link::VirtualTracker restored;
+    std::memcpy(&restored, wire.data(), sizeof(link::VirtualTracker));
+    EXPECT_EQ(std::string(restored.name), "LeftUpperLeg");
+    EXPECT_EQ(restored.tracking, link::TrackingState::Tracking);
+    EXPECT_FLOAT_EQ(restored.position.x, 0.2f);
+    EXPECT_FLOAT_EQ(restored.position.y, 1.0f);
+    EXPECT_FLOAT_EQ(restored.position.z, -0.4f);
+    EXPECT_FLOAT_EQ(restored.rotation.x, 0.1f);
+    EXPECT_FLOAT_EQ(restored.rotation.y, 0.2f);
+    EXPECT_FLOAT_EQ(restored.rotation.z, 0.3f);
+    EXPECT_FLOAT_EQ(restored.rotation.w, 0.9f);
+}
+
+TEST(LinkProtocol, VirtualTrackerDefaultsToTrackingAndIdentityRotation)
+{
+    link::VirtualTracker vt;
+    EXPECT_EQ(vt.name[0], '\0');
+    EXPECT_EQ(vt.tracking, link::TrackingState::Tracking);
+    EXPECT_FLOAT_EQ(vt.rotation.w, 1.0f);  // w
+    EXPECT_FLOAT_EQ(vt.rotation.x, 0.0f);  // x
+}
+
+TEST(LinkProtocol, VirtualTrackerNameTruncatesAtTheFieldWidth)
+{
+    link::VirtualTracker original;
+    const std::string full(link::kMaxBoneNameBytes - 1, 'B');
+    std::memcpy(original.name, full.c_str(), full.size());
+
+    std::vector<std::uint8_t> wire(sizeof(link::VirtualTracker));
+    std::memcpy(wire.data(), &original, sizeof(link::VirtualTracker));
+
+    link::VirtualTracker restored;
+    std::memcpy(&restored, wire.data(), sizeof(link::VirtualTracker));
+    EXPECT_EQ(std::string(restored.name), full);
+    EXPECT_EQ(restored.name[link::kMaxBoneNameBytes - 1], '\0');
+}
+
+// Smaller than DevicePose (68), so the Message union does not grow and the
+// framing cap is unchanged.
+static_assert(sizeof(link::VirtualTracker) == 64, "virtualTracker POD size drifted");
+static_assert(sizeof(link::VirtualTracker) <= sizeof(link::DevicePose),
+              "VirtualTracker must not exceed DevicePose (the union's largest member)");
 } // namespace

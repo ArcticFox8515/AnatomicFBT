@@ -19,7 +19,9 @@ static_assert(sizeof(Message) == kMessageHeaderBytes + sizeof(DevicePose),
 
 bool isKnownType(MessageType type)
 {
-    return type == MessageType::DevicePose || type == MessageType::PoseOverride;
+    return type == MessageType::DevicePose
+        || type == MessageType::PoseOverride
+        || type == MessageType::VirtualTracker;
 }
 } // namespace
 

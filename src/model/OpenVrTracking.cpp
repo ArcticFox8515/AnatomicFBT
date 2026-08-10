@@ -1,13 +1,12 @@
 #include "model/OpenVrTracking.h"
 
+#include "link/Convert.h"
 #include "link/Protocol.h"
 
 #include "model/Error.h"
 
-#include <glm/glm.hpp>
-#include <glm/gtc/quaternion.hpp>
-
 #include <algorithm>
+#include <cstring>
 
 namespace
 {
@@ -64,44 +63,43 @@ std::vector<TrackedDevice> OpenVrTracking::pollPoses()
     {
         if (message.type != link::MessageType::DevicePose)
             continue;
-        applyPose(message.pose);
+        applyPose(message.devicePose);
     }
     return devices_;
 }
 
-void OpenVrTracking::applyPose(const link::DevicePose& pose)
+void OpenVrTracking::applyPose(const link::DevicePose& frame)
 {
     // `Other` was skipped by the old pollPoses (base stations, etc.).
-    if (pose.deviceKind == link::DeviceKind::Other)
+    if (frame.deviceKind == link::DeviceKind::Other)
         return;
 
     auto it = std::lower_bound(devices_.begin(), devices_.end(),
-                               static_cast<int>(pose.deviceId),
+                               static_cast<int>(frame.deviceId),
                                [](const TrackedDevice& d, int id) { return d.id < id; });
 
     // A Lost frame is the driver-side equivalent of the old
     // `!bPoseIsValid || !bDeviceIsConnected` skip — the device leaves the
     // snapshot this frame, and returns once Tracking resumes.
-    if (pose.tracking == link::TrackingState::Lost)
+    if (frame.tracking == link::TrackingState::Lost)
     {
-        if (it != devices_.end() && it->id == static_cast<int>(pose.deviceId))
+        if (it != devices_.end() && it->id == static_cast<int>(frame.deviceId))
             devices_.erase(it);
         return;
     }
 
-    const TrackedDeviceKind kind = mapKind(pose.deviceKind);
-    const glm::vec3 position(pose.position[0], pose.position[1], pose.position[2]);
-    const glm::quat rotation(pose.rotation[3], pose.rotation[0],
-                             pose.rotation[1], pose.rotation[2]);
+    const TrackedDeviceKind kind = mapKind(frame.deviceKind);
+    const glm::vec3 position = link::fromWireVec3<glm::vec3>(frame.position);
+    const glm::quat rotation = link::fromWireQuat<glm::quat>(frame.rotation);
 
-    if (it != devices_.end() && it->id == static_cast<int>(pose.deviceId))
+    if (it != devices_.end() && it->id == static_cast<int>(frame.deviceId))
     {
         it->kind = kind;
         it->pose = {position, rotation};
     }
     else
     {
-        devices_.insert(it, {static_cast<int>(pose.deviceId), kind, {position, rotation}});
+        devices_.insert(it, {static_cast<int>(frame.deviceId), kind, {position, rotation}});
     }
 }
 
@@ -113,13 +111,27 @@ void OpenVrTracking::sendOffsets(const std::vector<DeviceOffset>& offsets)
         message.size = sizeof(link::PoseOverride);
         message.type = link::MessageType::PoseOverride;
         message.poseOverride.deviceId = static_cast<std::uint32_t>(offset.deviceId);
-        message.poseOverride.position[0] = offset.delta.position.x;
-        message.poseOverride.position[1] = offset.delta.position.y;
-        message.poseOverride.position[2] = offset.delta.position.z;
-        message.poseOverride.rotation[0] = offset.delta.rotation.x;
-        message.poseOverride.rotation[1] = offset.delta.rotation.y;
-        message.poseOverride.rotation[2] = offset.delta.rotation.z;
-        message.poseOverride.rotation[3] = offset.delta.rotation.w;
+        message.poseOverride.position = link::toWireVec3(offset.delta.position);
+        message.poseOverride.rotation = link::toWireQuat(offset.delta.rotation);
+        channel_.send(message);
+    }
+}
+
+void OpenVrTracking::sendVirtualTrackers(const std::vector<VirtualTrackerPose>& trackers)
+{
+    for (const VirtualTrackerPose& tracker : trackers)
+    {
+        link::VirtualTracker wire;
+        const std::size_t n = std::min(tracker.name.size(), sizeof(wire.name) - 1);
+        std::memcpy(wire.name, tracker.name.data(), n);
+        wire.tracking = link::TrackingState::Tracking;
+        wire.position = link::toWireVec3(tracker.pose.position);
+        wire.rotation = link::toWireQuat(tracker.pose.rotation);
+
+        link::Message message;
+        message.size = sizeof(link::VirtualTracker);
+        message.type = link::MessageType::VirtualTracker;
+        message.virtualTracker = wire;
         channel_.send(message);
     }
 }

@@ -59,6 +59,7 @@ RetargetResult retargetAndShip(IkRig& rig, Skeleton& avatar,
                                const RetargetMap& retargetMap,
                                const CorrectionMap& correctionMap,
                                const TrackerCalibration& calibration,
+                               Mode mode,
                                const std::vector<TrackedDevice>& devices,
                                IPoseSource& poses,
                                const std::vector<std::string>& selectedBones)
@@ -71,6 +72,9 @@ RetargetResult retargetAndShip(IkRig& rig, Skeleton& avatar,
     // Virtual tracker markers: ticked eligible bones' avatar poses, computed
     // from the retargeted avatar above. Flows out in the result so the render
     // loop draws them via the same call — no separate wiring to forget.
+    // Shipped upstream only in Capture after calibration: no virtual-tracker
+    // traffic reaches the driver in ManualPose, Calibration, Replay, or
+    // Capture before calibration (doc/virtual-trackers-plan.md step 5).
     std::vector<Pose> virtualTrackers;
     if (!selectedBones.empty())
     {
@@ -80,11 +84,13 @@ RetargetResult retargetAndShip(IkRig& rig, Skeleton& avatar,
         for (const std::string& bone : selectedBones)
             if (std::find(eligible.begin(), eligible.end(), bone) != eligible.end())
                 tickedEligible.push_back(bone);
-        const std::vector<VirtualTrackerPose> vt =
+        std::vector<VirtualTrackerPose> vt =
             computeVirtualTrackerPoses(avatar, tickedEligible);
         virtualTrackers.reserve(vt.size());
         for (const VirtualTrackerPose& p : vt)
             virtualTrackers.push_back(p.pose);
+        if (mode == Mode::Capture && calibration.isCalibrated() && poses.isInitialized())
+            poses.sendVirtualTrackers(vt);
     }
     return {std::move(corrected), std::move(virtualTrackers)};
 }

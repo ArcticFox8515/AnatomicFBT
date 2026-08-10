@@ -4,6 +4,7 @@
 #include "Retarget.h"
 #include "TrackerCorrection.h"
 #include "TrackedDevice.h"
+#include "VirtualTrackers.h"
 #include "link/Log.h"
 
 #include <vector>
@@ -27,6 +28,10 @@ struct IPoseSource
     virtual bool isInitialized() const = 0;
     virtual std::vector<TrackedDevice> pollPoses() = 0;
     virtual void sendOffsets(const std::vector<DeviceOffset>& offsets) = 0;
+    // Ships one `VirtualTracker` frame per ticked eligible bone to the driver
+    // (doc/virtual-trackers-plan.md step 5). Called only while in Capture mode
+    // with calibration complete; the caller (retargetAndShip) gates it.
+    virtual void sendVirtualTrackers(const std::vector<VirtualTrackerPose>& trackers) = 0;
 };
 
 struct IGestureSource
@@ -76,9 +81,13 @@ UpdateResult pollAndUpdate(ModeController& controller, IkRig& rig,
 // ship the world-space deltas to the driver when `poses` is connected.
 // `selectedBones` is the user's ticked virtual-tracker selection (names from
 // the step-1 eligible list); the result's `virtualTrackers` carries the
-// marker poses for those bones, computed from the retargeted avatar. Pure
-// logic — the caller draws from the result. Call after the rig pose is final
-// (Goals solved, or the gizmo-driven Targets solve in the visible path).
+// marker poses for those bones, computed from the retargeted avatar. When
+// `mode == Mode::Capture` and `calibration.isCalibrated()`, the virtual
+// tracker poses are also shipped upstream through `poses.sendVirtualTrackers`
+// — one frame per bone, only in Capture after calibration, so no
+// virtual-tracker traffic reaches the driver in any other mode. Pure logic —
+// the caller draws from the result. Call after the rig pose is final (Goals
+// solved, or the gizmo-driven Targets solve in the visible path).
 struct RetargetResult
 {
     std::vector<CorrectedPose> corrected;
@@ -89,6 +98,7 @@ RetargetResult retargetAndShip(IkRig& rig,
                                const RetargetMap& retargetMap,
                                const CorrectionMap& correctionMap,
                                const TrackerCalibration& calibration,
+                               Mode mode,
                                const std::vector<TrackedDevice>& devices,
                                IPoseSource& poses,
                                const std::vector<std::string>& selectedBones = {});

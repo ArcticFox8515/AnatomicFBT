@@ -4,6 +4,7 @@
 #include "Names.h"
 #include "PoseMath.h"
 
+#include "link/Convert.h"
 #include "link/MessageChannel.h"
 #include "link/Protocol.h"
 
@@ -77,10 +78,8 @@ void Observer::OverrideCache::store(const link::PoseOverride& poseOverride, doub
     std::lock_guard<std::mutex> lock(mutex_);
     Entry& entry = entries_[poseOverride.deviceId];
     entry.enabled = true;
-    entry.delta.pos = {poseOverride.position[0], poseOverride.position[1],
-                       poseOverride.position[2]};
-    entry.delta.rot = {poseOverride.rotation[3], poseOverride.rotation[0],
-                       poseOverride.rotation[1], poseOverride.rotation[2]};
+    entry.delta.pos = link::fromWireVec3<V3>(poseOverride.position);
+    entry.delta.rot = link::fromWireQuat<Q>(poseOverride.rotation);
     entry.receivedAt = now;
 }
 
@@ -175,13 +174,8 @@ bool Observer::onPose(uint32_t index, const vr::DriverPose_t& pose, uint32_t pos
     // correction as `corrected - raw`; feeding it our own corrected output
     // would collapse the offset (and, since the app's IK goals track the raw
     // pose, drift the avatar). Do not touch `wire` with the delta.
-    wire.position[0] = static_cast<float>(world.pos.x);
-    wire.position[1] = static_cast<float>(world.pos.y);
-    wire.position[2] = static_cast<float>(world.pos.z);
-    wire.rotation[0] = static_cast<float>(world.rot.x);
-    wire.rotation[1] = static_cast<float>(world.rot.y);
-    wire.rotation[2] = static_cast<float>(world.rot.z);
-    wire.rotation[3] = static_cast<float>(world.rot.w);
+    wire.position = link::toWireVec3(world.pos);
+    wire.rotation = link::toWireQuat(world.rot);
 
     const std::size_t n = (std::min)(entry.serial.size(), sizeof(wire.serial) - 1);
     std::memcpy(wire.serial, entry.serial.data(), n);
@@ -189,7 +183,7 @@ bool Observer::onPose(uint32_t index, const vr::DriverPose_t& pose, uint32_t pos
     link::Message message;
     message.size = sizeof(link::DevicePose);
     message.type = link::MessageType::DevicePose;
-    message.pose = wire;
+    message.devicePose = wire;
     channel_.send(message);
 
     // Apply the correction to the pose handed to SteamVR. Premultiplying

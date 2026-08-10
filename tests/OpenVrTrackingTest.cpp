@@ -13,6 +13,7 @@
 #include "model/OpenVrTracking.h"
 #include "model/Pose.h"
 #include "model/TrackerCorrection.h"
+#include "model/VirtualTrackers.h"
 
 #include <gtest/gtest.h>
 
@@ -56,10 +57,10 @@ link::DevicePose trackingPose(std::uint32_t id, link::DeviceKind kind,
     pose.deviceId = id;
     pose.tracking = link::TrackingState::Tracking;
     pose.deviceKind = kind;
-    pose.position[0] = x;
-    pose.position[1] = y;
-    pose.position[2] = z;
-    pose.rotation[3] = 1.0f;  // identity (xyzw)
+    pose.position.x = x;
+    pose.position.y = y;
+    pose.position.z = z;
+    pose.rotation.w = 1.0f;  // identity (xyzw)
     return pose;
 }
 
@@ -251,12 +252,57 @@ TEST(OpenVrTracking, SendOffsetsWritesOneFramePerDevice)
     link::PoseOverride first;
     std::memcpy(&first, f.pipe.written.data() + 8, sizeof(first));
     EXPECT_EQ(first.deviceId, 1u);
-    EXPECT_FLOAT_EQ(first.position[0], 0.1f);
+    EXPECT_FLOAT_EQ(first.position.x, 0.1f);
 
     link::PoseOverride second;
     std::memcpy(&second, f.pipe.written.data() + oneFrame + 8, sizeof(second));
     EXPECT_EQ(second.deviceId, 2u);
-    EXPECT_FLOAT_EQ(second.position[1], 0.2f);
+    EXPECT_FLOAT_EQ(second.position.y, 0.2f);
+}
+
+// ---- sendVirtualTrackers: upstream VirtualTracker frames (step 5) -----------
+
+TEST(OpenVrTracking, SendVirtualTrackersWritesOneFramePerBone)
+{
+    TrackingFixture f;
+
+    std::vector<VirtualTrackerPose> trackers;
+    trackers.push_back({"Chest", {glm::vec3(0.1f, 1.2f, 0.0f),
+                                  glm::angleAxis(0.5f, glm::vec3(0.0f, 1.0f, 0.0f))}});
+    trackers.push_back({"Spine", {glm::vec3(0.0f, 0.9f, -0.1f),
+                                  glm::quat(1.0f, 0.0f, 0.0f, 0.0f)}});
+    f.vr.sendVirtualTrackers(trackers);
+
+    const std::size_t oneFrame = 8u + sizeof(link::VirtualTracker);
+    ASSERT_EQ(f.pipe.written.size(), oneFrame * 2);
+
+    link::VirtualTracker first;
+    std::memcpy(&first, f.pipe.written.data() + 8, sizeof(first));
+    EXPECT_EQ(std::string(first.name), "Chest");
+    EXPECT_EQ(first.tracking, link::TrackingState::Tracking);
+    EXPECT_FLOAT_EQ(first.position.x, 0.1f);
+    EXPECT_FLOAT_EQ(first.position.y, 1.2f);
+
+    link::VirtualTracker second;
+    std::memcpy(&second, f.pipe.written.data() + oneFrame + 8, sizeof(second));
+    EXPECT_EQ(std::string(second.name), "Spine");
+    EXPECT_FLOAT_EQ(second.position.y, 0.9f);
+    EXPECT_FLOAT_EQ(second.position.z, -0.1f);
+}
+
+TEST(OpenVrTracking, SendVirtualTrackersTruncatesLongBoneNames)
+{
+    TrackingFixture f;
+
+    VirtualTrackerPose tracker;
+    tracker.name = std::string(link::kMaxBoneNameBytes, 'X');  // one past the field
+    tracker.pose = {glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f)};
+    f.vr.sendVirtualTrackers({tracker});
+
+    link::VirtualTracker wire;
+    std::memcpy(&wire, f.pipe.written.data() + 8, sizeof(wire));
+    EXPECT_EQ(wire.name[link::kMaxBoneNameBytes - 1], '\0');
+    EXPECT_EQ(std::string(wire.name), std::string(link::kMaxBoneNameBytes - 1, 'X'));
 }
 
 TEST(OpenVrTracking, InboundPoseOverrideDoesNotBecomeATrackedDevice)
@@ -265,7 +311,7 @@ TEST(OpenVrTracking, InboundPoseOverrideDoesNotBecomeATrackedDevice)
 
     link::PoseOverride ov;
     ov.deviceId = 5;
-    ov.position[0] = 1.0f;
+    ov.position.x = 1.0f;
 
     std::vector<std::uint8_t> bytes;
     const std::uint32_t len = static_cast<std::uint32_t>(sizeof(ov));

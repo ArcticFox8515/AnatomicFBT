@@ -333,12 +333,17 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 			{
 				// Goals-only: ManualPose ships no overrides and its Targets
 				// solve is gizmo-driven (render-interleaved), so there is
-				// nothing to do for it while minimized.
+				// nothing to do for it while minimized. The driver link stays
+				// fed (overrides + virtual trackers) by retargetAndShip below;
+				// VTs ship only in Capture after calibration (step 5), so the
+				// minimized path keeps them flowing exactly when the visible
+				// path would.
 				if (tick.plan.solve == SolveMode::Goals)
 				{
 					rig.solve(tick.plan.goals);
 					retargetAndShip(rig, avatarSkeleton, retargetMap, correctionMap,
-					                controller.calibration(), tick.devices, vr);
+					                controller.calibration(), controller.mode(),
+					                tick.devices, vr, settings.virtualTrackerBones);
 				}
 				continue;
 			}
@@ -405,8 +410,9 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 		// as markers. Virtual tracker poses come back in the same result,
 		// computed from the retargeted avatar, so the wiring is one call —
 		// no separate VT path to forget.
-		retargetResult = retargetAndShip(rig, avatarSkeleton, retargetMap, correctionMap,
-		                            controller.calibration(), devices, vr, settings.virtualTrackerBones);
+	retargetResult = retargetAndShip(rig, avatarSkeleton, retargetMap, correctionMap,
+	                            controller.calibration(), controller.mode(),
+	                            devices, vr, settings.virtualTrackerBones);
 		scene.setViewport(leftWidth, 0, width - leftWidth, height);
 		scene.renderSkeleton(avatarSkeleton);
 		if (!retargetResult.corrected.empty())

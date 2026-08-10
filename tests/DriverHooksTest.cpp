@@ -389,8 +389,8 @@ TEST_F(DriverHooksTest, PoseUpdateWithOverrideForwardsModifiedCopy)
     ov.size = sizeof(link::PoseOverride);
     ov.type = link::MessageType::PoseOverride;
     ov.poseOverride.deviceId = 7;
-    ov.poseOverride.position[0] = 5.0f;
-    ov.poseOverride.rotation[3] = 1.0f;
+    ov.poseOverride.position.x = 5.0f;
+    ov.poseOverride.rotation.w = 1.0f;
     std::vector<link::Message> messages;
     messages.push_back(ov);
     observer_.onMessages(messages);

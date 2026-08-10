@@ -290,8 +290,8 @@ TEST_F(ServerPipeTest, FedOverrideBytesAreAppliedOnNextOnPose)
     // Feed a PoseOverride frame into the pipe's read queue.
     link::PoseOverride ov;
     ov.deviceId = 3;
-    ov.position[0] = 1.0f;
-    ov.rotation[3] = 1.0f;
+    ov.position.x = 1.0f;
+    ov.rotation.w = 1.0f;
     std::vector<std::uint8_t> bytes;
     const std::uint32_t len = static_cast<std::uint32_t>(sizeof(ov));
     bytes.push_back(static_cast<std::uint8_t>(len & 0xFF));
@@ -327,8 +327,8 @@ TEST_F(ServerPipeTest, PipeDropClearsOverrides)
     m.size = sizeof(link::PoseOverride);
     m.type = link::MessageType::PoseOverride;
     m.poseOverride.deviceId = 3;
-    m.poseOverride.position[0] = 1.0f;
-    m.poseOverride.rotation[3] = 1.0f;
+    m.poseOverride.position.x = 1.0f;
+    m.poseOverride.rotation.w = 1.0f;
     msgs.push_back(m);
     observer_.onMessages(msgs);
 

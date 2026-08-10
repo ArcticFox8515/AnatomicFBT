@@ -17,6 +17,17 @@
 // corrected world pose; the driver applies it by premultiplying
 // `worldFromDriver`, so vrserver's pose prediction stays exact.
 //
+// `VirtualTracker` is the upstream message for virtual trackers
+// (doc/virtual-trackers-plan.md step 5): one frame per bone the app emits,
+// carrying the bone name (so the driver needs no compile-time slot list — the
+// set of names arriving this frame is the roster), a tracking flag, and the
+// world pose computed from the retargeted avatar. Sent only while the app is
+// in Capture mode with calibration complete; the moment it stops arriving the
+// driver marks the device disconnected (staleness), so leaving Capture stops
+// them tracking without any extra "drop" frame. The bone name identifies the
+// device; a name the driver has not seen before is a new device, a repeat is
+// the same device (step 6 dedups).
+//
 // The wire format is POD structs with explicit-width fields, memcpy'd whole —
 // same style as `.tcrec` (Recording.cpp writeRaw/readRaw), except we copy the
 // struct in one shot rather than field by field. The driver and the app are
@@ -65,28 +76,54 @@ enum class TrackingState : std::uint8_t
 // free number. Unknown types are skipped by the framing layer, not rejected.
 // `DeviceMetadata` (1) was removed in step 3 — its fields folded into
 // `DevicePose` — so a frame with type 1 from an older driver is now silently
-// skipped by a newer app.
+// skipped by a newer app. `VirtualTracker` (4) was added in step 5 for the
+// app -> driver virtual-tracker stream.
 enum class MessageType : std::uint16_t
 {
     DevicePose = 2,
     PoseOverride = 3,
+    VirtualTracker = 4,
 };
 
 // Largest serial string carried on the wire. OpenVR serials ("LHR-XXXXXXXX")
 // are short; 32 bytes is ample and keeps the pose POD compact.
 inline constexpr std::uint32_t kMaxSerialBytes = 32;
 
+// Largest bone name carried on a `VirtualTracker` frame. Unity bone names
+// ("LeftUpperLeg", "RightLowerArm") are short; 32 bytes matches the serial
+// field width so one cap serves both.
+inline constexpr std::uint32_t kMaxBoneNameBytes = 32;
+
+// A 3-component vector on the wire (f32 x3, sizeof == 12).
+struct WireVec3
+{
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+};
+
+// A quaternion on the wire (f32 x4, sizeof == 16). Stored xyzw — the same
+// component order OpenVR's `HmdQuaternionf_t` uses and the order glm's
+// `quat(w,x,y,z)` constructor accepts positionally. Default = identity.
+struct WireQuat
+{
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    float w = 1.0f;
+};
+
 // Wire POD. Fields are explicit-width; natural-alignment padding is the same
 // on both ends (MSVC x64), so `sizeof(struct)` is the on-wire payload length.
 //   DevicePose: u32 deviceId, u8 tracking, u8 deviceKind, 2 pad,
-//               f32 pos[3], f32 rot[4] (xyzw), char serial[32].
+//               WireVec3 position, WireQuat rotation, char serial[32].
 struct DevicePose
 {
     std::uint32_t deviceId = 0;
     TrackingState tracking = TrackingState::Lost;
     DeviceKind deviceKind = DeviceKind::Other;
-    float position[3] = {0.0f, 0.0f, 0.0f};
-    float rotation[4] = {0.0f, 0.0f, 0.0f, 1.0f};  // xyzw, identity
+    WireVec3 position;
+    WireQuat rotation;
     char serial[kMaxSerialBytes] = {};
 };
 
@@ -97,29 +134,49 @@ struct DevicePose
 // pose prediction — which runs in the driver-local frame on the untouched local
 // pose and velocities — stays exact.
 //
-// Layout: u32 deviceId, 4 pad, f32 position[3], f32 rotation[4] (xyzw)
+// Layout: u32 deviceId, WireVec3 position, WireQuat rotation
 // -> sizeof == 32 on MSVC x86/x64, memcpy'd whole like DevicePose.
 struct PoseOverride
 {
     std::uint32_t deviceId = 0;
-    float position[3] = {0.0f, 0.0f, 0.0f};
-    float rotation[4] = {0.0f, 0.0f, 0.0f, 1.0f};  // xyzw, identity
+    WireVec3 position;
+    WireQuat rotation;
+};
+
+// Upstream (app -> driver) virtual-tracker frame for one bone
+// (doc/virtual-trackers-plan.md step 5). The app sends one per ticked eligible
+// bone each frame while in Capture mode with calibration complete; the set of
+// names arriving in a frame is the roster, so the driver has no compile-time
+// slot list. `tracking` is `Tracking` on every frame the app sends (the app
+// simply stops sending when it leaves Capture, and the driver's staleness
+// timeout disconnects the device); the field is kept for symmetry with
+// `DevicePose` and forward use.
+//
+// Layout: char name[32], u8 tracking, 3 pad, WireVec3 position, WireQuat rotation
+// -> sizeof == 64 on MSVC x86/x64, memcpy'd whole like the others.
+struct VirtualTracker
+{
+    char name[kMaxBoneNameBytes] = {};
+    TrackingState tracking = TrackingState::Tracking;
+    WireVec3 position;
+    WireQuat rotation;
 };
 
 // A frame on the wire and in memory: a u32 payload length, a u16 type, then the
 // payload union. The length is the payload length (not the whole frame) and is
 // filled by the sender. The framing layer reads the header, then exactly `size`
-// payload bytes; a `size` larger than the union is a protocol error. Two
-// payload shapes exist today (`DevicePose` downstream, `PoseOverride`
-// upstream); a future type adds a union member.
+// payload bytes; a `size` larger than the union is a protocol error. Three
+// payload shapes exist today (`DevicePose` downstream, `PoseOverride` and
+// `VirtualTracker` upstream); a future type adds a union member.
 struct Message
 {
     std::uint32_t size = 0;
     MessageType type = MessageType::DevicePose;
     union
     {
-        DevicePose pose{};
+        DevicePose devicePose{};
         PoseOverride poseOverride;
+        VirtualTracker virtualTracker;
     };
 };
 } // namespace link

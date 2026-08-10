@@ -31,12 +31,12 @@ link::Message poseMessage(std::uint32_t id)
     pose.deviceId = id;
     pose.tracking = link::TrackingState::Tracking;
     pose.deviceKind = link::DeviceKind::Tracker;
-    pose.position[0] = static_cast<float>(id);
-    pose.rotation[3] = 1.0f;
+    pose.position.x = static_cast<float>(id);
+    pose.rotation.w = 1.0f;
     link::Message m;
     m.size = sizeof(link::DevicePose);
     m.type = link::MessageType::DevicePose;
-    m.pose = pose;
+    m.devicePose = pose;
     return m;
 }
 
@@ -68,9 +68,9 @@ TEST(LinkPipeIntegration, RoundTripsADevicePoseInBothDirections)
         client.receive(clientMessages);
     }
     ASSERT_EQ(clientMessages.size(), 1u);
-    EXPECT_EQ(clientMessages[0].pose.deviceId, 7u);
-    EXPECT_EQ(clientMessages[0].pose.deviceKind, link::DeviceKind::Tracker);
-    EXPECT_FLOAT_EQ(clientMessages[0].pose.position[0], 7.0f);
+    EXPECT_EQ(clientMessages[0].devicePose.deviceId, 7u);
+    EXPECT_EQ(clientMessages[0].devicePose.deviceKind, link::DeviceKind::Tracker);
+    EXPECT_FLOAT_EQ(clientMessages[0].devicePose.position.x, 7.0f);
 
     client.send(poseMessage(13));
 
@@ -82,6 +82,6 @@ TEST(LinkPipeIntegration, RoundTripsADevicePoseInBothDirections)
         server.receive(serverMessages);
     }
     ASSERT_EQ(serverMessages.size(), 1u);
-    EXPECT_EQ(serverMessages[0].pose.deviceId, 13u);
+    EXPECT_EQ(serverMessages[0].devicePose.deviceId, 13u);
 }
 } // namespace

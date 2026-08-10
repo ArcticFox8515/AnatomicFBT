@@ -54,7 +54,7 @@ link::Message message(const link::DevicePose& pose)
     link::Message m;
     m.size = sizeof(link::DevicePose);
     m.type = link::MessageType::DevicePose;
-    m.pose = pose;
+    m.devicePose = pose;
     return m;
 }
 
@@ -126,8 +126,8 @@ TEST(LinkMessageChannel, SendsAndReceivesADevicePose)
     pose.deviceId = 11;
     pose.tracking = link::TrackingState::Tracking;
     pose.deviceKind = link::DeviceKind::Controller;
-    pose.position[0] = 0.5f;
-    pose.rotation[3] = 1.0f;
+    pose.position.x = 0.5f;
+    pose.rotation.w = 1.0f;
     channel.send(message(pose));
 
     pipe.feedRead(pipe.written);
@@ -137,10 +137,10 @@ TEST(LinkMessageChannel, SendsAndReceivesADevicePose)
     ASSERT_EQ(messages.size(), 1u);
     EXPECT_EQ(messages[0].type, link::MessageType::DevicePose);
     ASSERT_EQ(messages[0].size, sizeof(link::DevicePose));
-    EXPECT_EQ(messages[0].pose.deviceId, 11u);
-    EXPECT_EQ(messages[0].pose.tracking, link::TrackingState::Tracking);
-    EXPECT_EQ(messages[0].pose.deviceKind, link::DeviceKind::Controller);
-    EXPECT_FLOAT_EQ(messages[0].pose.position[0], 0.5f);
+    EXPECT_EQ(messages[0].devicePose.deviceId, 11u);
+    EXPECT_EQ(messages[0].devicePose.tracking, link::TrackingState::Tracking);
+    EXPECT_EQ(messages[0].devicePose.deviceKind, link::DeviceKind::Controller);
+    EXPECT_FLOAT_EQ(messages[0].devicePose.position.x, 0.5f);
 }
 
 // ---- reassembly across split reads ----------------------------------------
@@ -239,7 +239,7 @@ TEST(LinkMessageChannel, PendingReadCompletesOnNextReceive)
     EXPECT_EQ(channel.receive(messages), 1u);
     ASSERT_EQ(messages.size(), 1u);
     ASSERT_EQ(messages[0].size, sizeof(link::DevicePose));
-    EXPECT_EQ(messages[0].pose.deviceId, 7u);
+    EXPECT_EQ(messages[0].devicePose.deviceId, 7u);
 }
 
 // ---- partial / pending writes ----------------------------------------------
@@ -288,7 +288,7 @@ TEST(LinkMessageChannel, PendingWriteCompletesOnNextReceive)
     messages.clear();
     EXPECT_EQ(channel.receive(messages), 1u);
     ASSERT_EQ(messages.size(), 1u);
-    EXPECT_EQ(messages[0].pose.deviceId, 42u);
+    EXPECT_EQ(messages[0].devicePose.deviceId, 42u);
 }
 
 // ---- unknown type skipped between known ones ------------------------------
@@ -466,7 +466,7 @@ TEST(LinkMessageChannel, ReconnectsAfterADrop)
     messages.clear();
     channel.receive(messages);
     ASSERT_EQ(messages.size(), 1u);
-    EXPECT_EQ(messages[0].pose.deviceId, 2u);
+    EXPECT_EQ(messages[0].devicePose.deviceId, 2u);
 }
 
 TEST(LinkMessageChannel, ClearsBacklogOnReconnectSoNoSnapshotIsDelivered)
@@ -610,8 +610,8 @@ TEST(LinkMessageChannel, SendsAndReceivesAPoseOverride)
     m.size = sizeof(link::PoseOverride);
     m.type = link::MessageType::PoseOverride;
     m.poseOverride.deviceId = 7;
-    m.poseOverride.position[0] = 0.5f;
-    m.poseOverride.rotation[3] = 1.0f;
+    m.poseOverride.position.x = 0.5f;
+    m.poseOverride.rotation.w = 1.0f;
     channel.send(m);
 
     pipe.feedRead(pipe.written);
@@ -622,8 +622,8 @@ TEST(LinkMessageChannel, SendsAndReceivesAPoseOverride)
     EXPECT_EQ(messages[0].type, link::MessageType::PoseOverride);
     ASSERT_EQ(messages[0].size, sizeof(link::PoseOverride));
     EXPECT_EQ(messages[0].poseOverride.deviceId, 7u);
-    EXPECT_FLOAT_EQ(messages[0].poseOverride.position[0], 0.5f);
-    EXPECT_FLOAT_EQ(messages[0].poseOverride.rotation[3], 1.0f);
+    EXPECT_FLOAT_EQ(messages[0].poseOverride.position.x, 0.5f);
+    EXPECT_FLOAT_EQ(messages[0].poseOverride.rotation.w, 1.0f);
 }
 
 TEST(LinkMessageChannel, ReceivesMixedDevicePoseAndPoseOverrideInOneRead)
@@ -652,8 +652,72 @@ TEST(LinkMessageChannel, ReceivesMixedDevicePoseAndPoseOverrideInOneRead)
     std::vector<link::Message> messages;
     EXPECT_EQ(channel.receive(messages), 2u);
     EXPECT_EQ(messages[0].type, link::MessageType::DevicePose);
-    EXPECT_EQ(messages[0].pose.deviceId, 1u);
+    EXPECT_EQ(messages[0].devicePose.deviceId, 1u);
     EXPECT_EQ(messages[1].type, link::MessageType::PoseOverride);
     EXPECT_EQ(messages[1].poseOverride.deviceId, 2u);
+}
+
+// ---- VirtualTracker (upstream, step 5) ---------------------------------------
+
+TEST(LinkMessageChannel, SendsAndReceivesAVirtualTracker)
+{
+    link_test::FakePipe pipe;
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(pipe));
+    std::vector<link::Message> dummy;
+    channel.receive(dummy);
+
+    link::Message m;
+    m.size = sizeof(link::VirtualTracker);
+    m.type = link::MessageType::VirtualTracker;
+    m.virtualTracker = {};  // zero the union member (default-init picks `devicePose`)
+    const std::string name = "Chest";
+    std::memcpy(m.virtualTracker.name, name.c_str(), name.size());
+    m.virtualTracker.tracking = link::TrackingState::Tracking;
+    m.virtualTracker.position.x = 0.3f;
+    m.virtualTracker.rotation.w = 1.0f;
+    channel.send(m);
+
+    pipe.feedRead(pipe.written);
+
+    std::vector<link::Message> messages;
+    EXPECT_EQ(channel.receive(messages), 1u);
+    ASSERT_EQ(messages.size(), 1u);
+    EXPECT_EQ(messages[0].type, link::MessageType::VirtualTracker);
+    ASSERT_EQ(messages[0].size, sizeof(link::VirtualTracker));
+    EXPECT_EQ(std::string(messages[0].virtualTracker.name), "Chest");
+    EXPECT_EQ(messages[0].virtualTracker.tracking, link::TrackingState::Tracking);
+    EXPECT_FLOAT_EQ(messages[0].virtualTracker.position.x, 0.3f);
+    EXPECT_FLOAT_EQ(messages[0].virtualTracker.rotation.w, 1.0f);
+}
+
+TEST(LinkMessageChannel, ReceivesMixedPoseOverrideAndVirtualTrackerInOneRead)
+{
+    link_test::FakePipe pipe;
+    link::MessageChannel channel(testLogger(), link_test::borrowPipeFactory(pipe));
+    std::vector<link::Message> dummy;
+    channel.receive(dummy);
+
+    link::PoseOverride ov;
+    ov.deviceId = 2;
+    link::VirtualTracker vt;
+    std::memcpy(vt.name, "Spine", 5);
+
+    std::vector<std::uint8_t> bytes;
+    const auto ovBytes = frame(link::MessageType::PoseOverride,
+                               reinterpret_cast<const std::uint8_t*>(&ov),
+                               sizeof(ov));
+    const auto vtBytes = frame(link::MessageType::VirtualTracker,
+                               reinterpret_cast<const std::uint8_t*>(&vt),
+                               sizeof(vt));
+    bytes.insert(bytes.end(), ovBytes.begin(), ovBytes.end());
+    bytes.insert(bytes.end(), vtBytes.begin(), vtBytes.end());
+    pipe.feedRead(bytes);
+
+    std::vector<link::Message> messages;
+    EXPECT_EQ(channel.receive(messages), 2u);
+    EXPECT_EQ(messages[0].type, link::MessageType::PoseOverride);
+    EXPECT_EQ(messages[0].poseOverride.deviceId, 2u);
+    EXPECT_EQ(messages[1].type, link::MessageType::VirtualTracker);
+    EXPECT_EQ(std::string(messages[1].virtualTracker.name), "Spine");
 }
 } // namespace

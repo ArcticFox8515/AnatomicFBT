@@ -63,6 +63,13 @@ public:
     // direction lives here. No-op while disconnected.
     void sendOffsets(const std::vector<DeviceOffset>& offsets) override;
 
+    // Sends one `VirtualTracker` frame per ticked eligible bone to the driver
+    // (doc/virtual-trackers-plan.md step 5): the bone name (the driver's
+    // device identity — no compile-time slot list), the tracking flag, and the
+    // world pose computed from the retargeted avatar. One frame per bone, same
+    // pattern as `sendOffsets`. No-op while disconnected.
+    void sendVirtualTrackers(const std::vector<VirtualTrackerPose>& trackers) override;
+
 private:
     void applyPose(const link::DevicePose& pose);
 

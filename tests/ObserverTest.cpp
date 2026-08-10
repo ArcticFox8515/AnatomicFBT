@@ -318,13 +318,13 @@ TEST_F(ObserverTest, ForwardsAPoseAsTheBCompositionWithClassAndSerial)
     // The world-space pose is the "B" composition BothCandidateCompositions
     // logs above: with makePose() (x=1), B.pos = {9, 2.5, -3},
     // B.rot = {w=-1, x=0, y=0, z=0} (xyzw: 0, 0, 0, -1).
-    EXPECT_FLOAT_EQ(wire.position[0], 9.0f);
-    EXPECT_FLOAT_EQ(wire.position[1], 2.5f);
-    EXPECT_FLOAT_EQ(wire.position[2], -3.0f);
-    EXPECT_FLOAT_EQ(wire.rotation[0], 0.0f);  // x
-    EXPECT_FLOAT_EQ(wire.rotation[1], 0.0f);  // y
-    EXPECT_FLOAT_EQ(wire.rotation[2], 0.0f);  // z
-    EXPECT_FLOAT_EQ(wire.rotation[3], -1.0f); // w
+    EXPECT_FLOAT_EQ(wire.position.x, 9.0f);
+    EXPECT_FLOAT_EQ(wire.position.y, 2.5f);
+    EXPECT_FLOAT_EQ(wire.position.z, -3.0f);
+    EXPECT_FLOAT_EQ(wire.rotation.x, 0.0f);  // x
+    EXPECT_FLOAT_EQ(wire.rotation.y, 0.0f);  // y
+    EXPECT_FLOAT_EQ(wire.rotation.z, 0.0f);  // z
+    EXPECT_FLOAT_EQ(wire.rotation.w, -1.0f); // w
 }
 
 TEST_F(ObserverTest, ForwardsAnInvalidPoseAsTrackingLost)
@@ -369,10 +369,10 @@ link::Message overrideMessage(uint32_t deviceId, float posX, float posY, float p
     m.size = sizeof(link::PoseOverride);
     m.type = link::MessageType::PoseOverride;
     m.poseOverride.deviceId = deviceId;
-    m.poseOverride.position[0] = posX;
-    m.poseOverride.position[1] = posY;
-    m.poseOverride.position[2] = posZ;
-    m.poseOverride.rotation[3] = rotW;
+    m.poseOverride.position.x = posX;
+    m.poseOverride.position.y = posY;
+    m.poseOverride.position.z = posZ;
+    m.poseOverride.rotation.w = rotW;
     return m;
 }
 
@@ -421,9 +421,9 @@ TEST_F(ObserverTest, OverridePatchesWorldFromDriverAndKeepsRawUpstream)
 
     // The upstream frame still carries the raw world pose (9, 2.5, -3).
     const link::DevicePose wire = parseFirstPose(pipe_.written);
-    EXPECT_FLOAT_EQ(wire.position[0], 9.0f);
-    EXPECT_FLOAT_EQ(wire.position[1], 2.5f);
-    EXPECT_FLOAT_EQ(wire.position[2], -3.0f);
+    EXPECT_FLOAT_EQ(wire.position.x, 9.0f);
+    EXPECT_FLOAT_EQ(wire.position.y, 2.5f);
+    EXPECT_FLOAT_EQ(wire.position.z, -3.0f);
 
     // The out-pose's full world composition equals delta o rawWorld.
     const driver::RigidPose rawWorld = worldFromPose(pose);

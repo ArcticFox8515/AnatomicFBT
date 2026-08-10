@@ -60,10 +60,17 @@ struct FakePoseSource : IPoseSource
     int pollCount = 0;
     int sendCount = 0;
     std::vector<DeviceOffset> lastSent;
+    int vtSendCount = 0;
+    std::vector<VirtualTrackerPose> lastVtSent;
 
     bool isInitialized() const override { return initialized; }
     std::vector<TrackedDevice> pollPoses() override { ++pollCount; return poses; }
     void sendOffsets(const std::vector<DeviceOffset>& offsets) override { ++sendCount; lastSent = offsets; }
+    void sendVirtualTrackers(const std::vector<VirtualTrackerPose>& trackers) override
+    {
+        ++vtSendCount;
+        lastVtSent = trackers;
+    }
 };
 
 struct FakeGestureSource : IGestureSource
@@ -429,7 +436,7 @@ TEST(FrameTick, RetargetAndShipSendsOffsetsWhenConnected)
 
     const RetargetResult result =
         retargetAndShip(env.rig, env.avatar, env.retargetMap, env.correctionMap,
-                        cal.calibration, cal.devices, poses);
+                        cal.calibration, Mode::Capture, cal.devices, poses);
     const auto& corrected = result.corrected;
 
     EXPECT_EQ(poses.sendCount, 1);
@@ -448,7 +455,7 @@ TEST(FrameTick, RetargetAndShipSkipsSendWhenDisconnected)
 
     const RetargetResult result =
         retargetAndShip(env.rig, env.avatar, env.retargetMap, env.correctionMap,
-                        cal.calibration, cal.devices, poses);
+                        cal.calibration, Mode::Capture, cal.devices, poses);
     const auto& corrected = result.corrected;
 
     // Corrected poses are still produced (for rendering), but nothing ships.
@@ -467,7 +474,7 @@ TEST(FrameTick, RetargetAndShipEmptyWhenUncalibrated)
 
     const RetargetResult result =
         retargetAndShip(env.rig, env.avatar, env.retargetMap, env.correctionMap,
-                        empty, devices, poses);
+                        empty, Mode::Capture, devices, poses);
     const auto& corrected = result.corrected;
 
     EXPECT_TRUE(corrected.empty());
@@ -496,12 +503,108 @@ TEST(FrameTick, RetargetAndShipOutputsVirtualTrackerPoses)
 
     const RetargetResult result =
         retargetAndShip(env.rig, env.avatar, env.retargetMap, env.correctionMap,
-                        cal.calibration, cal.devices, poses,
+                        cal.calibration, Mode::Capture, cal.devices, poses,
                         {std::string(BoneNames::Neck)});
 
     ASSERT_FALSE(result.virtualTrackers.empty())
         << "BUG 2: retargetAndShip did not output virtual tracker poses — "
            "ticked bones produce no markers, nothing visible in any mode";
     EXPECT_GT(glm::length(result.virtualTrackers[0].position), 0.0f);
+}
+
+// --- step 5: virtual trackers ship only in Capture after calibration --------
+
+TEST(FrameTick, RetargetAndShipSendsVirtualTrackersInCaptureCalibrated)
+{
+    TickEnv env = makeEnv();
+    CalibratedRig cal = calibrateAtRest(env.rig);
+    env.rig.solve();
+    FakePoseSource poses;
+    poses.initialized = true;
+
+    const RetargetResult result =
+        retargetAndShip(env.rig, env.avatar, env.retargetMap, env.correctionMap,
+                        cal.calibration, Mode::Capture, cal.devices, poses,
+                        {std::string(BoneNames::Neck)});
+
+    EXPECT_EQ(poses.vtSendCount, 1);
+    ASSERT_EQ(poses.lastVtSent.size(), 1u);
+    EXPECT_EQ(poses.lastVtSent[0].name, std::string(BoneNames::Neck));
+}
+
+TEST(FrameTick, RetargetAndShipDoesNotSendVirtualTrackersInManualPose)
+{
+    TickEnv env = makeEnv();
+    CalibratedRig cal = calibrateAtRest(env.rig);
+    env.rig.solve();
+    FakePoseSource poses;
+    poses.initialized = true;
+
+    retargetAndShip(env.rig, env.avatar, env.retargetMap, env.correctionMap,
+                    cal.calibration, Mode::ManualPose, cal.devices, poses,
+                    {std::string(BoneNames::Neck)});
+
+    EXPECT_EQ(poses.vtSendCount, 0);
+}
+
+TEST(FrameTick, RetargetAndShipDoesNotSendVirtualTrackersInReplay)
+{
+    TickEnv env = makeEnv();
+    CalibratedRig cal = calibrateAtRest(env.rig);
+    env.rig.solve();
+    FakePoseSource poses;
+    poses.initialized = true;
+
+    retargetAndShip(env.rig, env.avatar, env.retargetMap, env.correctionMap,
+                    cal.calibration, Mode::Replay, cal.devices, poses,
+                    {std::string(BoneNames::Neck)});
+
+    EXPECT_EQ(poses.vtSendCount, 0);
+}
+
+TEST(FrameTick, RetargetAndShipDoesNotSendVirtualTrackersInCalibrationMode)
+{
+    TickEnv env = makeEnv();
+    CalibratedRig cal = calibrateAtRest(env.rig);
+    env.rig.solve();
+    FakePoseSource poses;
+    poses.initialized = true;
+
+    retargetAndShip(env.rig, env.avatar, env.retargetMap, env.correctionMap,
+                    cal.calibration, Mode::Calibration, cal.devices, poses,
+                    {std::string(BoneNames::Neck)});
+
+    EXPECT_EQ(poses.vtSendCount, 0);
+}
+
+TEST(FrameTick, RetargetAndShipDoesNotSendVirtualTrackersInCaptureUncalibrated)
+{
+    TickEnv env = makeEnv();
+    TrackerCalibration empty;
+    const std::vector<TrackedDevice> devices = tPoseDevices(env.rig);
+    env.rig.solve();
+    FakePoseSource poses;
+    poses.initialized = true;
+
+    retargetAndShip(env.rig, env.avatar, env.retargetMap, env.correctionMap,
+                    empty, Mode::Capture, devices, poses,
+                    {std::string(BoneNames::Neck)});
+
+    EXPECT_EQ(poses.vtSendCount, 0);
+}
+
+TEST(FrameTick, RetargetAndShipDoesNotSendVirtualTrackersWhenDisconnected)
+{
+    TickEnv env = makeEnv();
+    CalibratedRig cal = calibrateAtRest(env.rig);
+    env.rig.solve();
+    FakePoseSource poses;
+    poses.initialized = false;
+
+    retargetAndShip(env.rig, env.avatar, env.retargetMap, env.correctionMap,
+                    cal.calibration, Mode::Capture, cal.devices, poses,
+                    {std::string(BoneNames::Neck)});
+
+    EXPECT_EQ(poses.vtSendCount, 0);
 }
 } // namespace

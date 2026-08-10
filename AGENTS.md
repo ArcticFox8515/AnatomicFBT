@@ -260,10 +260,13 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   wires `link::Logger`'s sink for `OpenVrTracking`. The caller tears down the
   trigger reader when `tearDownGestureSource` is set (the model owns no VR
   session). `retargetAndShip` (the tail: retargetPose + correctDevicePoses +
-  sendOffsets when connected) returns the corrected poses for rendering. Main
-  calls these in both paths; the minimized path skips the GL/ImGui/gizmo work
-  and the Targets (ManualPose) solve, which is gizmo-driven and
-  render-interleaved.
+  sendOffsets when connected + sendVirtualTrackers when Capture+calibrated)
+  returns the corrected poses for rendering. Main calls these in both paths;
+  the minimized path skips the GL/ImGui/gizmo work and the Targets (ManualPose)
+  solve, which is gizmo-driven and render-interleaved. Virtual-tracker poses
+  ship upstream only in Capture after calibration (`mode == Capture &&
+  calibration.isCalibrated()`), so no VT traffic reaches the driver in any
+  other mode — both the visible and minimized paths gate identically.
 
 ## Link layer (`src/link/`)
 
@@ -286,20 +289,27 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   so the forwarder has no decisions.
 - `Protocol` — wire types only (no codec): `DevicePose`
   (id+tracking+kind+pos+rot+serial[32]) downstream and `PoseOverride`
-  (id+pos+rot) upstream, both naturally-aligned PODs, memcpy'd whole —
-  same style as `.tcrec`'s `writeRaw`/`readRaw` but one struct copy. `Message` is the
-  frame in memory: `u32 size` (payload length, sender-filled), `u16 type`, then a
-  payload union (`DevicePose` / `PoseOverride` today; a future type adds a union
-  member). The separate `DeviceMetadata` message was folded into `DevicePose` in
-  step 3; wire type 1 from an older driver is silently skipped (forward compat).
-  `PoseOverride` carries a rigid world-space delta: the driver premultiplies
+  (id+pos+rot) plus `VirtualTracker` (name[32]+tracking+pos+rot) upstream, all
+  naturally-aligned PODs, memcpy'd whole — same style as `.tcrec`'s
+  `writeRaw`/`readRaw` but one struct copy. `Message` is the frame in memory:
+  `u32 size` (payload length, sender-filled), `u16 type`, then a payload union
+  (`DevicePose` / `PoseOverride` / `VirtualTracker`). The separate
+  `DeviceMetadata` message was folded into `DevicePose` in step 3; wire type 1
+  from an older driver is silently skipped (forward compat). `PoseOverride`
+  carries a rigid world-space delta: the driver premultiplies
   `worldFromDriver` by it so vrserver's prediction (which runs in driver-local
-  space on the untouched local pose and velocities) stays exact. `DeviceKind`/
-  `TrackingState`/`MessageType` are this layer's own enums with pinned wire
-  values; the driver maps `ETrackedDeviceClass` -> `DeviceKind`, the app maps
-  `DeviceKind` -> `TrackedDeviceKind`. `tracking` collapses the two booleans the
-  app ANDs in `OpenVrTracking::pollPoses`; zero = drop the device this frame
-  (it then holds its last pose).
+  space on the untouched local pose and velocities) stays exact.
+  `VirtualTracker` (type 4, step 5) is one frame per ticked eligible bone the
+  app emits while in Capture after calibration: the bone name is the device
+  identity (no compile-time slot list — the set of names arriving this frame
+  is the roster), `tracking` is always `Tracking` on the wire (the app simply
+  stops sending when it leaves Capture and the driver's staleness disconnects
+  the device). `DeviceKind`/`TrackingState`/`MessageType` are this layer's
+  own enums with pinned wire values; the driver maps
+  `ETrackedDeviceClass` -> `DeviceKind`, the app maps `DeviceKind` ->
+  `TrackedDeviceKind`. `tracking` collapses the two booleans the app ANDs in
+  `OpenVrTracking::pollPoses`; zero = drop the device this frame (it then
+  holds its last pose).
 - `Logger` — `LogSink`, `compositeSink`, `Logger`, `log()`, `loggingTo()` (in
   `namespace link`). Driver code uses these `link::` symbols directly.
   `MessageChannel` takes `Logger&` and logs five lines: pipe
@@ -343,6 +353,9 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   client-API poll; non-`DevicePose` types are skipped). `isInitialized()` =
   currently connected. `sendOffsets` ships one `PoseOverride` per device each
   frame upstream through the same duplex channel the driver link uses.
+  `sendVirtualTrackers` (step 5) ships one `VirtualTracker` frame per ticked
+  eligible bone — name (the device identity), tracking, and the avatar-derived
+  world pose — only called by `retargetAndShip` in Capture after calibration.
 - `OpenVrInput` (`src/vr/`) — on-demand OpenVR background client for the
   both-triggers gesture only (no driver-side input source exists). `init()`
   uses `VRApplication_Background` (never launches SteamVR), throws `Error`.
@@ -360,7 +373,8 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   (FrameTick — shared by both paths), tear down `OpenVrInput` when the result's
   `tearDownGestureSource` is set, execute the returned plan, camera follow, left
   viewport (IK skeleton + gizmos in ManualPose), `retargetAndShip` (FrameTick —
-  retarget + correct + ship the deltas to the driver) + right viewport (avatar)
+  retarget + correct + ship the deltas + ship virtual trackers to the driver)
+  + right viewport (avatar)
   + corrected tracker markers, ImGui panel (with per-group correction
   checkboxes + rotation toggle when calibrated + read-only avatar scale
   readout), replay timeline. Minimized frames (no framebuffer) run the same
