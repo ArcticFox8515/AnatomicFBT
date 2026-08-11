@@ -158,18 +158,26 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   `clampSwingTwist`, `quatFromTo`. No skeleton knowledge.
 - `IkRigConfig` — which bones take targets and how (`anchor|chain|two_bone`) plus
   per-bone `JointLimits` (twist range, swing cone, optional `pole` — required on the
-  middle bone of a two-bone chain). `validate()` throws `Error`.
+  middle bone of a two-bone chain — plus `poleMode` selecting how the bend normal is
+  derived per frame: `static` (default for forward compat), `dynamic_foot`
+  /`dynamic_hand` — the bend normal is `flexSign * cross(targetRot * lateralAxis,
+  aim)`, perpendicular to the chain aim by construction so no pole‖aim degeneracy;
+  the static `pole` is retained only as the singularity guard and the flex-sign
+  reference). `validate()` throws `Error`.
 - `IkSolvers` — `IkTarget{jointIndex, position, rotation}` + `solveAnchor` (pins the
   root), `solveChain` (spine: end bone takes the target rotation exactly, rest arcs),
   `solveTwoBone` (limb socket→j1→j2→tip; `solveTwoBoneIk` returns rest-relative
-  rotations that compose onto the socket frame).
+  rotations that compose onto the socket frame; takes the pole in the socket's frame).
 - `IkRig` — owns skeleton + config + targets; no bone names in code (structure derived
   from config + topology). Construction never throws; `loadConfig` validates and throws
   `Error`, keeping the previous config on failure. `solve()` re-derives the pose from
   the targets every call; `solve(goals)` consumes an explicit goal vector. Stage order:
-  anchors → chains → two-bone limbs → joint-limit clamp → end-effector re-aim (policy:
-  tracked rotation wins over limits on end bones — a limit bends mid-bones but never
-  rotates the anchor root / chain end / two-bone tip away from its goal).
+  anchors → chains → two-bone limbs (dynamic bend normals computed per-frame here per
+  the binding's `poleMode`: the foot/hand target's medial-lateral axis crossed with the
+  chain aim, `flexSign`-corrected; `sideSign`/`flexSign` derived once at bind time from
+  the socket rest offset and the static pole) → joint-limit clamp → end-effector re-aim
+  (policy: tracked rotation wins over limits on end bones — a limit bends mid-bones
+  but never rotates the anchor root / chain end / two-bone tip away from its goal).
 - `Retarget` — `buildRetargetMap` matches dst bones to src bones by unordered joint-name
   pair (so head-rooted src drives hip-rooted dst); `retargetPose` copies world rotations
   and shifts `dst.rootPosition` so the anchor joint lands on its src position.

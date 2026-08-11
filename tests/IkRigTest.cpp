@@ -4,6 +4,8 @@
 #include "model/IkRigConfig.h"
 #include "model/Skeleton.h"
 
+#include <cmath>
+
 namespace
 {
 IkRig makeDefaultRig()
@@ -810,4 +812,236 @@ TEST(IkRigConfigValidation, SwingConeOutOfRangeThrows)
 TEST(IkRigConfigValidation, DefaultConfigPasses)
 {
     EXPECT_NO_THROW(IkRigConfig::makeDefault().validate());
+}
+
+// ---------------------------------------------------------------------------
+// WP2 — dynamic bend normals from the hinge axis (fixes issues 1, 2, 3b).
+//
+// The bend normal = flexSign * cross(foot/hand lateral axis, chain aim). The
+// cross product is perpendicular to the aim by construction, so there is no
+// pole‖aim degeneracy. The lateral axis is invariant under foot pitch (the
+// hinge axis itself), so a shin-mounted tracker's pitch cannot tilt it.
+// flexSign is derived once at bind time from the static pole.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+// Perpendicular offset of `knee` from the hip->ankle line (the bulge).
+glm::vec3 jointBulge(const glm::vec3& socket, const glm::vec3& mid, const glm::vec3& tip)
+{
+    const glm::vec3 line = tip - socket;
+    const float denom = glm::dot(line, line);
+    if (denom < 1e-8f)
+        return glm::vec3(0.0f);
+    const float t = glm::dot(mid - socket, line) / denom;
+    return mid - (socket + line * t);
+}
+
+void expectAllFinite(const std::vector<glm::vec3>& positions)
+{
+    for (size_t i = 0; i < positions.size(); ++i)
+    {
+        EXPECT_TRUE(std::isfinite(positions[i].x)) << "joint " << i;
+        EXPECT_TRUE(std::isfinite(positions[i].y)) << "joint " << i;
+        EXPECT_TRUE(std::isfinite(positions[i].z)) << "joint " << i;
+    }
+}
+} // namespace
+
+// Cross-legged (issue 2): hips forward, left foot tucked medial-forward at
+// floor, foot yawed ~60° outward. The static pole (socket -Z) is near-
+// parallel to the aim here; the dynamic bend normal (cross of the foot's
+// lateral axis and the aim) puts the knee outward (lateral, +X for the left
+// side), the correct cross-legged bulge — not upward/forward (the static
+// result, which the abandoned blend reproduced as a no-op).
+TEST(IkRigSolve, CrossLeggedKneeBulgesOutward)
+{
+    IkRig rig = makeDefaultRig();
+    if (IkTarget* foot = findTarget(rig, BoneNames::LeftFoot))
+    {
+        foot->position = glm::vec3(-0.05f, 0.0f, -0.15f);  // medial, floor, forward
+        foot->rotation = glm::angleAxis(glm::radians(-60.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    }
+    rig.solve();
+    const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
+    expectAllFinite(wt.positions);
+    const glm::vec3 hip = wt.positions[findJoint(rig, BoneNames::LeftHip)];
+    const glm::vec3 knee = wt.positions[findJoint(rig, BoneNames::LeftUpperLeg)];
+    const glm::vec3 ankle = wt.positions[findJoint(rig, BoneNames::LeftLowerLeg)];
+    const glm::vec3 bulge = jointBulge(hip, knee, ankle);
+    // Left side outward = +X. The cross product of the (yawed) foot lateral
+    // axis with the aim gives +X here; the abandoned static/blend gave ~+Y.
+    EXPECT_GT(bulge.x, 0.03f);
+}
+
+// Knee-sit (issue 1): kneeling, foot forward at floor, foot pitched ~180°
+// (dorsiflexed, toes back). The abandoned approach NaN'd here (footForward
+// ≈ +Z ≈ -staticPole → normalize(0)); the lateral axis is invariant under
+// foot pitch (rotation about X doesn't move X), so the pole stays forward
+// and finite, knee bulges forward (-Z).
+TEST(IkRigSolve, KneeSitKneeBulgesForward)
+{
+    IkRig rig = makeDefaultRig();
+    if (IkTarget* foot = findTarget(rig, BoneNames::LeftFoot))
+    {
+        foot->position = glm::vec3(0.10f, 0.0f, -0.30f);  // forward, floor
+        foot->rotation = glm::angleAxis(glm::radians(160.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    }
+    rig.solve();
+    const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
+    expectAllFinite(wt.positions);
+    const glm::vec3 hip = wt.positions[findJoint(rig, BoneNames::LeftHip)];
+    const glm::vec3 knee = wt.positions[findJoint(rig, BoneNames::LeftUpperLeg)];
+    const glm::vec3 ankle = wt.positions[findJoint(rig, BoneNames::LeftLowerLeg)];
+    const glm::vec3 bulge = jointBulge(hip, knee, ankle);
+    EXPECT_LT(bulge.z, -0.03f);  // forward = -Z
+}
+
+// Foot yawed 180° opposite the hips: the abandoned approach's footForward
+// opposed the static pole → normalize(0) → NaN. The cross product uses the
+// lateral axis, which flips sign (outward becomes inward) but the cross
+// product stays finite (flexSign was derived to match at rest, so it
+// compensates). Assert all positions finite (no NaN).
+TEST(IkRigSolve, DynamicKneePoleFiniteForFootYawOppositeHip)
+{
+    IkRig rig = makeDefaultRig();
+    if (IkTarget* foot = findTarget(rig, BoneNames::LeftFoot))
+    {
+        foot->position = glm::vec3(0.10f, 0.05f, -0.20f);
+        foot->rotation = glm::angleAxis(glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    }
+    rig.solve();
+    const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
+    expectAllFinite(wt.positions);
+}
+
+// Continuity (3b): a 1mm foot-target delta must move the knee by a bounded
+// amount (no 180° bend-plane flip). The cross product has no degeneracy to
+// fall back from, so the bend plane is continuous.
+TEST(IkRigSolve, DynamicKneeContinuousUnderSmallTargetDelta)
+{
+    const IkRigConfig config = IkRigConfig::makeDefault();
+    const glm::quat footRot = glm::angleAxis(glm::radians(-30.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    const auto solveKnee = [&](const glm::vec3& footPos) -> glm::vec3
+    {
+        IkRig rig(Skeleton::makeDefault());
+        rig.loadConfig(config);
+        if (IkTarget* foot = findTarget(rig, BoneNames::LeftFoot))
+        {
+            foot->position = footPos;
+            foot->rotation = footRot;
+        }
+        rig.solve();
+        const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
+        return wt.positions[findJoint(rig, BoneNames::LeftUpperLeg)];
+    };
+    const glm::vec3 footPos(0.05f, 0.05f, -0.25f);
+    const glm::vec3 kneeA = solveKnee(footPos);
+    const glm::vec3 kneeB = solveKnee(footPos + glm::vec3(0.001f, 0.0f, 0.0f));
+    expectVecNear(kneeA, kneeB, 0.02f);
+}
+
+// Elbow: raised hand. The dynamic bend normal from the hand's lateral axis
+// must produce a finite, stable elbow, no flip on a 1mm hand-target delta.
+TEST(IkRigSolve, DynamicElbowStableForRaisedHand)
+{
+    const IkRigConfig config = IkRigConfig::makeDefault();
+    const glm::quat handRot = glm::angleAxis(glm::radians(30.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    const auto solveElbow = [&](const glm::vec3& handPos) -> glm::vec3
+    {
+        IkRig rig(Skeleton::makeDefault());
+        rig.loadConfig(config);
+        if (IkTarget* hand = findTarget(rig, BoneNames::LeftHand))
+        {
+            hand->position = handPos;
+            hand->rotation = handRot;
+        }
+        rig.solve();
+        const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
+        return wt.positions[findJoint(rig, BoneNames::LeftUpperArm)];
+    };
+    const glm::vec3 handPos(0.5f, 1.7f, -0.2f);
+    const glm::vec3 elbow = solveElbow(handPos);
+    const glm::vec3 elbowNudge = solveElbow(handPos + glm::vec3(0.001f, 0.0f, 0.0f));
+    EXPECT_TRUE(std::isfinite(elbow.x) && std::isfinite(elbow.y) && std::isfinite(elbow.z));
+    expectVecNear(elbow, elbowNudge, 0.02f);
+}
+
+// Elbow tracks the hand rotation, not world axes (the abandoned approach's
+// bug). Two solves with the *same* goal (so the chain aim is identical) but
+// the hand target rotated 90° yaw. The abandoned world-axis heuristic kept
+// the pole world-fixed, so the bulge would be identical. The dynamic bend
+// normal uses `handRot * lateral`, so the bulge must differ.
+TEST(IkRigSolve, DynamicElbowRotatesWithHandRotation)
+{
+    const IkRigConfig config = IkRigConfig::makeDefault();
+    // Fixed goal (where the hand ends up), hand position derived per rotation
+    // so goal = handPos - handRot * handRestOffset stays constant.
+    const glm::vec3 goal(0.35f, 1.30f, -0.25f);
+    const glm::vec3 handRestOffset(0.12f, 0.0f, 0.0f);
+    const auto solveElbowBulge = [&](const glm::quat& handRot) -> glm::vec3
+    {
+        IkRig rig(Skeleton::makeDefault());
+        rig.loadConfig(config);
+        if (IkTarget* hand = findTarget(rig, BoneNames::LeftHand))
+        {
+            hand->rotation = handRot;
+            hand->position = goal + handRot * handRestOffset;
+        }
+        rig.solve();
+        const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
+        const glm::vec3 shoulder = wt.positions[findJoint(rig, BoneNames::LeftShoulder)];
+        const glm::vec3 elbow = wt.positions[findJoint(rig, BoneNames::LeftUpperArm)];
+        const glm::vec3 hand = wt.positions[findJoint(rig, BoneNames::LeftHand)];
+        return jointBulge(shoulder, elbow, hand);
+    };
+    const glm::quat restRot(1.0f, 0.0f, 0.0f, 0.0f);
+    const glm::quat yawedRot = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    const glm::vec3 bulgeRest = solveElbowBulge(restRot);
+    const glm::vec3 bulgeYawed = solveElbowBulge(yawedRot);
+    expectAllFinite({bulgeRest, bulgeYawed});
+    // The bulge directions must differ — a 90° hand rotation rotates the
+    // hinge axis, so the cross product (and thus the bulge) rotates with it.
+    const float d = glm::dot(glm::normalize(bulgeRest), glm::normalize(bulgeYawed));
+    EXPECT_LT(d, 0.9f);  // not the same direction
+}
+
+// --- Config serialization (carried from the abandoned attempt — the config
+// layer was correct; only the solver was wrong). ---
+
+TEST(IkRigConfigSerialization, PoleModeRoundTrip)
+{
+    IkRigConfig config;
+    JointLimits limit;
+    limit.bone = "x";
+    limit.pole = glm::vec3(0.0f, 0.0f, -1.0f);
+    limit.poleMode = PoleMode::DynamicFoot;
+    config.limits.push_back(limit);
+    const nlohmann::json j = config;
+    const IkRigConfig parsed = j.get<IkRigConfig>();
+    ASSERT_EQ(parsed.limits.size(), 1u);
+    EXPECT_EQ(parsed.limits[0].poleMode, PoleMode::DynamicFoot);
+}
+
+TEST(IkRigConfigSerialization, LegacyConfigDefaultsToStaticPoleMode)
+{
+    const nlohmann::json j = nlohmann::json::parse(R"(
+    {
+        "limits": [ { "bone": "x", "pole": [0.0, 0.0, -1.0] } ]
+    })");
+    const IkRigConfig config = j.get<IkRigConfig>();
+    ASSERT_EQ(config.limits.size(), 1u);
+    EXPECT_EQ(config.limits[0].poleMode, PoleMode::Static);
+}
+
+TEST(IkRigConfigSerialization, DefaultConfigKneesAndElbowsAreDynamic)
+{
+    const IkRigConfig config = IkRigConfig::makeDefault();
+    for (const JointLimits& limit : config.limits)
+    {
+        if (limit.bone == BoneNames::LeftLowerLeg || limit.bone == BoneNames::RightLowerLeg)
+            EXPECT_EQ(limit.poleMode, PoleMode::DynamicFoot) << limit.bone;
+        else if (limit.bone == BoneNames::LeftLowerArm || limit.bone == BoneNames::RightLowerArm)
+            EXPECT_EQ(limit.poleMode, PoleMode::DynamicHand) << limit.bone;
+    }
 }

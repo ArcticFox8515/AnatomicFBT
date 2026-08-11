@@ -65,6 +65,13 @@ private:
         std::vector<int> chain;  // Chain: root->target path (root excluded);
                                  // TwoBone: {socket, j1, j2, tip}
         glm::vec3 pole{0.0f, 0.0f, 0.0f};  // TwoBone only, in the socket's frame
+        PoleMode poleMode = PoleMode::Static;  // TwoBone only
+        int sideSign = 1;   // DynamicFoot/Hand: +1 left side (+X), -1 right (-X)
+        float flexSign = 1.0f;  // DynamicFoot/Hand: +1/-1, flips cross() to the
+                                // anatomically correct bulge side (knee vs elbow
+                                // flex in opposite directions); derived once at
+                                // bind time from the static pole so no per-frame
+                                // sign test can flip at the singularity.
     };
 
     std::unordered_map<std::string, int> jointIndexOf_;

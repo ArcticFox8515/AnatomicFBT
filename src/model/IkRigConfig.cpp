@@ -13,6 +13,13 @@ NLOHMANN_JSON_SERIALIZE_ENUM(SolverType,
                              {SolverType::TwoBone, "two_bone"},
                              })
 
+NLOHMANN_JSON_SERIALIZE_ENUM(PoleMode,
+                             {
+                             {PoleMode::Static, "static"},
+                             {PoleMode::DynamicFoot, "dynamic_foot"},
+                             {PoleMode::DynamicHand, "dynamic_hand"},
+                             })
+
 void to_json(nlohmann::json& j, const TargetConfig& target)
 {
 	j = nlohmann::json{{"bone", target.bone}, {"solver", target.solver}};
@@ -29,7 +36,8 @@ void to_json(nlohmann::json& j, const JointLimits& limit)
 	j = nlohmann::json{{"bone", limit.bone},
 	                   {"twistMin", limit.twistMinDeg},
 	                   {"twistMax", limit.twistMaxDeg},
-	                   {"swingCone", limit.swingConeDeg}};
+	                   {"swingCone", limit.swingConeDeg},
+	                   {"poleMode", limit.poleMode}};
 	if (limit.pole)
 		j["pole"] = *limit.pole;
 }
@@ -40,6 +48,7 @@ void from_json(const nlohmann::json& j, JointLimits& limit)
 	limit.twistMinDeg = j.value("twistMin", limit.twistMinDeg);
 	limit.twistMaxDeg = j.value("twistMax", limit.twistMaxDeg);
 	limit.swingConeDeg = j.value("swingCone", limit.swingConeDeg);
+	limit.poleMode = j.value("poleMode", PoleMode::Static);
 	if (const auto it = j.find("pole"); it != j.end() && !it->is_null())
 		limit.pole = it->get<glm::vec3>();
 }
@@ -90,7 +99,8 @@ IkRigConfig IkRigConfig::makeDefault()
 	};
 
 	auto add = [&config](std::string bone, float twistMin, float twistMax, float swingCone,
-	                     std::optional<glm::vec3> pole = std::nullopt)
+	                     std::optional<glm::vec3> pole = std::nullopt,
+	                     PoleMode poleMode = PoleMode::Static)
 	{
 		JointLimits limit;
 		limit.bone = std::move(bone);
@@ -98,6 +108,7 @@ IkRigConfig IkRigConfig::makeDefault()
 		limit.twistMaxDeg = twistMax;
 		limit.swingConeDeg = swingCone;
 		limit.pole = pole;
+		limit.poleMode = poleMode;
 		config.limits.push_back(std::move(limit));
 	};
 
@@ -106,11 +117,15 @@ IkRigConfig IkRigConfig::makeDefault()
 	const glm::vec3 kneePole{0.0f, 0.0f, -1.0f};
 	const glm::vec3 elbowPole = glm::normalize(glm::vec3{0.0f, -1.0f, 1.0f});
 
-	// Knees and elbows: hinges with near-zero twist, bending toward the pole.
-	add(BoneNames::LeftLowerLeg, -5.0f, 5.0f, 150.0f, kneePole);
-	add(BoneNames::RightLowerLeg, -5.0f, 5.0f, 150.0f, kneePole);
-	add(BoneNames::LeftLowerArm, -5.0f, 5.0f, 150.0f, elbowPole);
-	add(BoneNames::RightLowerArm, -5.0f, 5.0f, 150.0f, elbowPole);
+	// Knees and elbows: hinges with near-zero twist. Dynamic bend normals
+	// (WP2): the middle-bone pole is derived per-frame from the foot/hand
+	// lateral axis via a cross product, perpendicular to the chain aim by
+	// construction — no pole||aim degeneracy. The static pole is retained
+	// as the singularity guard and the flex-sign reference.
+	add(BoneNames::LeftLowerLeg, -5.0f, 5.0f, 150.0f, kneePole, PoleMode::DynamicFoot);
+	add(BoneNames::RightLowerLeg, -5.0f, 5.0f, 150.0f, kneePole, PoleMode::DynamicFoot);
+	add(BoneNames::LeftLowerArm, -5.0f, 5.0f, 150.0f, elbowPole, PoleMode::DynamicHand);
+	add(BoneNames::RightLowerArm, -5.0f, 5.0f, 150.0f, elbowPole, PoleMode::DynamicHand);
 	// Hips and shoulders: wide cones, moderate twist.
 	add(BoneNames::LeftUpperLeg, -30.0f, 45.0f, 120.0f);
 	add(BoneNames::RightUpperLeg, -45.0f, 30.0f, 120.0f);
