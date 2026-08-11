@@ -147,7 +147,11 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   0 when Head or both feet are missing). `scaleSkeleton` uniformly scales every
   restOffset + rootPosition; `matchRestHeight(src, dst)` scales dst so
   `restHeight(dst) == restHeight(src)` (returns 1.0, dst untouched, when either
-  height is unusable). JSON schema:
+  height is unusable). `computeBoneFrames` = per-bone `{base, rotation, length,
+  joint}` for rendering: `rotation = wt.rotations[i] * quatFromTo(+Y, restDir)`,
+  the `quatFromTo` factor constant per bone so the `-Y` antipode (every downward
+  bone) is a fixed constant instead of a per-frame singularity, and the frame
+  carries the joint's real axial twist. JSON schema:
   `{"bones":[{name, parent|null, offset:[x,y,z]}]}`; `from_json` throws `Error` on
   duplicate names, unknown parents, cycles, or not exactly one root.
 - `IkMath` — `solveTwoBoneIk` (closed-form, pole vector, stretches on overreach),
@@ -356,7 +360,10 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
 - `Scene` (`src/view/`) — owns ALL GL resources (RAII: created after GLEW init, destroyed
   before GLFW shutdown — keep the scope in `main.cpp` intact). Orbit camera shared by
   both viewports (`setCameraTarget`/`setCameraYaw` for VR modes), `beginFrame` +
-  `setViewport` per half, `renderSkeleton` (pyramid per bone), `renderMarkers`
+  `setViewport` per half, `renderSkeleton` (pyramid per bone via
+  `computeBoneFrames` — joint world rotation composed with a constant
+  per-bone `+Y -> restDir` factor, so roll tracks real twist and stays
+  continuous near downward bones), `renderMarkers`
   (octahedron per pose; `renderTargets(rig)` delegates to it via `targetPoses`),
   two embedded GLSL 330 programs, `viewMatrix`/`projectionMatrix`
   for ImGuizmo.

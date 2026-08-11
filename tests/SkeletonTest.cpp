@@ -2,6 +2,10 @@
 #include "model/Skeleton.h"
 #include "model/BodyProportions.h"
 #include "model/BoneNames.h"
+#include "model/IkMath.h"
+
+#include <glm/gtc/quaternion.hpp>
+#include <cmath>
 
 TEST(SkeletonSerialization, DefaultRoundTrip)
 {
@@ -349,4 +353,119 @@ TEST(MatchRestHeight, MissingHeadLeavesAvatarUntouched)
     for (size_t i = 0; i < avatar.joints.size(); ++i)
         EXPECT_EQ(avatar.joints[i].restOffset, avatarCopy.joints[i].restOffset);
     EXPECT_EQ(avatar.rootPosition, avatarCopy.rootPosition);
+}
+
+// ---- computeBoneFrames ------------------------------------------------------
+
+namespace
+{
+Skeleton downwardChainSkeleton()
+{
+    // root -> child, child offset straight down (-Y). The downward bone is the
+    // degenerate case for a minimal-rotation-from-+Y renderer.
+    const nlohmann::json j = nlohmann::json::parse(R"(
+    {
+        "bones": [
+            { "name": "root", "parent": null, "offset": [0.0, 0.0, 0.0] },
+            { "name": "child", "parent": "root", "offset": [0.0, -1.0, 0.0] }
+        ]
+    })");
+    return j.get<Skeleton>();
+}
+
+float angleBetween(const glm::quat& a, const glm::quat& b)
+{
+    return 2.0f * std::acos(std::clamp(std::abs(glm::dot(a, b)), 0.0f, 1.0f));
+}
+} // namespace
+
+TEST(ComputeBoneFrames, OmitsRootAndZeroLengthBones)
+{
+    const nlohmann::json j = nlohmann::json::parse(R"(
+    {
+        "bones": [
+            { "name": "root", "parent": null, "offset": [0.0, 0.0, 0.0] },
+            { "name": "zero", "parent": "root", "offset": [0.0, 0.0, 0.0] },
+            { "name": "child", "parent": "root", "offset": [0.0, -1.0, 0.0] }
+        ]
+    })");
+    const Skeleton skeleton = j.get<Skeleton>();
+    const std::vector<BoneFrame> frames = computeBoneFrames(skeleton);
+    ASSERT_EQ(frames.size(), 1u);
+    EXPECT_EQ(frames[0].joint, 2);
+    EXPECT_FLOAT_EQ(frames[0].length, 1.0f);
+    EXPECT_EQ(frames[0].base, glm::vec3(0.0f));
+}
+
+TEST(ComputeBoneFrames, RestPoseYAxisMapsOntoBoneDirection)
+{
+    const Skeleton skeleton = Skeleton::makeDefault();
+    const std::vector<BoneFrame> frames = computeBoneFrames(skeleton);
+    const WorldTransforms wt = computeWorldTransforms(skeleton);
+    for (const BoneFrame& f : frames)
+    {
+        const glm::vec3 mapped = f.rotation * glm::vec3(0.0f, 1.0f, 0.0f);
+        const glm::vec3 expected = glm::normalize(wt.positions[static_cast<size_t>(f.joint)] - f.base);
+        EXPECT_NEAR(glm::dot(mapped, expected), 1.0f, 1e-5f) << "bone joint " << f.joint;
+        EXPECT_NEAR(glm::length(mapped), 1.0f, 1e-5f);
+    }
+}
+
+TEST(ComputeBoneFrames, ReflectsJointTwist)
+{
+    // A pure twist of the joint's localRot about the bone axis must rotate the
+    // bone frame by the same angle about that axis — the renderer now shows
+    // real twist, which is the point of the fix.
+    Skeleton skeleton = downwardChainSkeleton();
+    const std::vector<BoneFrame> restFrames = computeBoneFrames(skeleton);
+    ASSERT_EQ(restFrames.size(), 1u);
+    const glm::quat restFrame = restFrames[0].rotation;
+
+    constexpr float kTwistDeg = 30.0f;
+    const glm::vec3 boneAxisLocal = glm::normalize(skeleton.joints[1].restOffset); // (0,-1,0)
+    skeleton.joints[1].localRot = glm::angleAxis(glm::radians(kTwistDeg), boneAxisLocal);
+    const std::vector<BoneFrame> twistedFrames = computeBoneFrames(skeleton);
+    ASSERT_EQ(twistedFrames.size(), 1u);
+
+    // Direction unchanged (pure twist): base and +Y mapping stay the same.
+    EXPECT_NEAR(glm::length(twistedFrames[0].rotation * glm::vec3(0.0f, 1.0f, 0.0f)
+                             - restFrame * glm::vec3(0.0f, 1.0f, 0.0f)), 0.0f, 1e-5f);
+
+    // Frame rotation differs from rest by the twist angle about the bone axis.
+    const glm::quat delta = glm::normalize(twistedFrames[0].rotation * glm::inverse(restFrame));
+    EXPECT_NEAR(glm::degrees(angleBetween(delta, glm::quat(1.0f, 0.0f, 0.0f, 0.0f))), kTwistDeg, 1e-2f);
+}
+
+TEST(ComputeBoneFrames, RollStaysContinuousNearVerticalDownBone)
+{
+    // Regression guard: sweeping the bone direction's azimuth at ~1 deg off the
+    // -Y antipode must produce bounded frame-rotation deltas. The previous
+    // renderer (minimal rotation from +Y) gave ~90 deg of roll per 45 deg of
+    // azimuth here; computeBoneFrames composes with a constant per-bone factor,
+    // so the frame follows the joint rotation continuously.
+    for (int az = 0; az < 360; az += 45)
+    {
+        Skeleton skeleton = downwardChainSkeleton();
+        const float azRad = glm::radians(static_cast<float>(az));
+        const float tiltRad = glm::radians(1.0f);
+        const glm::vec3 dir(std::sin(tiltRad) * std::cos(azRad),
+                            -std::cos(tiltRad),
+                            std::sin(tiltRad) * std::sin(azRad));
+        const glm::vec3 restDir = glm::normalize(skeleton.joints[1].restOffset);
+        skeleton.joints[1].localRot = quatFromTo(restDir, dir);
+
+        const int nextAz = (az + 45) % 360;
+        Skeleton next = downwardChainSkeleton();
+        const float nextAzRad = glm::radians(static_cast<float>(nextAz));
+        const glm::vec3 nextDir(std::sin(tiltRad) * std::cos(nextAzRad),
+                                -std::cos(tiltRad),
+                                std::sin(tiltRad) * std::sin(nextAzRad));
+        next.joints[1].localRot = quatFromTo(restDir, nextDir);
+
+        const glm::quat q0 = computeBoneFrames(skeleton)[0].rotation;
+        const glm::quat q1 = computeBoneFrames(next)[0].rotation;
+        // 45 deg of azimuth must not flip the frame by ~90 deg. Allow the
+        // legitimate ~0.7 deg direction change plus a small margin.
+        EXPECT_LT(glm::degrees(angleBetween(q0, q1)), 5.0f) << "az " << az << "->" << nextAz;
+    }
 }

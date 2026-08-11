@@ -4,6 +4,7 @@
 #include "BoneNames.h"
 #include "Error.h"
 #include "GlmJson.h"
+#include "IkMath.h"
 
 #include <algorithm>
 #include <limits>
@@ -266,7 +267,36 @@ WorldTransforms computeWorldTransforms(const Skeleton& skeleton)
 
 std::vector<glm::vec3> computeWorldPositions(const Skeleton& skeleton)
 {
-	return computeWorldTransforms(skeleton).positions;
+    return computeWorldTransforms(skeleton).positions;
+}
+
+std::vector<BoneFrame> computeBoneFrames(const Skeleton& skeleton)
+{
+    const WorldTransforms wt = computeWorldTransforms(skeleton);
+    std::vector<BoneFrame> frames;
+    frames.reserve(skeleton.joints.size());
+    for (size_t i = 0; i < skeleton.joints.size(); ++i)
+    {
+        const Joint& joint = skeleton.joints[i];
+        if (!joint.parentIndex)
+            continue;
+        const float length = glm::length(joint.restOffset);
+        if (length < 1e-6f)
+            continue;
+        const glm::vec3 restDir = joint.restOffset / length;
+        // +Y onto the rest direction is constant per bone (rest offsets never
+        // change), so the -Y antipode case becomes a fixed constant instead of
+        // a per-frame singularity. Composed with the joint's live world
+        // rotation, the frame carries the joint's real twist.
+        const glm::quat restToY = quatFromTo(glm::vec3(0.0f, 1.0f, 0.0f), restDir);
+        BoneFrame frame;
+        frame.base = wt.positions[static_cast<size_t>(*joint.parentIndex)];
+        frame.rotation = glm::normalize(wt.rotations[i] * restToY);
+        frame.length = length;
+        frame.joint = static_cast<int>(i);
+        frames.push_back(frame);
+    }
+    return frames;
 }
 
 std::vector<glm::vec3> computeRestPositions(const Skeleton& skeleton)

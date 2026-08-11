@@ -58,6 +58,27 @@ struct WorldTransforms
     std::vector<glm::quat> rotations;  // world orientation of the bone ending at each joint
 };
 
+// Render-ready transform of a single bone (the segment parent joint -> joint).
+// `rotation` maps the unit pyramid's +Y axis onto the bone's current world
+// direction AND carries the joint's real axial twist, so it is a truthful
+// visualization of the bone's world orientation (unlike a minimal rotation
+// from +Y, which is degenerate near the -Y antipode where every downward
+// bone lives). Zero-length bones are omitted. Indexes the original joint.
+struct BoneFrame
+{
+    glm::vec3 base{0.0f, 0.0f, 0.0f};      // parent joint world position
+    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};  // bone world frame, +Y along the bone
+    float length{0.0f};                    // |restOffset|, meters
+    int joint{-1};
+};
+
+// One BoneFrame per non-root, non-zero-length joint, in joint order. Computed
+// from the live world transforms: rotation = wt.rotations[i] composed with the
+// (constant per bone) rotation that takes +Y onto the rest offset direction.
+// Twist of the joint's localRot is reflected; positions are the live FK
+// positions, so posed skeletons render correctly.
+std::vector<BoneFrame> computeBoneFrames(const Skeleton& skeleton);
+
 // Hierarchical forward kinematics, one linear pass over the (parent-before-child
 // sorted) joints. The root sits at skeleton.rootPosition with orientation
 // localRot. Children: worldRot = parentWorldRot * localRot,

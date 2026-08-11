@@ -295,40 +295,26 @@ void Scene::drawGrid()
 
 void Scene::renderSkeleton(const Skeleton& skeleton)
 {
-    const std::vector<glm::vec3> positions = computeWorldPositions(skeleton);
+    // One pyramid per bone: base at the parent joint, apex at the joint. The
+    // orientation is the joint's live world frame composed with the (constant
+    // per bone) rotation that maps the unit pyramid's +Y onto the bone's rest
+    // direction — so the rendered roll follows the joint's real world rotation
+    // (twist included) instead of a minimal rotation from +Y, which is
+    // degenerate near the -Y antipode where every downward bone lives.
+    const std::vector<BoneFrame> frames = computeBoneFrames(skeleton);
 
-    // One pyramid per bone: base centered at the parent joint, apex at the joint.
     glUseProgram(m_meshProgram);
     glUniformMatrix4fv(glGetUniformLocation(m_meshProgram, "uViewProj"), 1, GL_FALSE, &m_viewProj[0][0]);
     glUniform3f(glGetUniformLocation(m_meshProgram, "uColor"), 0.6f, 0.6f, 0.6f);
     glUniform3fv(glGetUniformLocation(m_meshProgram, "uLightDir"), 1, &m_lightDir[0]);
     glUniform3fv(glGetUniformLocation(m_meshProgram, "uLightColor"), 1, &m_lightColor[0]);
     glBindVertexArray(m_boneVao);
-    for (size_t i = 0; i < skeleton.joints.size(); ++i)
+    for (const BoneFrame& f : frames)
     {
-        if (!skeleton.joints[i].parentIndex)
-            continue;
-
-        const glm::vec3 base = positions[*skeleton.joints[i].parentIndex];
-        const glm::vec3 tip = positions[i];
-        const glm::vec3 axis = tip - base;
-        const float boneLength = length(axis);
-        if (boneLength < 1e-6f)
-            continue;
-
-        // Rotates the unit pyramid's +Y axis onto the bone direction.
-        constexpr glm::vec3 yAxis(0.0f, 1.0f, 0.0f);
-        const glm::vec3 direction = axis / boneLength;
-        const float cosAngle = dot(yAxis, direction);
-        glm::quat rotation(1.0f, 0.0f, 0.0f, 0.0f);
-        if (cosAngle < -0.99999f) // opposite: 180 degrees around any perpendicular axis
-            rotation = angleAxis(glm::pi<float>(), glm::vec3(1.0f, 0.0f, 0.0f));
-        else if (cosAngle < 0.99999f)
-            rotation = angleAxis(std::acos(cosAngle), normalize(cross(yAxis, direction)));
-        const float radius = 0.08f * boneLength;
-        const glm::mat4 model = translate(glm::mat4(1.0f), base)
-            * mat4_cast(rotation)
-            * scale(glm::mat4(1.0f), glm::vec3(radius, boneLength, radius));
+        const float radius = 0.08f * f.length;
+        const glm::mat4 model = translate(glm::mat4(1.0f), f.base)
+            * mat4_cast(f.rotation)
+            * scale(glm::mat4(1.0f), glm::vec3(radius, f.length, radius));
         glUniformMatrix4fv(glGetUniformLocation(m_meshProgram, "uModel"), 1, GL_FALSE, &model[0][0]);
         glDrawArrays(GL_TRIANGLES, 0, m_boneVertexCount);
     }
