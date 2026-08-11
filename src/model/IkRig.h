@@ -33,8 +33,13 @@ public:
 
     // Solves joint localRot values (and rootPosition) from the current target
     // poses. Stages, in config-declared solver types: anchors -> chains ->
-    // two-bone limbs -> joint limits. Stateless: every call re-derives the
-    // full pose. Targets absent from the config produce no stage.
+    // two-bone limbs -> joint limits -> end-effector re-aim (see below).
+    // Stateless: every call re-derives the full pose. Targets absent from the
+    // config produce no stage. Policy: tracked rotation wins over limits on
+    // end-effector bones (anchor root, chain end, two-bone tip) — the final
+    // re-aim pass re-applies the goal rotation to them, so a limit bends the
+    // mid-bones without silently rotating the tracked feature; limits only
+    // constrain mid-bones.
     void solve();
 
     // Same as solve(), but consumes the given goals instead of the stored

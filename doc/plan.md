@@ -45,7 +45,7 @@ Note SlimeVR's spine is head-rooted (head is the root, spine goes downward) beca
 2. **Spine (head→hip):** hips target defines hip position/rotation; distribute spine bend between neck/chest/waist. SlimeVR does this with interpolation weights, not general IK — copy that approach. FABRIK on the spine chain is the alternative if interpolation looks bad.
 3. **Legs:** two-bone analytic IK per leg (hip→knee→ankle, pole/hint vector for knee direction). Foot target rotation drives foot bone.
 4. **Arms:** same two-bone analytic IK (shoulder→elbow→wrist), elbow hint.
-5. **Joint limits:** swing-twist decomposition per joint, clamp twist range and swing cone. Apply after solve. Knee/elbow: hinge (1-DOF swing, near-zero twist).
+5. **Joint limits:** swing-twist decomposition per joint, clamp twist range and swing cone. Apply after solve. Knee/elbow: hinge (1-DOF swing, near-zero twist). Then re-apply the tracked rotation to every end-effector bone (two-bone tip, chain end, anchor root) — limits bend the mid-bones but never rotate the tracked feature away from its goal (policy: tracked rotation wins on end bones).
 
 Two-bone analytic IK is a closed-form ~30-line function; write it before considering FABRIK for anything.
 

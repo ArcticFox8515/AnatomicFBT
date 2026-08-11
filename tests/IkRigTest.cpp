@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "model/BoneNames.h"
 #include "model/IkRig.h"
 #include "model/IkRigConfig.h"
 #include "model/Skeleton.h"
@@ -208,6 +209,107 @@ void expectVecNear(const glm::vec3& actual, const glm::vec3& expected, float tol
     EXPECT_NEAR(actual.x, expected.x, tol);
     EXPECT_NEAR(actual.y, expected.y, tol);
     EXPECT_NEAR(actual.z, expected.z, tol);
+}
+
+// Angular distance between two rotations, in radians, in [0, pi] (shortest path).
+float quatAngleRad(const glm::quat& a, const glm::quat& b)
+{
+    const glm::quat na = glm::normalize(a);
+    const glm::quat nb = glm::normalize(b);
+    const float d = glm::clamp(glm::abs(glm::dot(na, nb)), 0.0f, 1.0f);
+    return glm::acos(d);
+}
+
+// Solves the default rig (already configured) toward the LeftFoot goal, and
+// returns the world rotations of the mid bone (thigh) and tracked end bone.
+struct FootSolve
+{
+    glm::quat thighWorld;
+    glm::quat footWorld;
+};
+
+FootSolve solveLeftFoot(const IkRigConfig& config, const glm::vec3& position, const glm::quat& rotation)
+{
+    IkRig rig(Skeleton::makeDefault());
+    rig.loadConfig(config);
+    for (IkTarget& target : rig.targets)
+        if (rig.skeleton.joints[target.jointIndex].name == BoneNames::LeftFoot)
+        {
+            target.position = position;
+            target.rotation = rotation;
+        }
+    rig.solve();
+    const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
+    FootSolve result{glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f)};
+    for (size_t i = 0; i < rig.skeleton.joints.size(); ++i)
+    {
+        if (rig.skeleton.joints[i].name == BoneNames::LeftUpperLeg)
+            result.thighWorld = wt.rotations[i];
+        else if (rig.skeleton.joints[i].name == BoneNames::LeftFoot)
+            result.footWorld = wt.rotations[i];
+    }
+    return result;
+}
+
+// Same for the LeftHand target: mid bone = upper arm, end bone = hand.
+struct ArmSolve
+{
+    glm::quat upperArmWorld;
+    glm::quat handWorld;
+};
+
+ArmSolve solveLeftHand(const IkRigConfig& config, const glm::vec3& position, const glm::quat& rotation)
+{
+    IkRig rig(Skeleton::makeDefault());
+    rig.loadConfig(config);
+    for (IkTarget& target : rig.targets)
+        if (rig.skeleton.joints[target.jointIndex].name == BoneNames::LeftHand)
+        {
+            target.position = position;
+            target.rotation = rotation;
+        }
+    rig.solve();
+    const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
+    ArmSolve result{glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f)};
+    for (size_t i = 0; i < rig.skeleton.joints.size(); ++i)
+    {
+        if (rig.skeleton.joints[i].name == BoneNames::LeftUpperArm)
+            result.upperArmWorld = wt.rotations[i];
+        else if (rig.skeleton.joints[i].name == BoneNames::LeftHand)
+            result.handWorld = wt.rotations[i];
+    }
+    return result;
+}
+
+// Poses the Hips (chain end) target; returns the world rotations of the mid
+// spine bone and the chain end.
+struct SpineSolve
+{
+    glm::quat spineWorld;
+    glm::quat hipsWorld;
+};
+
+SpineSolve solveHips(const IkRigConfig& config, const glm::vec3& position, const glm::quat& rotation)
+{
+    IkRig rig(Skeleton::makeDefault());
+    rig.loadConfig(config);
+    for (IkTarget& target : rig.targets)
+        if (rig.skeleton.joints[target.jointIndex].name == BoneNames::Hips)
+        {
+            target.position = position;
+            target.rotation = rotation;
+        }
+    rig.solve();
+    const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
+    SpineSolve result{glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f)};
+    for (size_t i = 0; i < rig.skeleton.joints.size(); ++i)
+    {
+        if (rig.skeleton.joints[i].name == BoneNames::Spine)
+            result.spineWorld = wt.rotations[i];
+        else if (rig.skeleton.joints[i].name == BoneNames::Hips)
+            result.hipsWorld = wt.rotations[i];
+    }
+    return result;
 }
 } // namespace
 
@@ -489,6 +591,182 @@ TEST(IkRigSolve, HipSwayKeepsFeetPlanted)
     const int rightFootJoint = findJoint(rig, "RightFoot");
     expectVecNear(wt.positions[leftFootJoint], leftFoot->position, 0.02f);
     expectVecNear(wt.positions[rightFootJoint], rightFoot->position, 0.02f);
+}
+
+TEST(IkRigSolve, ClampedHipKeepsFootRotationExact)
+{
+    // WP1: a mid-bone limit must bend the pose but never silently rotate a
+    // tracked end bone (issue 6: feet rotate in/out). A near-stiff hip cone
+    // makes the thigh (a mid bone of the foot's two-bone chain) clamp hard;
+    // the foot's tracked world rotation must still win after solve.
+    const glm::quat goalRot = glm::angleAxis(glm::radians(30.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    const glm::vec3 footPos(0.1f, 0.5f, -0.3f);  // ankle pulled up + forward of the hip
+
+    IkRigConfig loose = IkRigConfig::makeDefault();
+    IkRigConfig tight = loose;
+    for (JointLimits& limit : tight.limits)
+        if (limit.bone == BoneNames::LeftUpperLeg)
+            limit.swingConeDeg = 1.0f;
+
+    const FootSolve looseSolve = solveLeftFoot(loose, footPos, goalRot);
+    const FootSolve tightSolve = solveLeftFoot(tight, footPos, goalRot);
+
+    // The mid-bone clamp visibly engaged...
+    EXPECT_GT(quatAngleRad(tightSolve.thighWorld, looseSolve.thighWorld), glm::radians(5.0f));
+    // ...yet the tracked end-bone rotation wins in both cases.
+    EXPECT_NEAR(quatAngleRad(looseSolve.footWorld, goalRot), 0.0f, 1e-2f);
+    EXPECT_NEAR(quatAngleRad(tightSolve.footWorld, goalRot), 0.0f, 1e-2f);
+}
+
+TEST(IkRigSolve, ClampedShoulderKeepsHandRotationExact)
+{
+    const glm::quat goalRot = glm::angleAxis(glm::radians(-40.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    const glm::vec3 handPos(0.55f, 1.85f, -0.2f);  // hand raised well off the shoulder line
+
+    IkRigConfig loose = IkRigConfig::makeDefault();
+    IkRigConfig tight = loose;
+    for (JointLimits& limit : tight.limits)
+        if (limit.bone == BoneNames::LeftUpperArm)
+            limit.swingConeDeg = 5.0f;
+
+    const ArmSolve looseSolve = solveLeftHand(loose, handPos, goalRot);
+    const ArmSolve tightSolve = solveLeftHand(tight, handPos, goalRot);
+
+    EXPECT_GT(quatAngleRad(tightSolve.upperArmWorld, looseSolve.upperArmWorld), glm::radians(5.0f));
+    EXPECT_NEAR(quatAngleRad(looseSolve.handWorld, goalRot), 0.0f, 1e-2f);
+    EXPECT_NEAR(quatAngleRad(tightSolve.handWorld, goalRot), 0.0f, 1e-2f);
+}
+
+TEST(IkRigSolve, ClampedSpineKeepsHipsRotationExact)
+{
+    // Chain end: a mid-spine limit must bend the chain but never rotate the
+    // chain end (Hips) away from its tracked rotation. The Hips goal is a
+    // crouch — the chain must arc, which swings the spine segments for real (a
+    // pure body roll would be carried as axial twist inside the twist
+    // envelope, which a swing cone cannot clamp).
+    const glm::quat goalRot = glm::angleAxis(glm::radians(45.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    const glm::vec3 goalPos(0.0f, 1.3f, 0.0f);
+
+    IkRigConfig loose = IkRigConfig::makeDefault();
+    IkRigConfig tight = loose;
+    tight.limits.push_back(JointLimits{BoneNames::Spine, -90.0f, 90.0f, 5.0f});
+
+    const SpineSolve looseSolve = solveHips(loose, goalPos, goalRot);
+    const SpineSolve tightSolve = solveHips(tight, goalPos, goalRot);
+
+    EXPECT_GT(quatAngleRad(tightSolve.spineWorld, looseSolve.spineWorld), glm::radians(3.0f));
+    EXPECT_NEAR(quatAngleRad(looseSolve.hipsWorld, goalRot), 0.0f, 1e-2f);
+    EXPECT_NEAR(quatAngleRad(tightSolve.hipsWorld, goalRot), 0.0f, 1e-2f);
+}
+
+TEST(IkRigSolve, TrackedAnchorRotationWinsOverRootLimit)
+{
+    // Anchor: even a fully stiff limit on the root (Head) must not defeat the
+    // pinned tracked rotation (policy: tracked rotation wins on end bones).
+    IkRigConfig config = IkRigConfig::makeDefault();
+    config.limits.push_back(JointLimits{BoneNames::Head, 0.0f, 0.0f, 0.0f});
+    IkRig rig(Skeleton::makeDefault());
+    rig.loadConfig(config);
+
+    IkTarget* head = findTarget(rig, "Head");
+    ASSERT_NE(head, nullptr);
+    head->rotation = glm::angleAxis(glm::radians(45.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+
+    rig.solve();
+
+    const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
+    const int headJoint = findJoint(rig, "Head");
+    ASSERT_GE(headJoint, 0);
+    EXPECT_NEAR(quatAngleRad(wt.rotations[headJoint], head->rotation), 0.0f, 1e-2f);
+}
+
+TEST(IkRigSolve, ClampedSpineKeepsFootRotationExactUnderHipsGoal)
+{
+    // WP1, ancestor case: the re-aim pass must also hold when the clamped mid
+    // bone sits ABOVE a *different* target's end bone. Hips (chain end) is an
+    // ancestor of both legs, so re-aiming Hips rotates the whole leg rigidly.
+    // A single FK snapshot taken before the pass means the feet, re-aimed
+    // earlier in config order, were computed against a parent frame that the
+    // Hips write then invalidates — the feet end up rotated away from their
+    // tracked rotation, which is exactly issue 6.
+    // Same Hips goal as ClampedSpineKeepsHipsRotationExact — a pose where the
+    // spine segments swing for real, so a 5 deg cone on Spine clamps.
+    const glm::quat hipsRot = glm::angleAxis(glm::radians(45.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    const glm::vec3 hipsPos(0.0f, 1.3f, 0.0f);
+    const glm::quat footRot = glm::angleAxis(glm::radians(20.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+
+    IkRigConfig config = IkRigConfig::makeDefault();
+    config.limits.push_back(JointLimits{BoneNames::Spine, -90.0f, 90.0f, 5.0f});
+
+    IkRig rig(Skeleton::makeDefault());
+    rig.loadConfig(config);
+    IkTarget* hips = findTarget(rig, "Hips");
+    IkTarget* leftFoot = findTarget(rig, "LeftFoot");
+    ASSERT_NE(hips, nullptr);
+    ASSERT_NE(leftFoot, nullptr);
+    hips->position = hipsPos;
+    hips->rotation = hipsRot;
+    leftFoot->rotation = footRot;  // feet stay at their rest positions
+    const glm::vec3 footPos = leftFoot->position;
+
+    rig.solve();
+
+    const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
+    const int spineJoint = findJoint(rig, "Spine");
+    const int hipsJoint = findJoint(rig, "Hips");
+    const int footJoint = findJoint(rig, "LeftFoot");
+    ASSERT_GE(spineJoint, 0);
+    ASSERT_GE(hipsJoint, 0);
+    ASSERT_GE(footJoint, 0);
+
+    // Reference solve without the spine limit: proves the clamp engages here,
+    // so the assertions below are about the clamp path and not a no-op config.
+    IkRig unclamped(Skeleton::makeDefault());
+    unclamped.loadConfig(IkRigConfig::makeDefault());
+    findTarget(unclamped, "Hips")->position = hipsPos;
+    findTarget(unclamped, "Hips")->rotation = hipsRot;
+    findTarget(unclamped, "LeftFoot")->position = footPos;
+    findTarget(unclamped, "LeftFoot")->rotation = footRot;
+    unclamped.solve();
+    const WorldTransforms unclampedWt = computeWorldTransforms(unclamped.skeleton);
+    EXPECT_GT(quatAngleRad(wt.rotations[spineJoint], unclampedWt.rotations[spineJoint]),
+              glm::radians(3.0f));
+
+    EXPECT_NEAR(quatAngleRad(wt.rotations[hipsJoint], hipsRot), 0.0f, 1e-2f);
+    EXPECT_NEAR(quatAngleRad(wt.rotations[footJoint], footRot), 0.0f, 1e-2f);
+}
+
+TEST(IkRigSolve, StiffRootLimitKeepsLimbRotationsExact)
+{
+    // WP1, root case: the anchor root (Head) is an ancestor of every joint, so
+    // restoring its tracked rotation after the clamp moves every limb's parent
+    // frame. Limb end bones must still land on their tracked rotation.
+    const glm::quat headRot = glm::angleAxis(glm::radians(45.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    const glm::quat footRot = glm::angleAxis(glm::radians(15.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    const glm::quat handRot = glm::angleAxis(glm::radians(-25.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+
+    IkRigConfig config = IkRigConfig::makeDefault();
+    config.limits.push_back(JointLimits{BoneNames::Head, 0.0f, 0.0f, 0.0f});  // fully stiff root
+
+    IkRig rig(Skeleton::makeDefault());
+    rig.loadConfig(config);
+    findTarget(rig, "Head")->rotation = headRot;
+    findTarget(rig, "LeftFoot")->rotation = footRot;
+    findTarget(rig, "LeftHand")->rotation = handRot;
+
+    rig.solve();
+
+    const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
+    const int headJoint = findJoint(rig, "Head");
+    const int footJoint = findJoint(rig, "LeftFoot");
+    const int handJoint = findJoint(rig, "LeftHand");
+    ASSERT_GE(headJoint, 0);
+    ASSERT_GE(footJoint, 0);
+    ASSERT_GE(handJoint, 0);
+
+    EXPECT_NEAR(quatAngleRad(wt.rotations[headJoint], headRot), 0.0f, 1e-2f);
+    EXPECT_NEAR(quatAngleRad(wt.rotations[footJoint], footRot), 0.0f, 1e-2f);
+    EXPECT_NEAR(quatAngleRad(wt.rotations[handJoint], handRot), 0.0f, 1e-2f);
 }
 
 TEST(IkRigConfigValidation, DuplicateTargetsThrow)

@@ -4,6 +4,7 @@
 #include "IkMath.h"
 
 #include <algorithm>
+#include <numeric>
 
 IkRig::IkRig(Skeleton s)
 	: skeleton(std::move(s))
@@ -142,6 +143,35 @@ void IkRig::solve(const std::vector<IkTarget>& goals)
 			continue;
 		joint.localRot = clampSwingTwist(joint.localRot, joint.restOffset / len,
 		                                 limit.twistMinDeg, limit.twistMaxDeg, limit.swingConeDeg);
+	}
+
+	// 5. End-effector re-aim: after the clamp, re-aim each tracked end-effector
+	// (anchor root, chain end, two-bone tip) at the goal rotation so a mid-bone
+	// limit bends the pose but never silently rotates the tracked feature
+	// (foot/hand/Hips) away from its target. Policy: tracked rotation wins over
+	// limits on end bones; limits constrain the mid-bones only.
+	//
+	// The skeleton is sorted parent-before-child, so iterating goals by
+	// ascending jointIndex is a topological order: an end-effector that is an
+	// ancestor of another (the anchor root is an ancestor of everything; the
+	// Hips chain end is an ancestor of both leg tips) is re-aimed first. The
+	// parent world rotation is recomputed after each write, so no end bone
+	// reads a frame an earlier write has just invalidated.
+	std::vector<size_t> order(goals.size());
+	std::iota(order.begin(), order.end(), 0);
+	std::sort(order.begin(), order.end(),
+	          [&](size_t a, size_t b) { return goals[a].jointIndex < goals[b].jointIndex; });
+	for (size_t idx : order)
+	{
+		Joint& joint = skeleton.joints[goals[idx].jointIndex];
+		if (bindings_[idx].solver == SolverType::Anchor)
+		{
+			joint.localRot = goals[idx].rotation;  // root has no parent frame
+			continue;
+		}
+		const WorldTransforms wt = computeWorldTransforms(skeleton);
+		joint.localRot = glm::normalize(
+			glm::inverse(wt.rotations[*joint.parentIndex]) * goals[idx].rotation);
 	}
 }
 

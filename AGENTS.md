@@ -7,7 +7,8 @@ skeleton from JSON, renders it with OpenGL, drives it with IK from tracked devic
 retargets the pose onto a Unity avatar skeleton. Long-term goal: correct tracking at
 SteamVR driver level and emit virtual trackers. Design docs: `doc/plan.md` (milestones),
 `doc/driver-plan.md` (SteamVR driver, milestone 4), `doc/spacecalibrator-notes.md`
-(reference driver findings).
+(reference driver findings), `doc/ik-improvements-plan.md` (IK quality work
+packages, long-living).
 
 ## Build & test
 
@@ -162,7 +163,9 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   from config + topology). Construction never throws; `loadConfig` validates and throws
   `Error`, keeping the previous config on failure. `solve()` re-derives the pose from
   the targets every call; `solve(goals)` consumes an explicit goal vector. Stage order:
-  anchors → chains → two-bone limbs → joint-limit clamp.
+  anchors → chains → two-bone limbs → joint-limit clamp → end-effector re-aim (policy:
+  tracked rotation wins over limits on end bones — a limit bends mid-bones but never
+  rotates the anchor root / chain end / two-bone tip away from its goal).
 - `Retarget` — `buildRetargetMap` matches dst bones to src bones by unordered joint-name
   pair (so head-rooted src drives hip-rooted dst); `retargetPose` copies world rotations
   and shifts `dst.rootPosition` so the anchor joint lands on its src position.
