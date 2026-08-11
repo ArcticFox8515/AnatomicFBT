@@ -2,6 +2,7 @@
 
 #include "IkMath.h"
 
+#include <algorithm>
 #include <cmath>
 #include <glm/gtc/constants.hpp>
 
@@ -172,4 +173,44 @@ void solveTwoBone(Skeleton& skeleton, const WorldTransforms& wt, int socket,
     skeleton.joints[j1].localRot = glm::normalize(glm::inverse(socketRot) * world1);
     skeleton.joints[j2].localRot = glm::normalize(glm::inverse(world1) * world2);
     skeleton.joints[tip].localRot = glm::normalize(glm::inverse(world2) * target.rotation);
+}
+
+void solveClavicle(Skeleton& skeleton, const WorldTransforms& wt,
+                   const std::vector<int>& chain, const IkTarget& target,
+                   float elevationWeight, float reachWeight, float reachThreshold,
+                   float maxAngleDeg)
+{
+    const int socket = chain[0];
+    const std::optional<int>& parentIndex = skeleton.joints[socket].parentIndex;
+    if (!parentIndex)
+        return;  // the socket is the skeleton root: there is no clavicle bone
+
+    const glm::vec3 armRest = skeleton.joints[chain[1]].restOffset;
+    const float len1 = glm::length(armRest);
+    const float len2 = glm::length(skeleton.joints[chain[2]].restOffset);
+    if (len1 < 1e-6f || len2 < 1e-6f)
+        return;
+
+    // Same implied goal as solveTwoBone: the target adjusted by the tip bone's
+    // rest offset, i.e. where the wrist/ankle must land.
+    const glm::vec3 goal = target.position - target.rotation * skeleton.joints[chain[3]].restOffset;
+    const glm::vec3 toGoal = goal - wt.positions[socket];
+    const float dist = glm::length(toGoal);
+    if (dist < 1e-4f)
+        return;
+
+    // Reach gate: protraction/retraction only engages once the goal is past
+    // reachThreshold of the limb's reach, ramping to full at (and beyond) it.
+    const float span = std::max(1.0f - reachThreshold, 1e-3f);
+    const float gate = std::clamp((dist / (len1 + len2) - reachThreshold) / span, 0.0f, 1.0f);
+
+    // Both directions in the clavicle parent's frame. The socket joint is still
+    // at rest here, so the socket's frame equals the parent's frame and the
+    // limb's rest offset is a direction in it.
+    const glm::quat parentRot = wt.rotations[static_cast<size_t>(*parentIndex)];
+    const glm::vec3 aimLocal = glm::inverse(parentRot) * (toGoal / dist);
+    const glm::quat swing = clavicleSwing(armRest / len1, aimLocal, elevationWeight,
+                                          reachWeight * gate, maxAngleDeg);
+    skeleton.joints[socket].localRot =
+        glm::normalize(swing * skeleton.joints[socket].localRot);
 }

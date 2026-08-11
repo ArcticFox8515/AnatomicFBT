@@ -38,6 +38,18 @@ TEST(IkRigConfigSerialization, DefaultRoundTrip)
         ASSERT_EQ(parsed.limits[i].pole.has_value(), original.limits[i].pole.has_value());
         if (original.limits[i].pole)
             EXPECT_EQ(*parsed.limits[i].pole, *original.limits[i].pole);
+        ASSERT_EQ(parsed.limits[i].clavicle.has_value(), original.limits[i].clavicle.has_value());
+        if (original.limits[i].clavicle)
+        {
+            EXPECT_FLOAT_EQ(parsed.limits[i].clavicle->elevationWeight,
+                            original.limits[i].clavicle->elevationWeight);
+            EXPECT_FLOAT_EQ(parsed.limits[i].clavicle->reachWeight,
+                            original.limits[i].clavicle->reachWeight);
+            EXPECT_FLOAT_EQ(parsed.limits[i].clavicle->reachThreshold,
+                            original.limits[i].clavicle->reachThreshold);
+            EXPECT_FLOAT_EQ(parsed.limits[i].clavicle->maxAngleDeg,
+                            original.limits[i].clavicle->maxAngleDeg);
+        }
     }
 }
 
@@ -1044,4 +1056,303 @@ TEST(IkRigConfigSerialization, DefaultConfigKneesAndElbowsAreDynamic)
         else if (limit.bone == BoneNames::LeftLowerArm || limit.bone == BoneNames::RightLowerArm)
             EXPECT_EQ(limit.poleMode, PoleMode::DynamicHand) << limit.bone;
     }
+}
+
+// ---------------------------------------------------------------------------
+// WP3 — clavicle stage (fixes issue 4: shoulders never move).
+//
+// The bone ending at a two-bone socket (Chest->Shoulder) rotates a fraction of
+// the socket->goal aim rotation before the limb is solved: upward elevation
+// always, protraction/retraction only past a reach threshold. Config lives on
+// the socket bone's limits entry, so legacy configs keep the rigid shoulder.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+// Config with the clavicle stage stripped from every limits entry (a config
+// written before WP3).
+IkRigConfig withoutClavicle(IkRigConfig config)
+{
+    for (JointLimits& limit : config.limits)
+        limit.clavicle = std::nullopt;
+    return config;
+}
+
+// Config with a modified clavicle block on both shoulders.
+IkRigConfig withClavicle(IkRigConfig config, const ClavicleConfig& clavicle)
+{
+    for (JointLimits& limit : config.limits)
+        if (limit.bone == BoneNames::LeftShoulder || limit.bone == BoneNames::RightShoulder)
+            limit.clavicle = clavicle;
+    return config;
+}
+
+struct ShoulderSolve
+{
+    glm::vec3 shoulderPos{0.0f};   // socket joint world position
+    glm::quat clavicleLocal{1.0f, 0.0f, 0.0f, 0.0f};  // socket joint localRot
+    glm::vec3 wristPos{0.0f};      // where the two-bone chain put the wrist
+};
+
+// Solves the given config with one hand goal and reports the clavicle result.
+// `bone` selects the side (LeftHand/RightHand).
+ShoulderSolve solveShoulder(const IkRigConfig& config, const std::string& bone,
+                            const glm::vec3& position,
+                            const glm::quat& rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f))
+{
+    IkRig rig(Skeleton::makeDefault());
+    rig.loadConfig(config);
+    IkTarget* hand = findTarget(rig, bone);
+    if (hand)
+    {
+        hand->position = position;
+        hand->rotation = rotation;
+    }
+    rig.solve();
+    const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
+    const bool left = bone == BoneNames::LeftHand;
+    const int shoulder = findJoint(rig, left ? BoneNames::LeftShoulder : BoneNames::RightShoulder);
+    const int wrist = findJoint(rig, left ? BoneNames::LeftLowerArm : BoneNames::RightLowerArm);
+    ShoulderSolve result;
+    result.shoulderPos = wt.positions[shoulder];
+    result.clavicleLocal = rig.skeleton.joints[shoulder].localRot;
+    result.wristPos = wt.positions[wrist];
+    return result;
+}
+
+// Implied wrist goal of a hand target (what the two-bone stage aims the wrist at).
+glm::vec3 handGoal(const glm::vec3& position, const glm::quat& rotation, float handLength)
+{
+    return position - rotation * glm::vec3(handLength, 0.0f, 0.0f);
+}
+
+float clavicleAngleDeg(const glm::quat& localRot)
+{
+    return glm::degrees(glm::angle(glm::normalize(localRot)));
+}
+
+// Rest position of the left shoulder joint for the default proportions (the
+// rest pose puts the ankles 0.15 m below the origin, so the shoulder line sits
+// at 1.35, not at shoulderHeight).
+const glm::vec3 kLeftShoulderRest(0.20f, 1.35f, 0.0f);
+} // namespace
+
+TEST(IkRigClavicle, RestTargetsKeepShoulderAtRest)
+{
+    IkRig rig = makeDefaultRig();
+    rig.solve();  // every target at its rest pose
+    const int shoulder = findJoint(rig, BoneNames::LeftShoulder);
+    ASSERT_GE(shoulder, 0);
+    const WorldTransforms wt = computeWorldTransforms(rig.skeleton);
+    expectVecNear(wt.positions[shoulder], kLeftShoulderRest, 1e-4f);
+    EXPECT_NEAR(clavicleAngleDeg(rig.skeleton.joints[shoulder].localRot), 0.0f, 1e-2f);
+}
+
+TEST(IkRigClavicle, RaisedHandElevatesShoulder)
+{
+    const ShoulderSolve solved = solveShoulder(IkRigConfig::makeDefault(), BoneNames::LeftHand,
+                                               glm::vec3(0.30f, 1.85f, 0.0f));
+    EXPECT_GT(solved.shoulderPos.y, kLeftShoulderRest.y + 0.03f);
+    EXPECT_GT(clavicleAngleDeg(solved.clavicleLocal), 10.0f);
+}
+
+TEST(IkRigClavicle, RaisedHandElevatesTheMirroredShoulder)
+{
+    // The stage derives its axes from the socket's rest offset, so the right
+    // side must elevate the same way with no per-side configuration.
+    const ShoulderSolve left = solveShoulder(IkRigConfig::makeDefault(), BoneNames::LeftHand,
+                                             glm::vec3(0.30f, 1.85f, 0.0f));
+    const ShoulderSolve right = solveShoulder(IkRigConfig::makeDefault(), BoneNames::RightHand,
+                                              glm::vec3(-0.30f, 1.85f, 0.0f));
+    EXPECT_GT(left.shoulderPos.y, kLeftShoulderRest.y + 0.03f);
+    expectVecNear(right.shoulderPos,
+                  glm::vec3(-left.shoulderPos.x, left.shoulderPos.y, left.shoulderPos.z), 1e-4f);
+}
+
+TEST(IkRigClavicle, HangingArmDoesNotDropShoulder)
+{
+    // Regression guard: the T-pose rest arm is already a neutral clavicle, so
+    // following elevation symmetrically would slump both shoulders in the most
+    // common pose of all (arms at the sides).
+    const glm::quat handDown = glm::angleAxis(glm::radians(-90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    const ShoulderSolve solved = solveShoulder(IkRigConfig::makeDefault(), BoneNames::LeftHand,
+                                               glm::vec3(0.20f, 0.75f, 0.0f), handDown);
+    expectVecNear(solved.shoulderPos, kLeftShoulderRest, 1e-3f);
+    EXPECT_NEAR(clavicleAngleDeg(solved.clavicleLocal), 0.0f, 1e-2f);
+}
+
+TEST(IkRigClavicle, LongForwardReachProtractsShoulder)
+{
+    // Wrist goal 0.5 m straight forward of the shoulder = 93% of arm reach, so
+    // the reach gate (threshold 0.8) is open.
+    const glm::quat handForward = glm::angleAxis(glm::radians(-90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    const glm::vec3 goal(0.20f, 1.35f, -0.50f);
+    const ShoulderSolve solved = solveShoulder(IkRigConfig::makeDefault(), BoneNames::LeftHand,
+                                               goal + handForward * glm::vec3(0.12f, 0.0f, 0.0f),
+                                               handForward);
+    EXPECT_LT(solved.shoulderPos.z, -0.02f);          // clavicle swung forward
+    EXPECT_NEAR(solved.shoulderPos.y, kLeftShoulderRest.y, 1e-3f);  // no elevation
+}
+
+TEST(IkRigClavicle, ShortForwardReachKeepsShoulderAtRest)
+{
+    // Same direction, but only 56% of arm reach: below the gate, so the
+    // shoulder must not protract for every small gesture in front of the body.
+    const glm::quat handForward = glm::angleAxis(glm::radians(-90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    const glm::vec3 goal(0.20f, 1.35f, -0.30f);
+    const ShoulderSolve solved = solveShoulder(IkRigConfig::makeDefault(), BoneNames::LeftHand,
+                                               goal + handForward * glm::vec3(0.12f, 0.0f, 0.0f),
+                                               handForward);
+    expectVecNear(solved.shoulderPos, kLeftShoulderRest, 1e-3f);
+}
+
+TEST(IkRigClavicle, LegacyConfigWithoutClavicleKeepsShoulderRigid)
+{
+    const ShoulderSolve solved = solveShoulder(withoutClavicle(IkRigConfig::makeDefault()),
+                                               BoneNames::LeftHand, glm::vec3(0.30f, 1.85f, 0.0f));
+    expectVecNear(solved.shoulderPos, kLeftShoulderRest, 1e-4f);
+    EXPECT_NEAR(clavicleAngleDeg(solved.clavicleLocal), 0.0f, 1e-2f);
+}
+
+TEST(IkRigClavicle, RotationIsClampedToMaxAngle)
+{
+    ClavicleConfig clamped;
+    clamped.maxAngleDeg = 8.0f;
+    const ShoulderSolve solved = solveShoulder(withClavicle(IkRigConfig::makeDefault(), clamped),
+                                               BoneNames::LeftHand, glm::vec3(0.20f, 1.95f, 0.0f));
+    EXPECT_NEAR(clavicleAngleDeg(solved.clavicleLocal), 8.0f, 1e-2f);
+}
+
+TEST(IkRigClavicle, WristStillLandsOnTheGoal)
+{
+    // The clavicle stage runs before the limb solve, so moving the socket must
+    // not cost the tracked hand its goal.
+    const glm::vec3 handPos(0.30f, 1.85f, 0.0f);
+    const ShoulderSolve solved = solveShoulder(IkRigConfig::makeDefault(), BoneNames::LeftHand, handPos);
+    expectVecNear(solved.wristPos, handGoal(handPos, glm::quat(1.0f, 0.0f, 0.0f, 0.0f), 0.12f), 1e-3f);
+}
+
+TEST(IkRigClavicle, ClavicleExtendsReachOnAnOverreachedGoal)
+{
+    // Goal 0.60 m from the rest shoulder, arm reach 0.54 m: rigid, the wrist
+    // stops short. The clavicle swinging toward the goal buys real reach.
+    const glm::vec3 goal(0.40f, 1.75f, -0.40f);
+    const glm::vec3 handPos = goal + glm::vec3(0.12f, 0.0f, 0.0f);
+    const ShoulderSolve rigid = solveShoulder(withoutClavicle(IkRigConfig::makeDefault()),
+                                              BoneNames::LeftHand, handPos);
+    const ShoulderSolve clavicle = solveShoulder(IkRigConfig::makeDefault(),
+                                                 BoneNames::LeftHand, handPos);
+    const float rigidMiss = glm::length(rigid.wristPos - goal);
+    const float clavicleMiss = glm::length(clavicle.wristPos - goal);
+    EXPECT_GT(rigidMiss, 0.05f);                    // the rigid shoulder cannot reach
+    EXPECT_LT(clavicleMiss, rigidMiss - 0.03f);     // the clavicle closes most of it
+}
+
+TEST(IkRigClavicle, ContinuousUnderSmallTargetDelta)
+{
+    const glm::vec3 handPos(0.35f, 1.75f, -0.15f);
+    const ShoulderSolve a = solveShoulder(IkRigConfig::makeDefault(), BoneNames::LeftHand, handPos);
+    const ShoulderSolve b = solveShoulder(IkRigConfig::makeDefault(), BoneNames::LeftHand,
+                                          handPos + glm::vec3(0.001f, 0.0f, 0.0f));
+    expectVecNear(a.shoulderPos, b.shoulderPos, 0.005f);
+}
+
+TEST(IkRigClavicle, LegSocketsAreUnaffected)
+{
+    // The hip sockets carry no clavicle config, so the legs keep the pre-WP3
+    // behaviour: the socket bone (Hips->LeftHip) stays at rest.
+    IkRig rig = makeDefaultRig();
+    if (IkTarget* foot = findTarget(rig, BoneNames::LeftFoot))
+        foot->position = glm::vec3(0.10f, -0.05f, -0.40f);
+    rig.solve();
+    const int hip = findJoint(rig, BoneNames::LeftHip);
+    ASSERT_GE(hip, 0);
+    EXPECT_NEAR(glm::degrees(glm::angle(glm::normalize(rig.skeleton.joints[hip].localRot))),
+                0.0f, 1e-2f);
+}
+
+TEST(IkRigConfigSerialization, ClavicleRoundTrip)
+{
+    IkRigConfig config;
+    JointLimits limit;
+    limit.bone = "x";
+    ClavicleConfig clavicle;
+    clavicle.elevationWeight = 0.25f;
+    clavicle.reachWeight = 0.5f;
+    clavicle.reachThreshold = 0.6f;
+    clavicle.maxAngleDeg = 15.0f;
+    limit.clavicle = clavicle;
+    config.limits.push_back(limit);
+
+    const IkRigConfig parsed = nlohmann::json(config).get<IkRigConfig>();
+
+    ASSERT_EQ(parsed.limits.size(), 1u);
+    ASSERT_TRUE(parsed.limits[0].clavicle.has_value());
+    EXPECT_FLOAT_EQ(parsed.limits[0].clavicle->elevationWeight, 0.25f);
+    EXPECT_FLOAT_EQ(parsed.limits[0].clavicle->reachWeight, 0.5f);
+    EXPECT_FLOAT_EQ(parsed.limits[0].clavicle->reachThreshold, 0.6f);
+    EXPECT_FLOAT_EQ(parsed.limits[0].clavicle->maxAngleDeg, 15.0f);
+}
+
+TEST(IkRigConfigSerialization, LegacyConfigHasNoClavicle)
+{
+    const nlohmann::json j = nlohmann::json::parse(R"(
+    {
+        "limits": [ { "bone": "x", "swingCone": 90.0 } ]
+    })");
+    const IkRigConfig config = j.get<IkRigConfig>();
+    ASSERT_EQ(config.limits.size(), 1u);
+    EXPECT_FALSE(config.limits[0].clavicle.has_value());
+}
+
+TEST(IkRigConfigSerialization, DefaultConfigShouldersHaveClavicle)
+{
+    const IkRigConfig config = IkRigConfig::makeDefault();
+    int found = 0;
+    for (const JointLimits& limit : config.limits)
+        if (limit.bone == BoneNames::LeftShoulder || limit.bone == BoneNames::RightShoulder)
+        {
+            ++found;
+            EXPECT_TRUE(limit.clavicle.has_value()) << limit.bone;
+            // No twist/cone limit: a stage-5 clamp would displace the socket
+            // after the arm was solved from it.
+            EXPECT_FLOAT_EQ(limit.swingConeDeg, 180.0f) << limit.bone;
+        }
+    EXPECT_EQ(found, 2);
+}
+
+TEST(IkRigConfigValidation, ClavicleWeightOutOfRangeThrows)
+{
+    IkRigConfig config;
+    JointLimits limit;
+    limit.bone = "x";
+    ClavicleConfig clavicle;
+    clavicle.elevationWeight = 1.5f;
+    limit.clavicle = clavicle;
+    config.limits = {limit};
+    EXPECT_THROW(config.validate(), std::runtime_error);
+}
+
+TEST(IkRigConfigValidation, ClavicleReachThresholdOutOfRangeThrows)
+{
+    IkRigConfig config;
+    JointLimits limit;
+    limit.bone = "x";
+    ClavicleConfig clavicle;
+    clavicle.reachThreshold = -0.1f;
+    limit.clavicle = clavicle;
+    config.limits = {limit};
+    EXPECT_THROW(config.validate(), std::runtime_error);
+}
+
+TEST(IkRigConfigValidation, ClavicleMaxAngleOutOfRangeThrows)
+{
+    IkRigConfig config;
+    JointLimits limit;
+    limit.bone = "x";
+    ClavicleConfig clavicle;
+    clavicle.maxAngleDeg = 200.0f;
+    limit.clavicle = clavicle;
+    config.limits = {limit};
+    EXPECT_THROW(config.validate(), std::runtime_error);
 }

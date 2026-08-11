@@ -34,3 +34,23 @@ TwoBoneIkResult solveTwoBoneIk(const glm::vec3& rootPos, const glm::vec3& target
 // cone half-angle, via swing-twist decomposition. Angles in degrees.
 glm::quat clampSwingTwist(const glm::quat& localRot, const glm::vec3& twistAxis,
     float twistMinDeg, float twistMaxDeg, float swingConeDeg);
+
+// WP3 clavicle swing: the fraction of a limb's aim rotation that the clavicle
+// (the bone ending at the limb socket) takes along. `armRest` is the limb's
+// rest direction, `aim` the desired socket->goal direction; both unit vectors
+// in the clavicle parent's (chest) frame. The full rotation that would take
+// armRest onto aim is expressed as a rotation vector and split along two axes,
+// each `cross(armRest, target axis)` so the construction is side-agnostic (a
+// mirrored arm mirrors the axis, hence the sign):
+// - elevation, the rotation swinging armRest toward +Y (up). Only the *upward*
+//   half is followed: the human clavicle has a large elevation range but almost
+//   no depression range, and the skeleton's horizontal rest arm already
+//   corresponds to a neutral clavicle, so an arm hanging down must not drop the
+//   shoulder.
+// - reach, the rotation swinging armRest toward -Z (the skeleton's rest
+//   facing) — protraction forward, retraction backward, both followed.
+// Each is scaled by its weight; the summed rotation vector is clamped to
+// maxAngleDeg. Returns identity when aim is parallel to armRest, when both
+// weighted components vanish, or for a degenerate axis.
+glm::quat clavicleSwing(const glm::vec3& armRest, const glm::vec3& aim,
+    float elevationWeight, float reachWeight, float maxAngleDeg);

@@ -53,3 +53,25 @@ void solveChain(Skeleton& skeleton, const WorldTransforms& wt, int rootIndex,
 void solveTwoBone(Skeleton& skeleton, const WorldTransforms& wt, int socket,
                   int j1, int j2, int tip, const IkTarget& target,
                   const glm::vec3& poleInSocketFrame);
+
+// Clavicle stage (WP3): rotates the bone *ending at* a two-bone limb's socket
+// (the clavicle, e.g. Chest->LeftShoulder) partway toward the limb's goal, so
+// the shoulder elevates with a raised hand and protracts on a long reach
+// instead of staying rigid. chain is the two-bone {socket, j1, j2, tip}.
+//
+// The rotation is a weighted fraction of the socket->goal aim rotation
+// (clavicleSwing, IkMath.h): the elevation component scaled by
+// elevationWeight, the reach component scaled by reachWeight times a gate that
+// ramps from 0 to 1 as the goal distance goes from reachThreshold to 1.0 of the
+// limb's reach (|j1| + |j2|), the sum clamped to maxAngleDeg.
+//
+// One-shot and stateless: the aim is measured from the socket's pre-rotation
+// position (the displacement the clavicle itself causes is not iterated), and
+// the socket joint is expected to still be at rest — call once per solve,
+// before the limb stage, which then solves from the moved socket. Does nothing
+// when the socket is the skeleton root (no clavicle bone exists), a limb bone
+// has zero length, or the goal coincides with the socket.
+void solveClavicle(Skeleton& skeleton, const WorldTransforms& wt,
+                   const std::vector<int>& chain, const IkTarget& target,
+                   float elevationWeight, float reachWeight, float reachThreshold,
+                   float maxAngleDeg);

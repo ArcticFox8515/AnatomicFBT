@@ -159,3 +159,85 @@ TEST(ClampSwingTwist, ClampsTwistAndSwingIndependently)
         * glm::angleAxis(glm::radians(10.0f), glm::vec3(0.0f, 1.0f, 0.0f));
     expectQuatNear(clamped, expected, 1e-3f);
 }
+
+// ---------------------------------------------------------------------------
+// WP3 — clavicle swing. armRest is the T-pose arm (+X for the left side);
+// elevation is the rotation toward +Y (upward only), reach the rotation toward
+// -Z (both ways).
+// ---------------------------------------------------------------------------
+
+namespace
+{
+const glm::quat kIdentity(1.0f, 0.0f, 0.0f, 0.0f);
+const glm::vec3 kLeftArmRest(1.0f, 0.0f, 0.0f);
+} // namespace
+
+TEST(ClavicleSwing, AimAlongRestArmIsIdentity)
+{
+    expectQuatNear(clavicleSwing(kLeftArmRest, kLeftArmRest, 1.0f, 1.0f, 90.0f), kIdentity);
+}
+
+TEST(ClavicleSwing, RaisedAimTakesAFractionOfTheElevation)
+{
+    // Aim 90 deg above the rest arm, half weight: 45 deg about +Z (X toward Y).
+    const glm::quat swing = clavicleSwing(kLeftArmRest, glm::vec3(0.0f, 1.0f, 0.0f),
+        0.5f, 0.0f, 180.0f);
+    expectQuatNear(swing, glm::angleAxis(glm::radians(45.0f), glm::vec3(0.0f, 0.0f, 1.0f)), 1e-3f);
+}
+
+TEST(ClavicleSwing, LoweredAimIsIdentity)
+{
+    // The clavicle has (almost) no depression range: a hanging arm must not
+    // drop the shoulder, even at full elevation weight.
+    expectQuatNear(clavicleSwing(kLeftArmRest, glm::vec3(0.0f, -1.0f, 0.0f),
+        1.0f, 0.0f, 180.0f), kIdentity);
+}
+
+TEST(ClavicleSwing, ForwardAimProtractsAndBackwardAimRetracts)
+{
+    const glm::quat forward = clavicleSwing(kLeftArmRest, glm::vec3(0.0f, 0.0f, -1.0f),
+        0.0f, 0.5f, 180.0f);
+    const glm::quat backward = clavicleSwing(kLeftArmRest, glm::vec3(0.0f, 0.0f, 1.0f),
+        0.0f, 0.5f, 180.0f);
+    // Forward = +Y (X toward -Z), backward the opposite sense.
+    expectVecNear(forward * kLeftArmRest,
+        glm::vec3(glm::cos(glm::radians(45.0f)), 0.0f, -glm::sin(glm::radians(45.0f))), 1e-3f);
+    expectVecNear(backward * kLeftArmRest,
+        glm::vec3(glm::cos(glm::radians(45.0f)), 0.0f, glm::sin(glm::radians(45.0f))), 1e-3f);
+}
+
+TEST(ClavicleSwing, MirroredArmMirrorsTheSwing)
+{
+    // The axes are cross(armRest, target axis), so the right arm (-X) elevates
+    // by the mirrored rotation — same world displacement, opposite axis sign.
+    const glm::vec3 rightArmRest(-1.0f, 0.0f, 0.0f);
+    const glm::quat left = clavicleSwing(kLeftArmRest, glm::normalize(glm::vec3(1.0f, 1.0f, 0.0f)),
+        0.5f, 0.0f, 180.0f);
+    const glm::quat right = clavicleSwing(rightArmRest, glm::normalize(glm::vec3(-1.0f, 1.0f, 0.0f)),
+        0.5f, 0.0f, 180.0f);
+    const glm::vec3 leftEnd = left * kLeftArmRest;
+    const glm::vec3 rightEnd = right * rightArmRest;
+    EXPECT_GT(leftEnd.y, 0.1f);
+    expectVecNear(rightEnd, glm::vec3(-leftEnd.x, leftEnd.y, leftEnd.z), 1e-4f);
+}
+
+TEST(ClavicleSwing, ClampsToMaxAngle)
+{
+    const glm::quat swing = clavicleSwing(kLeftArmRest,
+        glm::normalize(glm::vec3(0.0f, 1.0f, -1.0f)), 1.0f, 1.0f, 10.0f);
+    const float angleDeg = glm::degrees(glm::angle(glm::normalize(swing)));
+    EXPECT_NEAR(angleDeg, 10.0f, 1e-2f);
+}
+
+TEST(ClavicleSwing, ZeroWeightsAreIdentity)
+{
+    expectQuatNear(clavicleSwing(kLeftArmRest, glm::normalize(glm::vec3(0.0f, 1.0f, -1.0f)),
+        0.0f, 0.0f, 180.0f), kIdentity);
+}
+
+TEST(ClavicleSwing, AntiparallelAimIsIdentity)
+{
+    // Degenerate cross product: no follow direction is defined, so the clavicle
+    // holds still instead of flipping.
+    expectQuatNear(clavicleSwing(kLeftArmRest, -kLeftArmRest, 1.0f, 1.0f, 180.0f), kIdentity);
+}

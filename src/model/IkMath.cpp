@@ -1,6 +1,7 @@
 #include "IkMath.h"
 
 #include <algorithm>
+#include <cmath>
 #include <glm/gtc/constants.hpp>
 
 namespace
@@ -112,4 +113,42 @@ glm::quat clampSwingTwist(const glm::quat& localRot, const glm::vec3& twistAxis,
     }
 
     return glm::normalize(clampedSwing * twist);
+}
+
+glm::quat clavicleSwing(const glm::vec3& armRest, const glm::vec3& aim,
+    float elevationWeight, float reachWeight, float maxAngleDeg)
+{
+    const glm::quat identity(1.0f, 0.0f, 0.0f, 0.0f);
+
+    // Full rotation armRest -> aim as a rotation vector (axis * angle).
+    const glm::vec3 fullAxis = glm::cross(armRest, aim);
+    const float fullAxisLen = glm::length(fullAxis);
+    if (fullAxisLen < kEpsilon)
+        return identity;  // aim parallel (or antiparallel) to the rest arm
+    const float angle = std::acos(std::clamp(glm::dot(armRest, aim), -1.0f, 1.0f));
+    const glm::vec3 rotVec = (fullAxis / fullAxisLen) * angle;
+
+    // Component of rotVec about cross(armRest, toward) — the axis whose
+    // positive rotation swings armRest toward `toward`.
+    const auto component = [&rotVec, &armRest](const glm::vec3& toward, float weight,
+        bool upwardOnly)
+    {
+        const glm::vec3 axis = glm::cross(armRest, toward);
+        const float len = glm::length(axis);
+        if (len < kEpsilon)
+            return glm::vec3(0.0f);  // rest arm along `toward`: no such component
+        const glm::vec3 unit = axis / len;
+        const float amount = glm::dot(rotVec, unit) * weight;
+        if (upwardOnly && amount < 0.0f)
+            return glm::vec3(0.0f);
+        return unit * amount;
+    };
+
+    const glm::vec3 total = component(glm::vec3(0.0f, 1.0f, 0.0f), elevationWeight, true)
+        + component(glm::vec3(0.0f, 0.0f, -1.0f), reachWeight, false);
+    const float mag = glm::length(total);
+    if (mag < kEpsilon)
+        return identity;
+    const float maxRad = glm::radians(std::max(maxAngleDeg, 0.0f));
+    return glm::angleAxis(std::min(mag, maxRad), total / mag);
 }

@@ -36,6 +36,20 @@ enum class PoleMode
     DynamicHand,
 };
 
+// WP3 clavicle stage: how much the bone ending at a two-bone limb socket (the
+// clavicle, e.g. Chest->LeftShoulder) follows the limb's goal before the limb
+// itself is solved. Fractions of the socket->goal aim rotation, split into an
+// elevation and a reach (protraction/retraction) component; see clavicleSwing
+// in IkMath.h for the construction. Lives on the *socket* bone's JointLimits
+// entry; absent means the socket stays at rest (pre-WP3 behaviour).
+struct ClavicleConfig
+{
+    float elevationWeight = 0.4f;   // fraction of the upward elevation angle
+    float reachWeight = 0.35f;      // fraction of the forward/backward reach angle
+    float reachThreshold = 0.8f;    // reach engages past this fraction of limb reach
+    float maxAngleDeg = 30.0f;      // clamp on the resulting clavicle rotation
+};
+
 // A joint that accepts a tracker target, plus the solver stage it drives.
 struct TargetConfig
 {
@@ -49,6 +63,9 @@ struct TargetConfig
 // `poleMode` selects how the bend normal is derived per frame (Static by
 // default for backward compatibility with configs written before WP2); only
 // meaningful on the middle bone of a two-bone chain — ignored elsewhere.
+// `clavicle` enables the WP3 clavicle stage and is only meaningful on the
+// *socket* bone of a two-bone chain (the shoulder) — ignored elsewhere; absent
+// (the default) leaves the socket at rest as before WP3.
 struct JointLimits
 {
     std::string bone;
@@ -57,6 +74,7 @@ struct JointLimits
     float swingConeDeg = 180.0f;  // cone half-angle for swing
     std::optional<glm::vec3> pole;
     PoleMode poleMode = PoleMode::Static;
+    std::optional<ClavicleConfig> clavicle;
 };
 
 // Which joints accept tracker targets (and how they are solved), plus per-joint
@@ -69,13 +87,15 @@ public:
     std::vector<JointLimits> limits;
 
     // Anchor on Head, chain on Hips, two-bone on hands/feet; hinge limits with
-    // poles for knees/elbows, cones for hips/shoulders.
+    // poles for knees/elbows, cones for hips/shoulders, clavicle stage on the
+    // shoulders.
     static IkRigConfig makeDefault();
 
     // Semantic checks: duplicate target/limit bones, pole non-zero,
-    // twistMin <= twistMax, swingCone in [0, 180]. Throws Error on the first
-    // violation found. Called by from_json; IkRig::loadConfig does the
-    // skeleton-dependent checks.
+    // twistMin <= twistMax, swingCone in [0, 180], clavicle weights in [0, 1],
+    // clavicle reachThreshold in [0, 1], clavicle maxAngle in [0, 180]. Throws
+    // Error on the first violation found. Called by from_json; IkRig::loadConfig
+    // does the skeleton-dependent checks.
     void validate() const;
 };
 
@@ -89,3 +109,5 @@ void to_json(nlohmann::json& j, const TargetConfig& target);
 void from_json(const nlohmann::json& j, TargetConfig& target);
 void to_json(nlohmann::json& j, const JointLimits& limit);
 void from_json(const nlohmann::json& j, JointLimits& limit);
+void to_json(nlohmann::json& j, const ClavicleConfig& clavicle);
+void from_json(const nlohmann::json& j, ClavicleConfig& clavicle);

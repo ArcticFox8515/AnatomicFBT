@@ -135,6 +135,14 @@ void IkRig::loadConfig(IkRigConfig c)
 				}
 				binding.flexSign = (glm::dot(crossRest, binding.pole) >= 0.0f) ? 1.0f : -1.0f;
 			}
+
+			// WP3: the socket bone (the clavicle) carries the clavicle stage
+			// config in its limits entry; absent means the socket stays at rest.
+			const std::string& socketBone = skeleton.joints[indices[0]].name;
+			const auto socketIt = std::find_if(c.limits.begin(), c.limits.end(),
+				[&socketBone](const JointLimits& limit) { return limit.bone == socketBone; });
+			if (socketIt != c.limits.end())
+				binding.clavicle = socketIt->clavicle;
 			break;
 		}
 		}
@@ -178,7 +186,24 @@ void IkRig::solve(const std::vector<IkTarget>& goals)
 				solveChain(skeleton, wt, rootIndex_, bindings_[i].chain, goals[i]);
 	}
 
-	// 3. Limbs: two-bone analytic IK off the solved chain pose.
+	// 3. Clavicles: procedural socket rotation for two-bone limbs whose socket
+	// bone carries a clavicle config (WP3) — the shoulder follows the hand goal
+	// instead of staying rigid. Runs before the limb solve, so the limb is
+	// solved from the moved socket and still lands exactly on its goal.
+	{
+		const WorldTransforms wt = computeWorldTransforms(skeleton);
+		for (size_t i = 0; i < goals.size(); ++i)
+		{
+			if (bindings_[i].solver != SolverType::TwoBone || !bindings_[i].clavicle)
+				continue;
+			const ClavicleConfig& clavicle = *bindings_[i].clavicle;
+			solveClavicle(skeleton, wt, bindings_[i].chain, goals[i],
+			              clavicle.elevationWeight, clavicle.reachWeight,
+			              clavicle.reachThreshold, clavicle.maxAngleDeg);
+		}
+	}
+
+	// 4. Limbs: two-bone analytic IK off the solved chain pose.
 	{
 		const WorldTransforms wt = computeWorldTransforms(skeleton);
 		for (size_t i = 0; i < goals.size(); ++i)
@@ -207,7 +232,7 @@ void IkRig::solve(const std::vector<IkTarget>& goals)
 		}
 	}
 
-	// 4. Joint limits: swing-twist clamp per configured bone.
+	// 5. Joint limits: swing-twist clamp per configured bone.
 	for (const JointLimits& limit : config.limits)
 	{
 		const int index = findJoint(limit.bone);
@@ -221,7 +246,7 @@ void IkRig::solve(const std::vector<IkTarget>& goals)
 		                                 limit.twistMinDeg, limit.twistMaxDeg, limit.swingConeDeg);
 	}
 
-	// 5. End-effector re-aim: after the clamp, re-aim each tracked end-effector
+	// 6. End-effector re-aim: after the clamp, re-aim each tracked end-effector
 	// (anchor root, chain end, two-bone tip) at the goal rotation so a mid-bone
 	// limit bends the pose but never silently rotates the tracked feature
 	// (foot/hand/Hips) away from its target. Policy: tracked rotation wins over

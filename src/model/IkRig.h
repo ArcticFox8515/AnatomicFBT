@@ -2,6 +2,7 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -33,12 +34,12 @@ public:
 
     // Solves joint localRot values (and rootPosition) from the current target
     // poses. Stages, in config-declared solver types: anchors -> chains ->
-    // two-bone limbs -> joint limits -> end-effector re-aim (see below).
-    // Stateless: every call re-derives the full pose. Targets absent from the
-    // config produce no stage. Policy: tracked rotation wins over limits on
-    // end-effector bones (anchor root, chain end, two-bone tip) — the final
-    // re-aim pass re-applies the goal rotation to them, so a limit bends the
-    // mid-bones without silently rotating the tracked feature; limits only
+    // clavicles -> two-bone limbs -> joint limits -> end-effector re-aim (see
+    // below). Stateless: every call re-derives the full pose. Targets absent
+    // from the config produce no stage. Policy: tracked rotation wins over
+    // limits on end-effector bones (anchor root, chain end, two-bone tip) — the
+    // final re-aim pass re-applies the goal rotation to them, so a limit bends
+    // the mid-bones without silently rotating the tracked feature; limits only
     // constrain mid-bones.
     void solve();
 
@@ -72,6 +73,9 @@ private:
                                 // flex in opposite directions); derived once at
                                 // bind time from the static pole so no per-frame
                                 // sign test can flip at the singularity.
+        // WP3: set when the socket bone's limits entry carries a clavicle
+        // config (TwoBone only); absent leaves the socket at rest.
+        std::optional<ClavicleConfig> clavicle;
     };
 
     std::unordered_map<std::string, int> jointIndexOf_;

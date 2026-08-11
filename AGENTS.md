@@ -155,7 +155,11 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   `{"bones":[{name, parent|null, offset:[x,y,z]}]}`; `from_json` throws `Error` on
   duplicate names, unknown parents, cycles, or not exactly one root.
 - `IkMath` — `solveTwoBoneIk` (closed-form, pole vector, stretches on overreach),
-  `clampSwingTwist`, `quatFromTo`. No skeleton knowledge.
+  `clampSwingTwist`, `quatFromTo`, `clavicleSwing` (WP3: the weighted fraction of a
+  limb's `armRest -> aim` rotation the clavicle takes — elevation about
+  `cross(armRest, +Y)`, upward only, plus reach about `cross(armRest, -Z)`, both
+  ways, summed and clamped to a max angle; side-agnostic by construction).
+  No skeleton knowledge.
 - `IkRigConfig` — which bones take targets and how (`anchor|chain|two_bone`) plus
   per-bone `JointLimits` (twist range, swing cone, optional `pole` — required on the
   middle bone of a two-bone chain — plus `poleMode` selecting how the bend normal is
@@ -163,16 +167,28 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   /`dynamic_hand` — the bend normal is `flexSign * cross(targetRot * lateralAxis,
   aim)`, perpendicular to the chain aim by construction so no pole‖aim degeneracy;
   the static `pole` is retained only as the singularity guard and the flex-sign
-  reference). `validate()` throws `Error`.
+  reference — plus an optional `clavicle` block (`ClavicleConfig`:
+  `elevationWeight`, `reachWeight`, `reachThreshold`, `maxAngle`) on the **socket**
+  bone of a two-bone chain, enabling the WP3 clavicle stage; absent — every config
+  written before WP3 — leaves the socket rigid, and the shoulder entries carry no
+  twist/cone limit on purpose, see `IkRig`). `validate()` throws `Error`.
 - `IkSolvers` — `IkTarget{jointIndex, position, rotation}` + `solveAnchor` (pins the
   root), `solveChain` (spine: end bone takes the target rotation exactly, rest arcs),
   `solveTwoBone` (limb socket→j1→j2→tip; `solveTwoBoneIk` returns rest-relative
-  rotations that compose onto the socket frame; takes the pole in the socket's frame).
+  rotations that compose onto the socket frame; takes the pole in the socket's frame),
+  `solveClavicle` (WP3: rotates the bone ending at the socket via `clavicleSwing`,
+  with the reach gate computed from the goal distance vs the limb's reach; one-shot,
+  expects the socket at rest, no-op when the socket is the skeleton root).
 - `IkRig` — owns skeleton + config + targets; no bone names in code (structure derived
   from config + topology). Construction never throws; `loadConfig` validates and throws
   `Error`, keeping the previous config on failure. `solve()` re-derives the pose from
   the targets every call; `solve(goals)` consumes an explicit goal vector. Stage order:
-  anchors → chains → two-bone limbs (dynamic bend normals computed per-frame here per
+  anchors → chains → clavicles (only for two-bone limbs whose socket bone carries a
+  `clavicle` config, bound at `loadConfig`; runs *before* the limb so the limb solves
+  from the moved socket and still lands on its goal — a joint-limit clamp on the
+  clavicle would instead displace the socket after the fact, which is why the default
+  shoulder entries have permissive limits) → two-bone limbs (dynamic bend normals
+  computed per-frame here per
   the binding's `poleMode`: the foot/hand target's medial-lateral axis crossed with the
   chain aim, `flexSign`-corrected; `sideSign`/`flexSign` derived once at bind time from
   the socket rest offset and the static pole) → joint-limit clamp → end-effector re-aim
