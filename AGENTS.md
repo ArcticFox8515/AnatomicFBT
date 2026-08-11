@@ -70,7 +70,15 @@ src/vr/         `OpenVrInput` — on-demand OpenVR background client used only i
                 Calibration mode for the both-triggers gesture (no driver-side
                 input source exists). The only place openvr.h is included.
                 main owns it as a `unique_ptr`, created on entering
-                Calibration, destroyed on leaving.
+                Calibration, destroyed on leaving. Also resolves per-controller
+                grip-pose offsets from the OpenVR render-model component API
+                (`IVRRenderModels::GetComponentState` on the "grip" component,
+                fallback "handgrip" on controllers that lack one — the
+                manifest-free path; see `GripOffsets`, doc/ik-improvements-plan.md
+                #5). The query runs once in `init()` while the `VR_Init` session
+                is alive; main caches the result (it must outlive the trigger
+                reader — Capture runs after it is torn down) and feeds it to
+                `pollAndUpdate`.
 src/link/       Driver<->app IPC: `Pipe` transport seam (overlapped call pairs —
                 startConnect/completeConnect, startRead/completeRead,
                 startWrite/completeWrite, close — one winapi call per method,
@@ -275,11 +283,31 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   calibration path on a recording's frame 0. `calibration()` exposes the owned
   `TrackerCalibration` for the app's correction pass.
 - `Recording` — binary `.tcrec` capture of the device snapshots fed to `update` (inputs
-  only). Magic+version, roster frozen on frame 0, then fixed-size self-contained frames
-  (absent device = last known pose). Streamed, randomly seekable; loader throws `Error`
-  on malformed input but drops a truncated trailing frame.
+  only). Magic+version (v2), roster frozen on frame 0 (`i32 id, u8 kind,
+  f32x3 gripPos, f32x4 gripRot` per entry — identity for non-controllers), then
+  fixed-size self-contained frames (absent device = last known pose); loaded
+  frames are grip-applied (each controller pose composed with its roster
+  `deviceToGrip`), so replay reproduces the live shift without SteamVR.
+  Streamed, randomly seekable; loader throws `Error` on malformed input but
+  drops a truncated trailing frame; accepts v1 (no grip offsets in the
+  roster — read as identity) so old recordings keep loading.
+- `GripOffsets` — per-controller grip-pose offset (rigid transform from the
+  device's raw pose to its grip-pose frame) and the apply/merge helpers.
+  `applyGripOffsets` composes `compose(rawPose, deviceToGrip)` for
+  controllers with a matching id; non-controllers and unknown ids pass through.
+  `mergeGripOffsets` keeps a cached entry whose id is absent from a fresh
+  query (a controller powered off at the second calibration keeps its
+  offset). `poseFromHmdMatrix34` (header-only, glm) converts OpenVR's
+  row-major `HmdMatrix34_t` to a `Pose` — the same extraction as
+  `driver::poseFromRowMajor34` but in the model layer (testable without
+  openvr.h). Keyed by `TrackedDevice::id` (the vrserver device index, which
+  agrees with the client index and the link id); no serial field is added
+  to `TrackedDevice`.
 - `SessionRecorder` — recording lifecycle over an injected `StreamFactory`; never throws,
-  reports via `Event{started, stopped, error}`.
+  reports via `Event{started, stopped, error}`. `update` takes the RAW
+  (pre-grip-shift) device poses plus the grip offsets: the writer stores raw
+  frames and writes the grip offsets into the roster on frame 0, so the
+  loader reapplies them.
 - `ReplaySession` — recording file list (`scan`), loaded recording, timeline position;
   `load` recalibrates from frame 0, `currentDevices()` feeds `update`.
 - `FrameTick` — the per-frame orchestration shared by the visible and the
@@ -288,9 +316,14 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   and `IGestureSource` seams (`OpenVrTracking` / `OpenVrInput` implement them) so
   the sequencing is unit-testable without OpenVR/pipe bindings. `pollAndUpdate`
   (the head: device-source selection by mode — Replay pulls from the loaded
-  recording, otherwise from the pose source when connected; reads the
-  both-triggers gesture only in Calibration; advances the mode controller; runs
-  the recorder) returns `UpdateResult{devices, plan, tearDownGestureSource}` and
+  recording, otherwise from the pose source when connected; applies the
+  per-controller grip offsets to the live snapshot (`applyGripOffsets`) so the
+  controller pose lands at the grip point — Replay frames are already
+  grip-applied by the recording loader, so the offsets are skipped there to
+  avoid double-shifting; reads the both-triggers gesture only in Calibration;
+  advances the mode controller; runs the recorder with the RAW pre-shift
+  poses so the recording stores raw frames + the roster's grip offsets)
+  returns `UpdateResult{devices, plan, tearDownGestureSource}` and
   reports events (calibration capture, recording start/stop/error) as
   fully-formatted lines through the injected `link::Logger` — same sink the
   driver link layer uses; the app forwards each line to spdlog exactly as it
@@ -412,14 +445,23 @@ unity/          Standalone Unity Editor tooling (C#), not part of the C++ build.
   gesture through a seam without itself depending on openvr. main owns it as
   a `unique_ptr`, created on entering Calibration, destroyed on leaving
   (including the automatic Calibration→Capture transition). The only place
-  openvr.h is included.
+  openvr.h is included. Also resolves per-controller grip-pose offsets in
+  `init()`: for each connected controller it reads `Prop_RenderModelName_String`,
+  forces the render-model JSON parse via `GetComponentCount`, then
+  `RenderModelHasComponent` + `GetComponentState` on `"grip"` (fallback
+  `k_pch_Controller_Component_HandGrip`); `mTrackingToComponentLocal` becomes
+  the `deviceToGrip` via `poseFromHmdMatrix34`. `gripOffsets()` exposes the
+  results (one `GripOffsetInfo` per controller with the render-model name and
+  chosen component for logging); main merges them into a cache that outlives
+  the session and feeds them to `pollAndUpdate`.
 - `src/main.cpp` — spdlog → GLFW/GL/GLEW → ImGui + ImGuizmo → load-or-create the three
   configs → `IkRig` → avatar skeleton, `matchRestHeight` (scale avatar to reference
   rest height) + `RetargetMap` + `CorrectionMap` → `link::Logger` (sink into
   spdlog) + `OpenVrTracking` (pipe factory + clock; implements `IPoseSource`) →
   `OpenVrTracking::init` + create `OpenVrInput` (implements `IGestureSource`;
-  success: start in Calibration; failure: ManualPose). Per frame: `pollAndUpdate`
-  (FrameTick — shared by both paths), tear down `OpenVrInput` when the result's
+  success: resolve grip offsets, start in Calibration; failure: ManualPose). Per
+  frame: `pollAndUpdate` (FrameTick — shared by both paths; grip offsets applied
+  to the live snapshot), tear down `OpenVrInput` when the result's
   `tearDownGestureSource` is set, execute the returned plan, camera follow, left
   viewport (IK skeleton + gizmos in ManualPose), `retargetAndShip` (FrameTick —
   retarget + correct + ship the deltas + ship virtual trackers to the driver)

@@ -31,14 +31,24 @@ UpdateResult pollAndUpdate(ModeController& controller, IkRig& rig,
                            IPoseSource& poses,
                            IGestureSource* gesture,
                            double now,
+                           const std::vector<GripOffset>& grips,
                            link::Logger& logger)
 {
     UpdateResult result;
 
+    // The recorder needs the RAW (pre-grip-shift) poses: the recording stores
+    // raw frames and writes the grip offsets into the roster on frame 0, so
+    // the loaded frames reproduce the live shift. Replay frames are already
+    // grip-applied by the loader, so grips are not applied there (passing them
+    // would double-shift).
+    std::vector<TrackedDevice> raw;
     if (controller.mode() == Mode::Replay && replay)
         result.devices = replay->currentDevices();
     else if (poses.isInitialized())
-        result.devices = poses.pollPoses();
+    {
+        raw = poses.pollPoses();
+        result.devices = applyGripOffsets(raw, grips);
+    }
 
     bool captureGesture = false;
     if (controller.mode() == Mode::Calibration && gesture && gesture->isInitialized())
@@ -50,7 +60,7 @@ UpdateResult pollAndUpdate(ModeController& controller, IkRig& rig,
     // transition inside update) the trigger reader is torn down by the caller.
     result.tearDownGestureSource = controller.mode() != Mode::Calibration;
     const SessionRecorder::Event recorded =
-        recorder.update(controller.mode(), result.plan.capturedOffsets, now, result.devices);
+        recorder.update(controller.mode(), result.plan.capturedOffsets, now, raw, grips);
     reportEvents(logger, result.plan.capturedOffsets, recorded);
     return result;
 }

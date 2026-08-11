@@ -1,5 +1,6 @@
 #pragma once
 
+#include "GripOffsets.h"
 #include "ModeController.h"
 #include "Retarget.h"
 #include "TrackerCorrection.h"
@@ -57,12 +58,19 @@ struct UpdateResult
 // the loaded recording via `replay`; otherwise from `poses` when connected,
 // empty when not), reads the both-triggers gesture only in Calibration from
 // `gesture` (may be null — Calibration before a trigger reader exists),
-// advances the mode controller, and runs the recorder. `now` is the
-// absolute clock the recorder timestamps frames with (the caller's frame
-// time). `replay` is dereferenced only in Replay mode, so it may be null
-// when the caller never enters Replay (tests). `logger` receives one
-// fully-formatted line per notable event (capture, recording start/stop/
-// error); it may have no sink installed (lines dropped, same as link).
+// applies the per-controller grip offsets to the live snapshot (Replay
+// frames are already grip-applied by the recording loader, so the offsets
+// are skipped there — passing them would double-shift), advances the mode
+// controller, and runs the recorder. `grips` is the cached grip-offset map
+// (resolved once per Calibration session by the trigger reader, see
+// src/vr/OpenVrInput); the recorder receives the RAW (pre-shift) poses so
+// the recording stores raw frames + the roster's grip offsets, and the
+// loader reapplies them. `now` is the absolute clock the recorder timestamps
+// frames with (the caller's frame time). `replay` is dereferenced only in
+// Replay mode, so it may be null when the caller never enters Replay (tests).
+// `logger` receives one fully-formatted line per notable event (capture,
+// recording start/stop/error); it may have no sink installed (lines dropped,
+// same as link).
 //
 // This is the shared logic between the visible and the minimized frame
 // paths: the driver link must be pumped (pollPoses) and overrides shipped
@@ -74,6 +82,7 @@ UpdateResult pollAndUpdate(ModeController& controller, IkRig& rig,
                            IPoseSource& poses,
                            IGestureSource* gesture,
                            double now,
+                           const std::vector<GripOffset>& grips,
                            link::Logger& logger);
 
 // The tail of one frame: retarget the (already solved) rig pose onto the

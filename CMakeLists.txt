@@ -21,6 +21,8 @@ add_library(TrackingCorrectorLib STATIC
     src/model/FrameTick.cpp
     src/model/FrameTick.h
     src/model/GlmJson.h
+    src/model/GripOffsets.cpp
+    src/model/GripOffsets.h
     src/model/BoneNames.h
     src/model/BodyProportions.cpp
     src/model/BodyProportions.h
@@ -181,6 +183,7 @@ add_custom_command(TARGET driver_00trackingcorrector POST_BUILD
 
 add_executable(TrackingCorrectorTests
     tests/SkeletonTest.cpp
+    tests/GripOffsetsTest.cpp
     tests/BodyProportionsTest.cpp
     tests/AppSettingsTest.cpp
     tests/IkRigTest.cpp

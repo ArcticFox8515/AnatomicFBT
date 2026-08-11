@@ -184,8 +184,8 @@ TEST(ModeController, ReplayFromRecordingReproducesLiveCaptureGoals)
     // The same session as a recording round trip.
     std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
     RecordingWriter writer(stream);
-    writer.writeFrame(0.0f, tPose);
-    writer.writeFrame(0.011f, moved);
+    writer.writeFrame(0.0f, tPose, {});
+    writer.writeFrame(0.011f, moved, {});
     const Recording recording = loadRecording(stream);
 
     IkRig replayRig = makeRig();

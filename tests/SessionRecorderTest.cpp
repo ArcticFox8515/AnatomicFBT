@@ -47,7 +47,7 @@ TEST(SessionRecorder, IdlesOutsideCapture)
 
     for (const Mode mode : {Mode::ManualPose, Mode::Calibration, Mode::Replay})
     {
-        const SessionRecorder::Event event = recorder.update(mode, false, 1.0, someDevices());
+        const SessionRecorder::Event event = recorder.update(mode, false, 1.0, someDevices(), {});
         EXPECT_FALSE(event.started);
         EXPECT_FALSE(event.stopped);
         EXPECT_TRUE(event.error.empty());
@@ -64,16 +64,16 @@ TEST(SessionRecorder, RecordsSessionWithCalibrationFrameAtTimeZero)
     const std::vector<TrackedDevice> frame1 = movedDevices(frame0, 0.1f);
 
     // Calibration -> capture transition at absolute clock 100s.
-    SessionRecorder::Event event = recorder.update(Mode::Capture, true, 100.0, frame0);
+    SessionRecorder::Event event = recorder.update(Mode::Capture, true, 100.0, frame0, {});
     EXPECT_TRUE(event.started);
     EXPECT_TRUE(recorder.isRecording());
 
-    event = recorder.update(Mode::Capture, false, 100.5, frame1);
+    event = recorder.update(Mode::Capture, false, 100.5, frame1, {});
     EXPECT_FALSE(event.started);
     EXPECT_FALSE(event.stopped);
 
     // Leaving capture stops the recording; the stop frame is not recorded.
-    event = recorder.update(Mode::ManualPose, false, 101.0, {});
+    event = recorder.update(Mode::ManualPose, false, 101.0, {}, {});
     EXPECT_TRUE(event.stopped);
     EXPECT_FALSE(recorder.isRecording());
 
@@ -93,11 +93,11 @@ TEST(SessionRecorder, EachSessionGetsAFreshStream)
     SessionRecorder recorder(log.factory());
     const std::vector<TrackedDevice> devices = someDevices();
 
-    recorder.update(Mode::Capture, true, 10.0, devices);
-    recorder.update(Mode::Calibration, false, 11.0, devices);  // stop (recalibrating)
-    recorder.update(Mode::Capture, true, 12.0, devices);
-    recorder.update(Mode::Capture, false, 12.5, devices);
-    recorder.update(Mode::ManualPose, false, 13.0, devices);   // stop
+    recorder.update(Mode::Capture, true, 10.0, devices, {});
+    recorder.update(Mode::Calibration, false, 11.0, devices, {});  // stop (recalibrating)
+    recorder.update(Mode::Capture, true, 12.0, devices, {});
+    recorder.update(Mode::Capture, false, 12.5, devices, {});
+    recorder.update(Mode::ManualPose, false, 13.0, devices, {});   // stop
 
     ASSERT_EQ(log.streams.size(), 2u);
     EXPECT_EQ(loadRecording(*log.streams[0]).frames.size(), 1u);
@@ -108,14 +108,14 @@ TEST(SessionRecorder, FailedStreamOpenReportsErrorAndDoesNotRecord)
 {
     SessionRecorder recorder([]() -> std::shared_ptr<std::ostream> { return nullptr; });
 
-    const SessionRecorder::Event event = recorder.update(Mode::Capture, true, 0.0, someDevices());
+    const SessionRecorder::Event event = recorder.update(Mode::Capture, true, 0.0, someDevices(), {});
 
     EXPECT_FALSE(event.started);
     EXPECT_FALSE(event.error.empty());
     EXPECT_FALSE(recorder.isRecording());
 
     // Subsequent capture frames stay silent — the failure was reported once.
-    const SessionRecorder::Event next = recorder.update(Mode::Capture, false, 0.5, someDevices());
+    const SessionRecorder::Event next = recorder.update(Mode::Capture, false, 0.5, someDevices(), {});
     EXPECT_TRUE(next.error.empty());
     EXPECT_FALSE(next.started);
     EXPECT_FALSE(next.stopped);
@@ -127,7 +127,7 @@ TEST(SessionRecorder, ThrowingFactoryReportsErrorAndDoesNotRecord)
         throw std::runtime_error("disk on fire");
     });
 
-    const SessionRecorder::Event event = recorder.update(Mode::Capture, true, 0.0, someDevices());
+    const SessionRecorder::Event event = recorder.update(Mode::Capture, true, 0.0, someDevices(), {});
 
     EXPECT_FALSE(event.started);
     EXPECT_NE(event.error.find("disk on fire"), std::string::npos);
@@ -140,15 +140,15 @@ TEST(SessionRecorder, MidSessionWriteFailureStopsRecordingOnce)
     SessionRecorder recorder(log.factory());
     const std::vector<TrackedDevice> devices = someDevices();
 
-    EXPECT_TRUE(recorder.update(Mode::Capture, true, 0.0, devices).started);
+    EXPECT_TRUE(recorder.update(Mode::Capture, true, 0.0, devices, {}).started);
     log.streams[0]->setstate(std::ios::badbit);  // the disk fills up
 
-    const SessionRecorder::Event failure = recorder.update(Mode::Capture, false, 0.5, devices);
+    const SessionRecorder::Event failure = recorder.update(Mode::Capture, false, 0.5, devices, {});
     EXPECT_FALSE(failure.error.empty());
     EXPECT_FALSE(recorder.isRecording());
 
     // Capture continues; the recorder stays silent and opens nothing new.
-    const SessionRecorder::Event next = recorder.update(Mode::Capture, false, 1.0, devices);
+    const SessionRecorder::Event next = recorder.update(Mode::Capture, false, 1.0, devices, {});
     EXPECT_TRUE(next.error.empty());
     EXPECT_FALSE(next.stopped);
     EXPECT_EQ(log.streams.size(), 1u);

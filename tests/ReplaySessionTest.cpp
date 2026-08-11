@@ -64,7 +64,7 @@ protected:
         std::ofstream file(dir_ / name, std::ios::binary | std::ios::trunc);
         RecordingWriter writer(file);
         for (size_t i = 0; i < frames.size(); ++i)
-            writer.writeFrame(static_cast<float>(i) * 0.5f, frames[i]);
+            writer.writeFrame(static_cast<float>(i) * 0.5f, frames[i], {});
     }
 
     void writeGarbage(const std::string& name)

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "GripOffsets.h"
 #include "ModeController.h"
 #include "Recording.h"
 #include "TrackedDevice.h"
@@ -40,11 +41,17 @@ public:
     // a new recording whose frame 0 holds exactly `devices` — the snapshot
     // calibration froze offsets from; every further Capture frame appends
     // `devices` at time `now - start`; leaving Capture stops the recording.
-    // `now` is an absolute clock in seconds (the caller's frame time).
-    // Failures never throw — a broken recording must not break the capture —
-    // they stop the recording and surface in the returned Event.
+    // `devices` are the RAW (pre-grip-shift) device poses: the recording
+    // stores raw poses in each frame and writes the grip offsets into the
+    // roster on frame 0, so the loaded frames reproduce the live shift when
+    // the loader applies the roster's offsets (see Recording.h). `gripOffsets`
+    // is consulted only on frame 0 (the roster freeze). `now` is an absolute
+    // clock in seconds (the caller's frame time). Failures never throw — a
+    // broken recording must not break the capture — they stop the recording
+    // and surface in the returned Event.
     Event update(Mode mode, bool capturedOffsets, double now,
-                 const std::vector<TrackedDevice>& devices);
+                 const std::vector<TrackedDevice>& devices,
+                 const std::vector<GripOffset>& gripOffsets);
 
     bool isRecording() const { return writer_.has_value(); }
 

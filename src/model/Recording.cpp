@@ -1,16 +1,22 @@
 #include "Recording.h"
 
 #include "Error.h"
+#include "GripOffsets.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <istream>
 #include <ostream>
 
 namespace
 {
 constexpr std::uint32_t kMagic = 0x31524354;  // "TCR1" as little-endian bytes
-constexpr std::uint16_t kVersion = 1;
+
+// Version 1: roster = i32 id, u8 kind (no grip offsets).
+// Version 2: roster = i32 id, u8 kind, f32x3 gripPos, f32x4 gripRot.
+constexpr std::uint16_t kVersion = 2;
+constexpr std::uint16_t kVersion1 = 1;
 
 // Sanity bound for the roster count read from a file — anything larger is
 // certainly garbage, and rejecting it avoids absurd allocations.
@@ -33,6 +39,11 @@ void writePose(std::ostream& out, const Pose& pose)
     writeRaw(out, pose.rotation.w);
 }
 
+void writeGripOffsetPose(std::ostream& out, const Pose& deviceToGrip)
+{
+    writePose(out, deviceToGrip);
+}
+
 // Reads one POD value; returns false on a clean or mid-value EOF (the caller
 // decides whether that is truncation or the end of the frame list).
 template <typename T>
@@ -48,6 +59,11 @@ bool readPose(std::istream& in, Pose& pose)
         && readRaw(in, pose.position.z) && readRaw(in, pose.rotation.x)
         && readRaw(in, pose.rotation.y) && readRaw(in, pose.rotation.z)
         && readRaw(in, pose.rotation.w);
+}
+
+bool readGripOffsetPose(std::istream& in, Pose& deviceToGrip)
+{
+    return readPose(in, deviceToGrip);
 }
 
 TrackedDeviceKind kindFromByte(std::uint8_t byte)
@@ -67,14 +83,25 @@ TrackedDeviceKind kindFromByte(std::uint8_t byte)
                     + std::to_string(static_cast<int>(byte)));
     }
 }
+
+// Looks up the grip offset for a device id; identity when none — the common
+// case for non-controllers and for v1 recordings (where the roster's grip
+// vector is filled with identity).
+Pose gripFor(const std::vector<GripOffset>& offsets, int deviceId)
+{
+    const auto it = std::find_if(offsets.begin(), offsets.end(),
+                                 [&](const GripOffset& o) { return o.deviceId == deviceId; });
+    return it == offsets.end() ? Pose{} : it->deviceToGrip;
+}
 } // namespace
 
-void RecordingWriter::writeFrame(float time, const std::vector<TrackedDevice>& devices)
+void RecordingWriter::writeFrame(float time, const std::vector<TrackedDevice>& devices,
+                                 const std::vector<GripOffset>& gripOffsets)
 {
     if (roster_.empty())
     {
-        // First frame: freeze the roster and write header + roster. This
-        // frame's devices are the exact calibration input.
+        // First frame: freeze the roster and write header + roster (with grip
+        // offsets). This frame's devices are the exact calibration input.
         roster_ = devices;
         writeRaw(out_, kMagic);
         writeRaw(out_, kVersion);
@@ -83,6 +110,11 @@ void RecordingWriter::writeFrame(float time, const std::vector<TrackedDevice>& d
         {
             writeRaw(out_, static_cast<std::int32_t>(device.id));
             writeRaw(out_, static_cast<std::uint8_t>(device.kind));
+            // Grip offset pose: the device's entry, or identity when none (non-
+            // controllers, or a controller the query did not resolve — the
+            // live path passes those through, and so does replay). The device
+            // id is already written above; only the pose goes here.
+            writeGripOffsetPose(out_, gripFor(gripOffsets, device.id));
         }
     }
     else
@@ -112,24 +144,31 @@ Recording loadRecording(std::istream& in)
     if (!readRaw(in, magic) || magic != kMagic)
         throw Error("not a recording: bad magic");
     std::uint16_t version = 0;
-    if (!readRaw(in, version) || version != kVersion)
+    if (!readRaw(in, version) || (version != kVersion && version != kVersion1))
         throw Error("unsupported recording version: " + std::to_string(version));
 
     std::uint32_t rosterSize = 0;
     if (!readRaw(in, rosterSize) || rosterSize > kMaxRosterSize)
         throw Error("recording roster is malformed");
     std::vector<TrackedDevice> roster(rosterSize);
-    for (TrackedDevice& device : roster)
+    std::vector<GripOffset> gripOffsets(rosterSize);
+    for (std::size_t i = 0; i < rosterSize; ++i)
     {
         std::int32_t id = 0;
         std::uint8_t kind = 0;
         if (!readRaw(in, id) || !readRaw(in, kind))
             throw Error("recording roster is truncated");
-        device.id = id;
-        device.kind = kindFromByte(kind);
+        roster[i].id = id;
+        roster[i].kind = kindFromByte(kind);
+        // v1: no grip offset on the wire — identity (default-constructed).
+        // v2: read the grip offset pose (the id is already in `id` above).
+        gripOffsets[i].deviceId = id;
+        if (version == kVersion && !readGripOffsetPose(in, gripOffsets[i].deviceToGrip))
+            throw Error("recording roster is truncated");
     }
 
     Recording recording;
+    recording.gripOffsets = gripOffsets;
     for (;;)
     {
         RecordingFrame frame;
@@ -138,11 +177,18 @@ Recording loadRecording(std::istream& in)
         frame.devices = roster;
         bool complete = true;
         for (TrackedDevice& device : frame.devices)
+        {
             if (!readPose(in, device.pose))
             {
                 complete = false;  // truncated trailing frame: drop it
                 break;
             }
+            // Apply the roster's grip offset to each controller pose, so the
+            // loaded frames match what the live path fed the mode controller
+            // (compose(rawPose, deviceToGrip)). Non-controllers get identity.
+            if (device.kind == TrackedDeviceKind::Controller)
+                device.pose = compose(device.pose, gripFor(gripOffsets, device.id));
+        }
         if (!complete)
             break;
         recording.frames.push_back(std::move(frame));

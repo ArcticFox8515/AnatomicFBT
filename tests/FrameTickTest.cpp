@@ -2,6 +2,7 @@
 
 #include <glm/gtc/quaternion.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -10,6 +11,7 @@
 #include "model/BoneNames.h"
 #include "model/BodyProportions.h"
 #include "model/FrameTick.h"
+#include "model/GripOffsets.h"
 #include "model/IkRig.h"
 #include "model/IkRigConfig.h"
 #include "model/ModeController.h"
@@ -117,6 +119,17 @@ struct FailingRecorder
     SessionRecorder recorder{[] { return std::shared_ptr<std::ostream>(); }};
 };
 
+// Wraps `pollAndUpdate` with a default empty grip-offset vector so the bulk of
+// the tests (which do not exercise grip shifting) keep their call sites short.
+// The grip-offset path is exercised directly in its own tests below.
+UpdateResult runTick(ModeController& controller, IkRig& rig, ReplaySession* replay,
+                     SessionRecorder& recorder, IPoseSource& poses, IGestureSource* gesture,
+                     double now, link::Logger& logger,
+                     const std::vector<GripOffset>& grips = {})
+{
+    return pollAndUpdate(controller, rig, replay, recorder, poses, gesture, now, grips, logger);
+}
+
 // The full set of model state the app builds at startup and drives the tick
 // with. Returned by value (NRVO); IkRig is movable.
 struct TickEnv
@@ -165,7 +178,7 @@ TEST(FrameTick, ManualPosePollsWhenPoseSourceConnected)
     FakeGestureSource gesture;
     RecordingLogger sink;
 
-    const UpdateResult r = pollAndUpdate(controller, env.rig, nullptr, env.recorder.recorder,
+    const UpdateResult r = runTick(controller, env.rig, nullptr, env.recorder.recorder,
                                          poses, &gesture, 1.0, sink.logger);
 
     EXPECT_EQ(poses.pollCount, 1);
@@ -186,7 +199,7 @@ TEST(FrameTick, ManualPoseReturnsEmptyDevicesWhenDisconnected)
     poses.poses = tPoseDevices(env.rig);  // must NOT be returned
     link::Logger logger;
 
-    const UpdateResult r = pollAndUpdate(controller, env.rig, nullptr, env.recorder.recorder,
+    const UpdateResult r = runTick(controller, env.rig, nullptr, env.recorder.recorder,
                                          poses, nullptr, 1.0, logger);
 
     EXPECT_EQ(poses.pollCount, 0);
@@ -207,7 +220,7 @@ TEST(FrameTick, CalibrationReadsGestureFromInitializedSource)
     gesture.gesture = false;
     RecordingLogger sink;
 
-    const UpdateResult r = pollAndUpdate(controller, env.rig, nullptr, env.recorder.recorder,
+    const UpdateResult r = runTick(controller, env.rig, nullptr, env.recorder.recorder,
                                          poses, &gesture, 1.0, sink.logger);
 
     EXPECT_EQ(gesture.gestureCount, 1);
@@ -226,7 +239,7 @@ TEST(FrameTick, CalibrationWithoutGestureSourceIsSafe)
     poses.poses = tPoseDevices(env.rig);
     link::Logger logger;
 
-    const UpdateResult r = pollAndUpdate(controller, env.rig, nullptr, env.recorder.recorder,
+    const UpdateResult r = runTick(controller, env.rig, nullptr, env.recorder.recorder,
                                          poses, nullptr, 1.0, logger);
 
     // No crash; gesture simply never read.
@@ -245,7 +258,7 @@ TEST(FrameTick, CalibrationGestureSourceUninitializedIsNotRead)
     gesture.gesture = true;  // would transition if read
     RecordingLogger sink;
 
-    const UpdateResult r = pollAndUpdate(controller, env.rig, nullptr, env.recorder.recorder,
+    const UpdateResult r = runTick(controller, env.rig, nullptr, env.recorder.recorder,
                                          poses, &gesture, 1.0, sink.logger);
 
     EXPECT_EQ(gesture.gestureCount, 0);
@@ -269,7 +282,7 @@ TEST(FrameTick, CalibrationGestureTransitionsToCaptureAndTearsDown)
     gesture.gesture = true;
     RecordingLogger sink;
 
-    const UpdateResult r = pollAndUpdate(controller, env.rig, nullptr, env.recorder.recorder,
+    const UpdateResult r = runTick(controller, env.rig, nullptr, env.recorder.recorder,
                                          poses, &gesture, 1.0, sink.logger);
 
     EXPECT_EQ(controller.mode(), Mode::Capture);
@@ -294,7 +307,7 @@ TEST(FrameTick, GestureIsNotReadInManualPose)
     gesture.gesture = true;
     RecordingLogger sink;
 
-    const UpdateResult r = pollAndUpdate(controller, env.rig, nullptr, env.recorder.recorder,
+    const UpdateResult r = runTick(controller, env.rig, nullptr, env.recorder.recorder,
                                          poses, &gesture, 1.0, sink.logger);
 
     EXPECT_EQ(gesture.gestureCount, 0);
@@ -316,7 +329,7 @@ TEST(FrameTick, ReplayPullsDevicesFromRecordingNotPoseSource)
     {
         std::ofstream file(dir / "rec.tcrec", std::ios::binary | std::ios::trunc);
         RecordingWriter writer(file);
-        writer.writeFrame(0.0f, devices);
+        writer.writeFrame(0.0f, devices, {});
     }
 
     ModeController controller;
@@ -332,7 +345,7 @@ TEST(FrameTick, ReplayPullsDevicesFromRecordingNotPoseSource)
     poses.poses = {TrackedDevice{999, TrackedDeviceKind::Hmd, {glm::vec3(0.0f), glm::quat(1.0f, 0, 0, 0)}}};
     link::Logger logger;
 
-    const UpdateResult r = pollAndUpdate(controller, env.rig, &replay, env.recorder.recorder,
+    const UpdateResult r = runTick(controller, env.rig, &replay, env.recorder.recorder,
                                          poses, nullptr, 1.0, logger);
 
     EXPECT_EQ(poses.pollCount, 0);
@@ -360,14 +373,14 @@ TEST(FrameTick, LeavingCaptureEmitsRecordingSaved)
     RecordingLogger sink;
 
     // Frame 1: calibrate + start recording.
-    pollAndUpdate(controller, env.rig, nullptr, env.recorder.recorder, poses, &gesture, 1.0,
+    runTick(controller, env.rig, nullptr, env.recorder.recorder, poses, &gesture, 1.0,
                   sink.logger);
     ASSERT_EQ(controller.mode(), Mode::Capture);
     sink.lines.clear();
 
     // Frame 2: switch to ManualPose — the recorder stops.
     controller.switchToManual();
-    const UpdateResult r = pollAndUpdate(controller, env.rig, nullptr, env.recorder.recorder,
+    const UpdateResult r = runTick(controller, env.rig, nullptr, env.recorder.recorder,
                                          poses, nullptr, 2.0, sink.logger);
 
     EXPECT_EQ(controller.mode(), Mode::ManualPose);
@@ -391,7 +404,7 @@ TEST(FrameTick, FailingRecorderEmitsRecordingFailed)
     gesture.gesture = true;
     RecordingLogger sink;
 
-    pollAndUpdate(controller, env.rig, nullptr, failing.recorder, poses, &gesture, 1.0,
+    runTick(controller, env.rig, nullptr, failing.recorder, poses, &gesture, 1.0,
                   sink.logger);
 
     EXPECT_EQ(controller.mode(), Mode::Capture);
@@ -419,7 +432,7 @@ TEST(FrameTick, LoggerWithoutSinkIsSafe)
     gesture.gesture = true;
     link::Logger logger;  // no sink installed
 
-    EXPECT_NO_THROW(pollAndUpdate(controller, env.rig, nullptr, env.recorder.recorder,
+    EXPECT_NO_THROW(runTick(controller, env.rig, nullptr, env.recorder.recorder,
                                   poses, &gesture, 1.0, logger));
     EXPECT_EQ(controller.mode(), Mode::Capture);
 }
@@ -606,5 +619,123 @@ TEST(FrameTick, RetargetAndShipDoesNotSendVirtualTrackersWhenDisconnected)
                     {std::string(BoneNames::Neck)});
 
     EXPECT_EQ(poses.vtSendCount, 0);
+}
+
+// --- grip offsets: the live snapshot is shifted, the recorder gets raw ------
+
+// The grip offset must be applied to the snapshot the mode controller and the
+// solver see, but NOT to the raw poses the recorder stores (the recording
+// keeps raw frames + the roster's grip offsets, and the loader reapplies).
+TEST(FrameTick, GripOffsetsShiftSnapshotButRecorderGetsRaw)
+{
+    TickEnv env = makeEnv();
+    ModeController controller(Mode::Calibration);
+    FakePoseSource poses;
+    poses.initialized = true;
+    // One controller (a hand target) at the origin.
+    const std::vector<TrackedDevice> raw = tPoseDevices(env.rig);
+    poses.poses = raw;
+    FakeGestureSource gesture;
+    gesture.initialized = true;
+    gesture.gesture = true;  // triggers the calibration->capture transition
+    RecordingLogger sink;
+    // Grip offset: translate [0, 0, 0.097] for the first controller in the
+    // snapshot. tPoseDevices makes controllers for the hand targets.
+    std::vector<GripOffset> grips;
+    for (const TrackedDevice& d : raw)
+        if (d.kind == TrackedDeviceKind::Controller)
+            grips.push_back({d.id, {glm::vec3(0.0f, 0.0f, 0.097f),
+                                    glm::quat(1.0f, 0.0f, 0.0f, 0.0f)}});
+
+    const UpdateResult r = pollAndUpdate(controller, env.rig, nullptr, env.recorder.recorder,
+                                         poses, &gesture, 1.0, grips, sink.logger);
+
+    ASSERT_EQ(controller.mode(), Mode::Capture);
+    ASSERT_FALSE(r.devices.empty());
+    // The snapshot's controllers are grip-shifted: position.z += 0.097.
+    for (const TrackedDevice& d : r.devices)
+    {
+        if (d.kind != TrackedDeviceKind::Controller)
+            continue;
+        // Find the matching raw device to compare.
+        const auto it = std::find_if(raw.begin(), raw.end(),
+                                     [&](const TrackedDevice& r) { return r.id == d.id; });
+        ASSERT_NE(it, raw.end());
+        EXPECT_NEAR(d.pose.position.z - it->pose.position.z, 0.097f, 1e-5f);
+    }
+
+    // The recorder stored the RAW (pre-shift) poses — the loader then applies
+    // the roster's grip offsets, so the loaded frame is single-shifted
+    // (raw + grip). Had the recorder stored the already-shifted poses, the
+    // loader would shift again and this check would see raw + 2*grip.
+    ASSERT_FALSE(env.recorder.stream->str().empty());
+    const Recording recording = loadRecording(*env.recorder.stream);
+    ASSERT_FALSE(recording.frames.empty());
+    for (const TrackedDevice& d : recording.frames[0].devices)
+    {
+        if (d.kind != TrackedDeviceKind::Controller)
+            continue;
+        const auto it = std::find_if(raw.begin(), raw.end(),
+                                     [&](const TrackedDevice& r) { return r.id == d.id; });
+        ASSERT_NE(it, raw.end());
+        EXPECT_NEAR(d.pose.position.z, it->pose.position.z + 0.097f, 1e-5f)
+            << "recorder must store raw poses; loader applies the grip once";
+    }
+}
+
+// Replay frames are already grip-applied by the recording loader, so
+// pollAndUpdate must NOT apply the grips again in the Replay branch (that
+// would double-shift). A recording written with a known grip offset must
+// come back exactly as stored, regardless of the grips passed to the tick.
+TEST(FrameTick, ReplayDoesNotDoubleShiftGripOffsets)
+{
+    TickEnv env = makeEnv();
+    const std::vector<TrackedDevice> raw = tPoseDevices(env.rig);
+    // Write a recording with a non-trivial grip offset for each controller.
+    std::vector<GripOffset> grips;
+    for (const TrackedDevice& d : raw)
+        if (d.kind == TrackedDeviceKind::Controller)
+            grips.push_back({d.id, {glm::vec3(0.0f, 0.0f, 0.097f),
+                                    glm::quat(1.0f, 0.0f, 0.0f, 0.0f)}});
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / "TrackingCorrectorFrameTickGripReplay";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    {
+        std::ofstream file(dir / "rec.tcrec", std::ios::binary | std::ios::trunc);
+        RecordingWriter writer(file);
+        writer.writeFrame(0.0f, raw, grips);
+    }
+
+    ModeController controller;
+    controller.switchToReplay();
+    env.rig.resetTargets();
+    ReplaySession replay;
+    replay.scan(dir);
+    ASSERT_NO_THROW(replay.load(0, controller, env.rig));
+
+    FakePoseSource poses;
+    poses.initialized = true;
+    poses.poses = raw;
+    link::Logger logger;
+
+    // Pass the SAME grip offsets to the tick — Replay must ignore them.
+    const UpdateResult r = pollAndUpdate(controller, env.rig, &replay, env.recorder.recorder,
+                                         poses, nullptr, 1.0, grips, logger);
+
+    ASSERT_FALSE(r.devices.empty());
+    // Each replay device must equal the recording's frame-0 device, which the
+    // loader already grip-applied. Double-shifting would add 0.097 a second
+    // time and fail this check.
+    const Recording& rec = replay.recording();
+    ASSERT_FALSE(rec.frames.empty());
+    ASSERT_EQ(r.devices.size(), rec.frames[0].devices.size());
+    for (size_t i = 0; i < r.devices.size(); ++i)
+    {
+        EXPECT_FLOAT_EQ(r.devices[i].pose.position.z, rec.frames[0].devices[i].pose.position.z)
+            << "replay must not double-shift grip offsets";
+    }
+
+    std::filesystem::remove_all(dir);
 }
 } // namespace

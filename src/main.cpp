@@ -24,6 +24,7 @@
 #include "model/BodyProportions.h"
 #include "model/AppSettings.h"
 #include "model/FrameTick.h"
+#include "model/GripOffsets.h"
 #include "model/IkRig.h"
 #include "model/IkRigConfig.h"
 #include "model/ModeController.h"
@@ -238,6 +239,33 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 	// Calibration->Capture transition.
 	std::unique_ptr<OpenVrInput> input;
 
+	// Per-controller grip offsets (resolved once per Calibration session by
+	// OpenVrInput's render-model query; doc/ik-improvements-plan.md). Must
+	// outlive `input`: the automatic Calibration->Capture transition tears the
+	// trigger reader down, but the offsets apply to every Capture frame and
+	// every replay, so the cache lives here at app scope. `mergeGripOffsets`
+	// keeps a controller's entry across a second calibration if it is absent
+	// from the fresh query (powered off mid-session).
+	std::vector<GripOffset> gripOffsets;
+
+	auto refreshGripOffsets = [&]()
+	{
+		if (!input || !input->isInitialized())
+			return;
+		std::vector<GripOffset> fresh;
+		fresh.reserve(input->gripOffsets().size());
+		for (const OpenVrInput::GripOffsetInfo& info : input->gripOffsets())
+		{
+			spdlog::info("controller {} render-model=\"{}\" component=\"{}\" grip pos=({:.4f},{:.4f},{:.4f})",
+			             info.deviceId, info.renderModelName, info.componentName,
+			             info.offset.deviceToGrip.position.x,
+			             info.offset.deviceToGrip.position.y,
+			             info.offset.deviceToGrip.position.z);
+			fresh.push_back(info.offset);
+		}
+		gripOffsets = mergeGripOffsets(gripOffsets, fresh);
+	};
+
 	// OpenVR: when the driver pipe is connected and the trigger session comes
 	// up, start straight in calibration mode; otherwise fall back to manual
 	// pose (the UI offers a retry).
@@ -247,6 +275,7 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 		vr.init();
 		input = std::make_unique<OpenVrInput>();
 		input->init();
+		refreshGripOffsets();
 		spdlog::info("OpenVR initialized; starting in calibration mode");
 		initialMode = Mode::Calibration;
 	}
@@ -325,7 +354,7 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 			// recording start/stop/error) flow through the sink into spdlog.
 			const UpdateResult tick =
 				pollAndUpdate(controller, rig, &replay, recorder, vr, input.get(), glfwGetTime(),
-				              frameLog);
+				              gripOffsets, frameLog);
 			if (tick.tearDownGestureSource)
 				input.reset();
 
@@ -463,6 +492,7 @@ int WinMain(void* hinst, void* hprev, char* cmdline, int show)
 					{
 						input = std::make_unique<OpenVrInput>();
 						input->init();
+						refreshGripOffsets();
 					}
 					catch (const std::exception& e)
 					{

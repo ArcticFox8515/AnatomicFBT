@@ -3,7 +3,8 @@
 #include "Error.h"
 
 SessionRecorder::Event SessionRecorder::update(Mode mode, bool capturedOffsets, double now,
-                                               const std::vector<TrackedDevice>& devices)
+                                                const std::vector<TrackedDevice>& devices,
+                                                const std::vector<GripOffset>& gripOffsets)
 {
     Event event;
 
@@ -17,7 +18,7 @@ SessionRecorder::Event SessionRecorder::update(Mode mode, bool capturedOffsets, 
                 throw Error("cannot open the recording stream");
             writer_.emplace(*stream_);
             startTime_ = now;
-            writer_->writeFrame(0.0f, devices);
+            writer_->writeFrame(0.0f, devices, gripOffsets);
             event.started = true;
         }
         catch (const std::exception& e)
@@ -30,7 +31,7 @@ SessionRecorder::Event SessionRecorder::update(Mode mode, bool capturedOffsets, 
     {
         try
         {
-            writer_->writeFrame(static_cast<float>(now - startTime_), devices);
+            writer_->writeFrame(static_cast<float>(now - startTime_), devices, gripOffsets);
         }
         catch (const std::exception& e)
         {
